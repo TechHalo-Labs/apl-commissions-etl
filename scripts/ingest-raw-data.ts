@@ -503,6 +503,16 @@ async function main(): Promise<void> {
     const extractedFiles = await extractZip(zipPath, extractDir);
     log(`Extracted ${extractedFiles.length} files`, 'success');
     
+    // List all extracted filenames
+    log('');
+    log('Extracted files:');
+    extractedFiles
+      .map(f => path.basename(f))
+      .filter(f => f.toLowerCase().endsWith('.csv'))
+      .sort()
+      .forEach(f => log(`  - ${f}`, 'info'));
+    log('');
+    
     // Find schema name
     const targetSchema = schemaName || await findNextSchema(pool);
     log(`Using schema: [${targetSchema}]`, 'success');
@@ -515,12 +525,25 @@ async function main(): Promise<void> {
     let totalRows = 0;
     
     for (const mapping of FILE_MAPPINGS) {
+      log(`Searching for files with prefix "${mapping.prefix}"...`);
       const matchingFiles = findMatchingFiles(extractedFiles, mapping.prefix);
       
       if (matchingFiles.length === 0) {
-        log(`No files found for prefix "${mapping.prefix}"`, 'warn');
+        log(`  ⚠️  No files found for prefix "${mapping.prefix}"`, 'warn');
+        // Show what CSV files are available for debugging
+        const csvFiles = extractedFiles
+          .map(f => path.basename(f))
+          .filter(f => f.toLowerCase().endsWith('.csv'))
+          .map(f => `    - ${f}`)
+          .join('\n');
+        if (csvFiles) {
+          log(`  Available CSV files:\n${csvFiles}`, 'info');
+        }
         continue;
       }
+      
+      log(`  Found ${matchingFiles.length} file(s) matching "${mapping.prefix}":`, 'success');
+      matchingFiles.forEach(f => log(`    - ${path.basename(f)}`, 'info'));
       
       for (const filePath of matchingFiles) {
         log(`Processing ${path.basename(filePath)}...`);
