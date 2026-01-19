@@ -38,7 +38,7 @@ SELECT
     COALESCE(TRY_CAST(sbl.[Type] AS INT), 0) AS [Type],
     COALESCE(TRY_CAST(sbl.[Status] AS INT), 0) AS [Status],
     COALESCE(sbl.EffectiveDate, GETUTCDATE()) AS EffectiveDate,
-    COALESCE(sbl.ExpirationDate, DATEADD(year, 2, GETUTCDATE())) AS ExpirationDate,
+    '2099-01-01' AS ExpirationDate,  -- Set to 2099 so all records are in grace period
     '2099-01-01' AS GracePeriodDate,
     COALESCE(sbl.IsResidentLicense, 0) AS IsResidentLicense,
     COALESCE(sbl.CreationTime, GETUTCDATE()) AS CreationTime,
@@ -93,7 +93,7 @@ SELECT
     0 AS LicenseCode,  -- Default license code
     'Life & Health' AS LicenseCodeLabel,
     MIN(lic.EffectiveDate) AS EffectiveDate,
-    MAX(lic.ExpirationDate) AS ExpirationDate,
+    '2099-01-01' AS ExpirationDate,  -- Set to 2099 so all records are in grace period
     '2099-01-01' AS GracePeriodDate,
     MIN(lic.EffectiveDate) AS OriginalEffectiveDate,
     CASE WHEN MAX(CASE WHEN lic.ExpirationDate >= GETUTCDATE() THEN 1 ELSE 0 END) = 0 
@@ -160,7 +160,7 @@ SELECT
     COALESCE(sbeo.PolicyMaxAmount, 0) AS PolicyMaxAmount,
     COALESCE(sbeo.LiabilityLimit, 0) AS LiabilityLimit,
     COALESCE(sbeo.EffectiveDate, GETUTCDATE()) AS EffectiveDate,
-    COALESCE(sbeo.ExpirationDate, DATEADD(year, 1, GETUTCDATE())) AS ExpirationDate,
+    '2099-01-01' AS ExpirationDate,  -- Set to 2099 so all records are in grace period
     '2099-01-01' AS GracePeriodDate,
     COALESCE(sbeo.[Status], 0) AS [Status],
     COALESCE(sbeo.CreationTime, GETUTCDATE()) AS CreationTime,
@@ -176,6 +176,44 @@ PRINT 'BrokerEOInsurances exported: ' + CAST(@eoCount AS VARCHAR);
 DECLARE @totalEO INT;
 SELECT @totalEO = COUNT(*) FROM [dbo].[BrokerEOInsurances];
 PRINT 'Total EO insurances in dbo: ' + CAST(@totalEO AS VARCHAR);
+GO
+
+PRINT '=== Updating existing records to set ExpirationDate to 2099-01-01 ===';
+
+-- Update all existing BrokerLicenses to have ExpirationDate = 2099-01-01 (grace period)
+UPDATE [dbo].[BrokerLicenses]
+SET ExpirationDate = '2099-01-01',
+    GracePeriodDate = '2099-01-01',
+    LastModificationTime = GETUTCDATE()
+WHERE ExpirationDate != '2099-01-01' OR ExpirationDate IS NULL;
+
+DECLARE @licUpdated INT;
+SELECT @licUpdated = @@ROWCOUNT;
+PRINT 'BrokerLicenses updated to grace period: ' + CAST(@licUpdated AS VARCHAR);
+GO
+
+-- Update all existing BrokerAppointments to have ExpirationDate = 2099-01-01 (grace period)
+UPDATE [dbo].[BrokerAppointments]
+SET ExpirationDate = '2099-01-01',
+    GracePeriodDate = '2099-01-01',
+    LastModificationTime = GETUTCDATE()
+WHERE ExpirationDate != '2099-01-01' OR ExpirationDate IS NULL;
+
+DECLARE @apptUpdated INT;
+SELECT @apptUpdated = @@ROWCOUNT;
+PRINT 'BrokerAppointments updated to grace period: ' + CAST(@apptUpdated AS VARCHAR);
+GO
+
+-- Update all existing BrokerEOInsurances to have ExpirationDate = 2099-01-01 (grace period)
+UPDATE [dbo].[BrokerEOInsurances]
+SET ExpirationDate = '2099-01-01',
+    GracePeriodDate = '2099-01-01',
+    LastModificationTime = GETUTCDATE()
+WHERE ExpirationDate != '2099-01-01' OR ExpirationDate IS NULL;
+
+DECLARE @eoUpdated INT;
+SELECT @eoUpdated = @@ROWCOUNT;
+PRINT 'BrokerEOInsurances updated to grace period: ' + CAST(@eoUpdated AS VARCHAR);
 GO
 
 PRINT '=== License/EO Export Complete ===';
