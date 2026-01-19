@@ -105,7 +105,14 @@ function getSqlConfig(): sql.config {
   };
 }
 
-const config = getSqlConfig();
+// Config will be created lazily when needed (not in dry-run mode)
+let config: sql.config | null = null;
+function getConfig(): sql.config {
+  if (!config) {
+    config = getSqlConfig();
+  }
+  return config;
+}
 
 // =============================================================================
 // File Mappings
@@ -368,14 +375,14 @@ function escapeSqlValue(value: any): string {
  * Load CSV data into table
  */
 async function loadCsvData(
-  pool: sql.ConnectionPool,
+  pool: sql.ConnectionPool | null,
   schemaName: string,
   filePath: string,
   tableName: string,
   limit: number = 0,
   dryRun: boolean = false
 ): Promise<number> {
-  if (dryRun) {
+  if (dryRun || !pool) {
     log(`Would load ${limit > 0 ? `first ${limit} rows from ` : ''}${path.basename(filePath)} into [${schemaName}].[${tableName}]`, 'info');
     return 0;
   }
@@ -493,7 +500,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   
-  const pool = await sql.connect(config);
   const extractDir = path.join(process.env.TMPDIR || '/tmp', `etl-extract-${Date.now()}`);
   
   try {
@@ -505,20 +511,41 @@ async function main(): Promise<void> {
     
     // List all extracted filenames
     log('');
-    log('Extracted files:');
-    extractedFiles
-      .map(f => path.basename(f))
-      .filter(f => f.toLowerCase().endsWith('.csv'))
-      .sort()
-      .forEach(f => log(`  - ${f}`, 'info'));
+    log('═'.repeat(70));
+    log('EXTRACTED FILES FROM ZIP');
+    log('═'.repeat(70));
+    const allFiles = extractedFiles.map(f => path.basename(f)).sort();
+    const csvFiles = allFiles.filter(f => f.toLowerCase().endsWith('.csv'));
+    const otherFiles = allFiles.filter(f => !f.toLowerCase().endsWith('.csv'));
+    
+    if (csvFiles.length > 0) {
+      log(`CSV Files (${csvFiles.length}):`, 'info');
+      csvFiles.forEach(f => log(`  ✓ ${f}`, 'info'));
+    }
+    if (otherFiles.length > 0) {
+      log(`Other Files (${otherFiles.length}):`, 'info');
+      otherFiles.forEach(f => log(`  - ${f}`, 'info'));
+    }
+    log('═'.repeat(70));
     log('');
     
-    // Find schema name
-    const targetSchema = schemaName || await findNextSchema(pool);
-    log(`Using schema: [${targetSchema}]`, 'success');
+    // Only connect to database if not in dry-run mode
+    let pool: sql.ConnectionPool | null = null;
+    let targetSchema: string;
+    
+    if (dryRun) {
+      targetSchema = schemaName || 'raw_data1'; // Use default for dry-run
+      log(`Using schema: [${targetSchema}] (dry-run)`, 'success');
+    } else {
+      pool = await sql.connect(getConfig());
+      targetSchema = schemaName || await findNextSchema(pool);
+      log(`Using schema: [${targetSchema}]`, 'success');
+    }
     
     // Create schema and tables
-    await createSchemaAndTables(pool, targetSchema, dryRun);
+    if (pool) {
+      await createSchemaAndTables(pool, targetSchema, dryRun);
+    }
     
     // Process each file mapping
     const limit = preview ? 10 : 0;
@@ -600,7 +627,9 @@ async function main(): Promise<void> {
     if (fs.existsSync(extractDir)) {
       fs.rmSync(extractDir, { recursive: true, force: true });
     }
-    await pool.close();
+    if (pool) {
+      await pool.close();
+    }
   }
 }
 
