@@ -252,7 +252,7 @@ async function main(): Promise<void> {
     log('FIXING GRACE PERIOD DATES');
     log('='.repeat(60));
     
-    const scriptPath = path.resolve(__dirname, '../../scripts/fix-grace-period-dates.sql');
+    const scriptPath = path.resolve(__dirname, '../sql/fixes/fix-grace-period-dates.sql');
     await executeSqlFile(pool, scriptPath);
     
     // Final verification
