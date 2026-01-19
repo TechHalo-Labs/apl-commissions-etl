@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Raw data files (CSV, Excel, etc.)
+*.csv
+*.xlsx
+*.xls
+*.tsv
+data/
+raw-data/
+input-data/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Build outputs
+dist/
+build/
+*.js.map
+
+# Temporary files
+tmp/
+temp/
+*.tmp

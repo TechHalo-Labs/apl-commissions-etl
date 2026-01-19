@@ -1,0 +1,359 @@
+-- =============================================================================
+-- Transform: Proposals with Combined Split Participants
+-- 
+-- Creates ONE proposal per Group, with a split version containing ALL
+-- split participants (multiple writing brokers sharing the premium).
+--
+-- Key insight: A certificate can have multiple CertSplitSeq values, each with
+-- a different WritingBroker and SplitPercent. These should be combined into
+-- ONE split version with multiple participants.
+-- =============================================================================
+
+SET NOCOUNT ON;
+
+PRINT '============================================================';
+PRINT 'TRANSFORM: Proposals (Combined Split Participants)';
+PRINT '============================================================';
+PRINT '';
+
+-- =============================================================================
+-- Step 1: Identify unique split participants per Group
+-- 
+-- Key insight about CertSplitSeq:
+-- - The sequence numbers can start at any value (1,2 or 74,75 or 4,5)
+-- - What matters is the RELATIVE ORDER: lowest = first participant, next = second
+-- - Multiple certificates may have different seq numbers but same split config
+-- 
+-- We deduplicate by (GroupId, WritingBrokerId, SplitPercent) to get unique participants
+-- Then assign sequence based on SplitPercent DESC (highest split first)
+-- =============================================================================
+PRINT 'Step 1: Analyzing split participants per group...';
+
+DROP TABLE IF EXISTS #group_split_configs;
+
+-- Get unique (Group, WritingBroker, SplitPercent) combinations
+WITH unique_splits AS (
+    SELECT 
+        LTRIM(RTRIM(ci.GroupId)) AS RawGroupId,
+        CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
+        TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
+        TRY_CAST(ci.CertSplitPercent AS DECIMAL(5,2)) AS SplitPercent,
+        MIN(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS MinEffDate,
+        MAX(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS MaxEffDate,
+        MAX(ci.CertIssuedState) AS SitusState,
+        MAX(LTRIM(RTRIM(ci.CommissionsSchedule))) AS ScheduleCode
+    FROM [etl].[input_certificate_info] ci
+    WHERE ci.SplitBrokerSeq = 1  -- Only get writing broker level records
+      AND LTRIM(RTRIM(ci.WritingBrokerID)) <> ''
+      AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
+      AND LTRIM(RTRIM(ci.GroupId)) <> ''
+      AND ci.CertSplitPercent IS NOT NULL
+    GROUP BY 
+        LTRIM(RTRIM(ci.GroupId)),
+        TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT),
+        TRY_CAST(ci.CertSplitPercent AS DECIMAL(5,2))
+)
+SELECT 
+    RawGroupId,
+    GroupId,
+    WritingBrokerId,
+    SplitPercent,
+    -- Assign sequence based on split percent (highest first) within each group
+    ROW_NUMBER() OVER (PARTITION BY GroupId ORDER BY SplitPercent DESC, WritingBrokerId) AS SplitSequence,
+    MinEffDate,
+    MaxEffDate,
+    SitusState,
+    ScheduleCode
+INTO #group_split_configs
+FROM unique_splits;
+
+PRINT 'Split participants found: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Step 2: Create ONE proposal per Group with combined split info
+-- =============================================================================
+PRINT '';
+PRINT 'Step 2: Creating proposal data (one per group)...';
+
+DROP TABLE IF EXISTS #group_proposals;
+
+SELECT 
+    GroupId,
+    RawGroupId,
+    MIN(MinEffDate) AS MinEffDate,
+    MAX(MaxEffDate) AS MaxEffDate,
+    MAX(SitusState) AS SitusState,
+    SUM(SplitPercent) AS TotalSplitPercent,
+    COUNT(DISTINCT WritingBrokerId) AS ParticipantCount,
+    COUNT(DISTINCT SplitSequence) AS SplitCount
+INTO #group_proposals
+FROM #group_split_configs
+GROUP BY GroupId, RawGroupId;
+
+PRINT 'Group proposals: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Step 3: Truncate and populate stg_proposals (ONE per Group)
+-- =============================================================================
+PRINT '';
+PRINT 'Step 3: Populating stg_proposals...';
+
+TRUNCATE TABLE [etl].[stg_proposals];
+
+INSERT INTO [etl].[stg_proposals] (
+    Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
+    SpecialCase, SpecialCaseCode, SitusState,
+    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
+    EnableEffectiveDateFiltering, ConstrainingEffectiveDateFrom, ConstrainingEffectiveDateTo,
+    EffectiveDateFrom, EffectiveDateTo,
+    EnablePlanCodeFiltering, CreationTime, IsDeleted
+)
+SELECT
+    CONCAT('P-', gp.GroupId, '-1') AS Id,
+    CONCAT(gp.GroupId, '-1') AS ProposalNumber,
+    2 AS [Status],  -- Approved
+    gp.MinEffDate AS SubmittedDate,
+    gp.MinEffDate AS ProposedEffectiveDate,
+    0 AS SpecialCase,
+    0 AS SpecialCaseCode,
+    COALESCE(gp.SitusState, g.[State]) AS SitusState,
+    -- Use the first writing broker as the "lead" broker
+    (SELECT TOP 1 WritingBrokerId FROM #group_split_configs WHERE GroupId = gp.GroupId ORDER BY SplitPercent DESC) AS BrokerId,
+    (SELECT TOP 1 b.Name FROM #group_split_configs sc 
+     LEFT JOIN [etl].[stg_brokers] b ON b.Id = sc.WritingBrokerId
+     WHERE sc.GroupId = gp.GroupId ORDER BY sc.SplitPercent DESC) AS BrokerName,
+    gp.GroupId,
+    g.Name AS GroupName,
+    CONCAT('Combined split: ', gp.ParticipantCount, ' participants, ', 
+           CAST(gp.TotalSplitPercent AS VARCHAR), '% total') AS Notes,
+    '*' AS ProductCodes,
+    '*' AS PlanCodes,
+    CONCAT('SC-', gp.GroupId) AS SplitConfigHash,
+    YEAR(gp.MinEffDate) AS DateRangeFrom,
+    NULL AS DateRangeTo,  -- Open-ended
+    0 AS EnableEffectiveDateFiltering,
+    gp.MinEffDate AS ConstrainingEffectiveDateFrom,
+    NULL AS ConstrainingEffectiveDateTo,
+    gp.MinEffDate AS EffectiveDateFrom,
+    NULL AS EffectiveDateTo,
+    0 AS EnablePlanCodeFiltering,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM #group_proposals gp
+LEFT JOIN [etl].[stg_groups] g ON g.Id = gp.GroupId
+WHERE gp.GroupId IS NOT NULL AND gp.GroupId <> 'G';
+
+DECLARE @proposal_count INT = @@ROWCOUNT;
+PRINT 'Proposals created: ' + CAST(@proposal_count AS VARCHAR);
+
+-- =============================================================================
+-- Step 4: Populate stg_split_configs
+-- =============================================================================
+PRINT '';
+PRINT 'Step 4: Populating stg_split_configs...';
+
+TRUNCATE TABLE [etl].[stg_split_configs];
+
+INSERT INTO [etl].[stg_split_configs] (SplitConfigHash, TotalSplitPercent, ParticipantCount, ConfigJson)
+SELECT
+    CONCAT('SC-', gp.GroupId) AS SplitConfigHash,
+    CASE WHEN gp.TotalSplitPercent > 999.99 THEN 999.99 ELSE gp.TotalSplitPercent END AS TotalSplitPercent,
+    gp.ParticipantCount,
+    NULL AS ConfigJson
+FROM #group_proposals gp
+WHERE gp.GroupId IS NOT NULL AND gp.GroupId <> 'G';
+
+PRINT 'Split configs created: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Step 5: Populate stg_premium_split_versions (ONE per proposal)
+-- =============================================================================
+PRINT '';
+PRINT 'Step 5: Populating stg_premium_split_versions...';
+
+TRUNCATE TABLE [etl].[stg_premium_split_versions];
+
+INSERT INTO [etl].[stg_premium_split_versions] (
+    Id, GroupId, GroupName, ProposalId, ProposalNumber,
+    VersionNumber, EffectiveFrom, EffectiveTo,
+    TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
+)
+SELECT
+    CONCAT('PSV-', p.Id) AS Id,
+    p.GroupId,
+    p.GroupName,
+    p.Id AS ProposalId,
+    p.ProposalNumber,
+    '1.0' AS VersionNumber,
+    p.EffectiveDateFrom AS EffectiveFrom,
+    NULL AS EffectiveTo,
+    gp.TotalSplitPercent,
+    1 AS [Status],  -- Active
+    0 AS [Source],
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM [etl].[stg_proposals] p
+INNER JOIN #group_proposals gp ON gp.GroupId = p.GroupId;
+
+PRINT 'Premium split versions created: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Step 6: Populate stg_premium_split_participants (MULTIPLE per version)
+-- This is the key fix - we now include ALL writing brokers for each group
+-- =============================================================================
+PRINT '';
+PRINT 'Step 6: Populating stg_premium_split_participants (combined)...';
+
+TRUNCATE TABLE [etl].[stg_premium_split_participants];
+
+-- First, pick ONE hierarchy per (Group, Broker) combination
+DROP TABLE IF EXISTS #broker_hierarchies;
+
+SELECT 
+    h.GroupId,
+    h.BrokerId,
+    MIN(h.Id) AS HierarchyId,  -- Pick first hierarchy if multiple exist
+    MIN(h.Name) AS HierarchyName
+INTO #broker_hierarchies
+FROM [etl].[stg_hierarchies] h
+GROUP BY h.GroupId, h.BrokerId;
+
+INSERT INTO [etl].[stg_premium_split_participants] (
+    Id, VersionId, BrokerId, BrokerName, SplitPercent, IsWritingAgent,
+    HierarchyId, HierarchyName, Sequence, WritingBrokerId, EffectiveFrom, CreationTime, IsDeleted
+)
+SELECT
+    ROW_NUMBER() OVER (ORDER BY psv.Id, sc.SplitSequence) AS Id,
+    psv.Id AS VersionId,
+    sc.WritingBrokerId AS BrokerId,
+    b.Name AS BrokerName,
+    sc.SplitPercent,
+    1 AS IsWritingAgent,
+    bh.HierarchyId,
+    bh.HierarchyName,
+    sc.SplitSequence AS Sequence,
+    sc.WritingBrokerId,
+    p.EffectiveDateFrom AS EffectiveFrom,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM #group_split_configs sc
+INNER JOIN [etl].[stg_proposals] p ON p.GroupId = sc.GroupId
+INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = p.Id
+LEFT JOIN [etl].[stg_brokers] b ON b.Id = sc.WritingBrokerId
+LEFT JOIN #broker_hierarchies bh 
+    ON bh.GroupId = sc.GroupId
+    AND bh.BrokerId = CAST(sc.WritingBrokerId AS VARCHAR);
+
+DROP TABLE IF EXISTS #broker_hierarchies;
+
+DECLARE @participant_count INT = @@ROWCOUNT;
+PRINT 'Premium split participants created: ' + CAST(@participant_count AS VARCHAR);
+
+-- =============================================================================
+-- Step 7: Populate stg_proposal_key_mapping
+-- =============================================================================
+PRINT '';
+PRINT 'Step 7: Populating stg_proposal_key_mapping...';
+
+TRUNCATE TABLE [etl].[stg_proposal_key_mapping];
+
+INSERT INTO [etl].[stg_proposal_key_mapping] (
+    GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
+)
+SELECT DISTINCT
+    CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
+    YEAR(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS EffectiveYear,
+    LTRIM(RTRIM(ci.Product)) AS ProductCode,
+    COALESCE(LTRIM(RTRIM(ci.PlanCode)), '*') AS PlanCode,
+    p.Id AS ProposalId,
+    p.SplitConfigHash
+FROM [etl].[input_certificate_info] ci
+INNER JOIN [etl].[stg_proposals] p ON p.GroupId = CONCAT('G', LTRIM(RTRIM(ci.GroupId)))
+WHERE LTRIM(RTRIM(ci.GroupId)) <> ''
+  AND ci.Product IS NOT NULL 
+  AND LTRIM(RTRIM(ci.Product)) <> ''
+  AND ci.CertEffectiveDate IS NOT NULL
+  AND TRY_CAST(ci.CertEffectiveDate AS DATE) IS NOT NULL;
+
+PRINT 'Key mappings created: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Step 8: Populate stg_proposal_products
+-- =============================================================================
+PRINT '';
+PRINT 'Step 8: Populating stg_proposal_products...';
+
+TRUNCATE TABLE [etl].[stg_proposal_products];
+
+INSERT INTO [etl].[stg_proposal_products] (
+    Id, ProposalId, ProductCode, ProductName, CreationTime, IsDeleted
+)
+SELECT
+    ROW_NUMBER() OVER (ORDER BY p.Id, pp.ProductCode) AS Id,
+    p.Id AS ProposalId,
+    pp.ProductCode,
+    CONCAT(COALESCE(pp.ProductCategory, 'Unknown'), ' - ', pp.ProductCode) AS ProductName,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM (
+    SELECT DISTINCT
+        CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
+        LTRIM(RTRIM(ci.Product)) AS ProductCode,
+        MAX(LTRIM(RTRIM(ci.ProductCategory))) AS ProductCategory
+    FROM [etl].[input_certificate_info] ci
+    WHERE ci.SplitBrokerSeq = 1
+      AND LTRIM(RTRIM(ci.Product)) <> ''
+      AND LTRIM(RTRIM(ci.GroupId)) <> ''
+    GROUP BY LTRIM(RTRIM(ci.GroupId)), LTRIM(RTRIM(ci.Product))
+) pp
+INNER JOIN [etl].[stg_proposals] p ON p.GroupId = pp.GroupId;
+
+PRINT 'Proposal products created: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- Verification
+-- =============================================================================
+PRINT '';
+PRINT '============================================================';
+PRINT 'VERIFICATION';
+PRINT '============================================================';
+
+SELECT 'Proposals' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposals];
+SELECT 'Split Configs' AS entity, COUNT(*) AS cnt FROM [etl].[stg_split_configs];
+SELECT 'Premium Split Versions' AS entity, COUNT(*) AS cnt FROM [etl].[stg_premium_split_versions];
+SELECT 'Premium Split Participants' AS entity, COUNT(*) AS cnt FROM [etl].[stg_premium_split_participants];
+SELECT 'Key Mappings' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposal_key_mapping];
+SELECT 'Proposal Products' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposal_products];
+
+-- Show sample of combined split participants (groups with multiple brokers)
+PRINT '';
+PRINT 'Sample: Groups with multiple split participants:';
+SELECT TOP 20
+    psv.GroupId,
+    psv.TotalSplitPercent,
+    psp.BrokerId,
+    psp.BrokerName,
+    psp.SplitPercent,
+    psp.Sequence
+FROM [etl].[stg_premium_split_versions] psv
+INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+WHERE psv.Id IN (
+    SELECT TOP 5 VersionId 
+    FROM [etl].[stg_premium_split_participants] 
+    GROUP BY VersionId 
+    HAVING COUNT(*) > 1
+    ORDER BY COUNT(*) DESC
+)
+ORDER BY psv.GroupId, psp.Sequence;
+
+-- Cleanup
+DROP TABLE IF EXISTS #group_split_configs;
+DROP TABLE IF EXISTS #group_proposals;
+
+PRINT '';
+PRINT '============================================================';
+PRINT 'PROPOSALS TRANSFORM COMPLETED';
+PRINT '============================================================';
+
+GO
