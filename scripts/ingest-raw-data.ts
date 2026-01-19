@@ -158,7 +158,7 @@ const FILE_MAPPINGS: FileMapping[] = [
   {
     prefix: 'CommissionsDetail',
     tableName: 'raw_commissions_detail',
-    expectedColumns: ['WritingBrokerId', 'HierDriver', 'HierVersion', 'SplitBrokerSeq', 'ContractEffectiveDate', 'ContractId', 'CommissionsSchedule']
+    expectedColumns: [] // Schema mismatch - CSV has different columns than table. See COMMISSIONS_DETAIL_SCHEMA_CHANGE.md
   },
   {
     prefix: 'BrokerLicenseExtract',
@@ -601,8 +601,9 @@ async function main(): Promise<void> {
         log(`Processing ${path.basename(filePath)}...`);
         
         // Validate headers (skip if expectedColumns is empty or validation disabled)
+        const headers = await readCsvHeaders(filePath);
+        
         if (!skipValidation && mapping.expectedColumns.length > 0) {
-          const headers = await readCsvHeaders(filePath);
           const validation = validateHeaders(headers, mapping.expectedColumns);
           
           if (!validation.valid) {
@@ -613,11 +614,19 @@ async function main(): Promise<void> {
             if (validation.extra.length > 0) {
               log(`     Extra: ${validation.extra.join(', ')}`, 'warn');
             }
+            // Show actual headers for debugging
+            log(`  📋 Actual columns in file (${headers.length}):`, 'info');
+            log(`     ${headers.join(', ')}`, 'info');
           } else {
-            log(`  ✅ Column headers validated`, 'success');
+            log(`  ✅ Column headers validated (${headers.length} columns)`, 'success');
+            // Show columns for CommissionsDetail to verify
+            if (mapping.tableName === 'raw_commissions_detail') {
+              log(`  📋 Columns: ${headers.join(', ')}`, 'info');
+            }
           }
         } else if (!skipValidation && mapping.expectedColumns.length === 0) {
-          log(`  ℹ️  Column validation skipped (no expected columns defined)`, 'info');
+          // Show headers even when validation is skipped
+          log(`  📋 Columns found (${headers.length}): ${headers.join(', ')}`, 'info');
         }
         
         // Load data

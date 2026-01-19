@@ -51,6 +51,7 @@ ON [etl].[raw_premiums] (GroupNumber, Policy);
 
 -- =============================================================================
 -- Commission Details (from CommissionsDetail*.csv files)
+-- NOTE: CSV schema changed in January 2026 - see COMMISSIONS_DETAIL_SCHEMA_CHANGE.md
 -- =============================================================================
 DROP TABLE IF EXISTS [etl].[raw_commissions_detail];
 CREATE TABLE [etl].[raw_commissions_detail] (
