@@ -128,12 +128,12 @@ const FILE_MAPPINGS: FileMapping[] = [
   {
     prefix: 'IndividualRosterExtract',
     tableName: 'raw_individual_brokers',
-    expectedColumns: ['BrokerId', 'Name', 'Status', 'Type'] // Add more as needed
+    expectedColumns: ['PartyUniqueId', 'IndividualLastName', 'IndividualFirstName', 'HireDate', 'EmailAddress', 'CurrentStatus', 'BankRoutingNumber', 'AccountNumber', 'AccountType']
   },
   {
     prefix: 'OrganizationRosterExtract',
     tableName: 'raw_org_brokers',
-    expectedColumns: ['BrokerId', 'Name', 'Status', 'Type'] // Add more as needed
+    expectedColumns: ['PartyUniqueId', 'OrganizationName', 'HireDate', 'EmailAddress', 'CurrentStatus', 'BankRoutingNumber', 'AccountNumber', 'AccountType']
   },
   {
     prefix: 'CertificateInfo',
@@ -158,17 +158,17 @@ const FILE_MAPPINGS: FileMapping[] = [
   {
     prefix: 'CommissionsDetail',
     tableName: 'raw_commissions_detail',
-    expectedColumns: ['Company', 'CertificateId', 'CertEffectiveDate', 'SplitBrokerId', 'PmtPostedDate', 'PaidToDate', 'PaidAmount', 'TransActionType', 'InvoiceNumber', 'CertInForceMonths', 'CommissionRate', 'RealCommissionRate', 'PaidBrokerId', 'CreaditCardType', 'TransactionId']
+    expectedColumns: ['WritingBrokerId', 'HierDriver', 'HierVersion', 'SplitBrokerSeq', 'ContractEffectiveDate', 'ContractId', 'CommissionsSchedule']
   },
   {
     prefix: 'BrokerLicenseExtract',
     tableName: 'raw_broker_licenses',
-    expectedColumns: ['BrokerId', 'State', 'LicenseNumber', 'Type', 'Status', 'EffectiveDate', 'ExpirationDate']
+    expectedColumns: ['PartyUniqueId', 'StateCode', 'CurrentStatus', 'LicenseCode', 'LicenseEffectiveDate', 'LicenseExpirationDate', 'IsResidenceLicense', 'ApplicableCounty']
   },
   {
     prefix: 'BrokerEO',
     tableName: 'raw_broker_eo',
-    expectedColumns: ['BrokerId', 'PolicyNumber', 'Carrier', 'CoverageAmount', 'EffectiveDate', 'ExpirationDate']
+    expectedColumns: ['PartyUniqueId', 'CarrierName', 'PolicyId', 'FromDate', 'ToDate', 'DeductibleAmount', 'ClaimMaxAmount', 'AnnualMaxAmount', 'PolicyMaxAmount', 'LiabilityLimit']
   },
   {
     prefix: 'Fees',
