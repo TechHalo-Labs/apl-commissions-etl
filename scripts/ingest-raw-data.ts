@@ -126,8 +126,13 @@ interface FileMapping {
 
 const FILE_MAPPINGS: FileMapping[] = [
   {
-    prefix: 'brokers',
-    tableName: 'raw_brokers',
+    prefix: 'IndividualRosterExtract',
+    tableName: 'raw_individual_brokers',
+    expectedColumns: ['BrokerId', 'Name', 'Status', 'Type'] // Add more as needed
+  },
+  {
+    prefix: 'OrganizationRosterExtract',
+    tableName: 'raw_org_brokers',
     expectedColumns: ['BrokerId', 'Name', 'Status', 'Type'] // Add more as needed
   },
   {
@@ -136,9 +141,14 @@ const FILE_MAPPINGS: FileMapping[] = [
     expectedColumns: ['Company', 'ProductMasterCategory', 'ProductCategory', 'GroupId', 'Product', 'PlanCode', 'CertificateId', 'CertEffectiveDate', 'CertIssuedState', 'CertStatus', 'CertPremium', 'CertSplitSeq', 'CertSplitPercent', 'CustomerId', 'RecStatus']
   },
   {
-    prefix: 'perf',
+    prefix: 'APL-Perf_Schedule',
     tableName: 'raw_schedule_rates',
     expectedColumns: ['ScheduleName', 'ProductCode', 'State', 'Level', 'Year2', 'Year16'] // Add more as needed
+  },
+  {
+    prefix: 'APL-Perf_Group',
+    tableName: 'raw_perf_groups',
+    expectedColumns: [] // Will be determined from file
   },
   {
     prefix: 'premiums',
@@ -151,14 +161,29 @@ const FILE_MAPPINGS: FileMapping[] = [
     expectedColumns: ['Company', 'CertificateId', 'CertEffectiveDate', 'SplitBrokerId', 'PmtPostedDate', 'PaidToDate', 'PaidAmount', 'TransActionType', 'InvoiceNumber', 'CertInForceMonths', 'CommissionRate', 'RealCommissionRate', 'PaidBrokerId', 'CreaditCardType', 'TransactionId']
   },
   {
-    prefix: 'licenses',
+    prefix: 'BrokerLicenseExtract',
     tableName: 'raw_broker_licenses',
     expectedColumns: ['BrokerId', 'State', 'LicenseNumber', 'Type', 'Status', 'EffectiveDate', 'ExpirationDate']
   },
   {
-    prefix: 'EO',
+    prefix: 'BrokerEO',
     tableName: 'raw_broker_eo',
     expectedColumns: ['BrokerId', 'PolicyNumber', 'Carrier', 'CoverageAmount', 'EffectiveDate', 'ExpirationDate']
+  },
+  {
+    prefix: 'Fees',
+    tableName: 'raw_fees',
+    expectedColumns: [] // Will be determined from file
+  },
+  {
+    prefix: 'CommHierarchy',
+    tableName: 'raw_comm_hierarchy',
+    expectedColumns: [] // Will be determined from file
+  },
+  {
+    prefix: 'BrokerMGARelationships',
+    tableName: 'raw_broker_mga_relationships',
+    expectedColumns: [] // Will be determined from file
   }
 ];
 
@@ -501,6 +526,7 @@ async function main(): Promise<void> {
   }
   
   const extractDir = path.join(process.env.TMPDIR || '/tmp', `etl-extract-${Date.now()}`);
+  let pool: sql.ConnectionPool | null = null;
   
   try {
     // Extract ZIP
@@ -530,7 +556,6 @@ async function main(): Promise<void> {
     log('');
     
     // Only connect to database if not in dry-run mode
-    let pool: sql.ConnectionPool | null = null;
     let targetSchema: string;
     
     if (dryRun) {
@@ -575,8 +600,8 @@ async function main(): Promise<void> {
       for (const filePath of matchingFiles) {
         log(`Processing ${path.basename(filePath)}...`);
         
-        // Validate headers
-        if (!skipValidation) {
+        // Validate headers (skip if expectedColumns is empty or validation disabled)
+        if (!skipValidation && mapping.expectedColumns.length > 0) {
           const headers = await readCsvHeaders(filePath);
           const validation = validateHeaders(headers, mapping.expectedColumns);
           
@@ -591,6 +616,8 @@ async function main(): Promise<void> {
           } else {
             log(`  ✅ Column headers validated`, 'success');
           }
+        } else if (!skipValidation && mapping.expectedColumns.length === 0) {
+          log(`  ℹ️  Column validation skipped (no expected columns defined)`, 'info');
         }
         
         // Load data
