@@ -5,7 +5,7 @@
 PRINT 'Clearing existing schedule data...';
 
 -- Clear FK references first
-UPDATE [dbo].[Group] SET ActiveScheduleId = NULL;
+UPDATE [dbo].[EmployerGroups] SET ActiveScheduleId = NULL;
 UPDATE [dbo].[Contracts] SET ScheduleId = NULL WHERE ScheduleId IS NOT NULL;
 DELETE FROM [dbo].[GroupScheduleAssignments];
 

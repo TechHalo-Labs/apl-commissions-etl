@@ -28,6 +28,17 @@ SELECT
     CASE 
         WHEN p.GroupId = 'G00000' THEN 'DTC-NoGroup'
         WHEN g.IsNonConformant = 1 THEN 'NonConformant-SplitMismatch'
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_premium_split_versions] psv
+            WHERE psv.GroupId = p.GroupId AND psv.TotalSplitPercent <> 100
+        ) THEN 'NonConformant-SplitMismatch'
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[input_certificate_info] ci
+            WHERE TRY_CAST(ci.CertificateId AS BIGINT) = TRY_CAST(p.Id AS BIGINT)
+              AND ci.RecStatus = 'A'
+            GROUP BY ci.CertificateId
+            HAVING SUM(ci.CertSplitPercent) <> 100
+        ) THEN 'NonConformant-CertificateSplitMismatch'
         WHEN p.ProposalId IS NULL THEN 'NoProposal'
         ELSE 'Unknown'
     END AS NonConformantReason
@@ -35,7 +46,18 @@ INTO #tmp_nonconformant_policies
 FROM [etl].[stg_policies] p
 LEFT JOIN [etl].[stg_groups] g ON g.Id = p.GroupId
 WHERE p.GroupId = 'G00000'  -- DTC policies
-   OR g.IsNonConformant = 1  -- Non-conformant groups
+   OR g.IsNonConformant = 1  -- Non-conformant groups (flagged by 06b)
+   OR EXISTS (
+       SELECT 1 FROM [etl].[stg_premium_split_versions] psv
+       WHERE psv.GroupId = p.GroupId AND psv.TotalSplitPercent <> 100
+   )  -- Groups with TotalSplitPercent != 100
+   OR EXISTS (
+       SELECT 1 FROM [etl].[input_certificate_info] ci
+       WHERE TRY_CAST(ci.CertificateId AS BIGINT) = TRY_CAST(p.Id AS BIGINT)
+         AND ci.RecStatus = 'A'
+       GROUP BY ci.CertificateId
+       HAVING SUM(ci.CertSplitPercent) <> 100
+   )  -- Certificates with TotalSplitPercent != 100
    OR p.ProposalId IS NULL;  -- Any policy without a proposal
 
 DECLARE @nonconf_count INT = @@ROWCOUNT;
@@ -207,85 +229,13 @@ WHERE dp.rn = 1;
 PRINT 'Policy hierarchy participants staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 -- =============================================================================
--- Step 6: Create State Rules for Policy Hierarchy Assignments
--- For each linked hierarchy, create state rules with ALL states
+-- Step 6: Create Hierarchy Splits for PHA products (on existing catch-all rules only)
+-- NOTE: We do NOT create per-state rules here. PHA hierarchies use the existing 
+-- catch-all "ALL" rule created by 08-hierarchy-splits.sql. A catch-all rule 
+-- should never have individual state rules - it applies to ALL states by definition.
 -- =============================================================================
 PRINT '';
-PRINT 'Step 6: Creating state rules for policy hierarchy assignments...';
-
--- Get all US states
-DROP TABLE IF EXISTS #tmp_all_states;
-SELECT StateCode INTO #tmp_all_states
-FROM (VALUES
-    ('AL'),('AK'),('AZ'),('AR'),('CA'),('CO'),('CT'),('DE'),('FL'),('GA'),
-    ('HI'),('ID'),('IL'),('IN'),('IA'),('KS'),('KY'),('LA'),('ME'),('MD'),
-    ('MA'),('MI'),('MN'),('MS'),('MO'),('MT'),('NE'),('NV'),('NH'),('NJ'),
-    ('NM'),('NY'),('NC'),('ND'),('OH'),('OK'),('OR'),('PA'),('RI'),('SC'),
-    ('SD'),('TN'),('TX'),('UT'),('VT'),('VA'),('WA'),('WV'),('WI'),('WY'),('DC')
-) AS States(StateCode);
-
--- Get unique (HierarchyVersionId) for assignments that have a linked hierarchy
-DROP TABLE IF EXISTS #tmp_pha_hierarchy_versions;
-SELECT DISTINCT
-    pha.HierarchyId,
-    hv.Id AS HierarchyVersionId
-INTO #tmp_pha_hierarchy_versions
-FROM [etl].[stg_policy_hierarchy_assignments] pha
-INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.HierarchyId = pha.HierarchyId
-WHERE pha.HierarchyId IS NOT NULL;
-
--- Create state rules for all states (if not already exists)
-INSERT INTO [etl].[stg_state_rules] (
-    Id, HierarchyVersionId, ShortName, Name, [Description], [Type], SortOrder,
-    CreationTime, IsDeleted
-)
-SELECT
-    CONCAT('SR-', hv.HierarchyVersionId, '-', s.StateCode) AS Id,
-    hv.HierarchyVersionId,
-    s.StateCode AS ShortName,
-    s.StateCode AS Name,
-    CONCAT('State rule for ', s.StateCode, ' (PHA-generated)') AS [Description],
-    0 AS [Type],  -- 0=Include
-    ROW_NUMBER() OVER (PARTITION BY hv.HierarchyVersionId ORDER BY s.StateCode) AS SortOrder,
-    GETUTCDATE() AS CreationTime,
-    0 AS IsDeleted
-FROM #tmp_pha_hierarchy_versions hv
-CROSS JOIN #tmp_all_states s
-WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_state_rules] sr
-    WHERE sr.Id = CONCAT('SR-', hv.HierarchyVersionId, '-', s.StateCode)
-);
-
-DECLARE @pha_state_rules_count INT = @@ROWCOUNT;
-PRINT 'State rules created for PHA hierarchies: ' + CAST(@pha_state_rules_count AS VARCHAR);
-
--- Create corresponding state rule states
-INSERT INTO [etl].[stg_state_rule_states] (
-    Id, StateRuleId, StateCode, StateName, CreationTime, IsDeleted
-)
-SELECT
-    CONCAT(sr.Id, '-', sr.ShortName) AS Id,
-    sr.Id AS StateRuleId,
-    sr.ShortName AS StateCode,
-    sr.ShortName AS StateName,
-    GETUTCDATE() AS CreationTime,
-    0 AS IsDeleted
-FROM [etl].[stg_state_rules] sr
-WHERE sr.[Description] LIKE '%PHA-generated%'
-  AND NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_state_rule_states] srs
-    WHERE srs.Id = CONCAT(sr.Id, '-', sr.ShortName)
-);
-
-DECLARE @pha_state_rule_states_count INT = @@ROWCOUNT;
-PRINT 'State rule states created for PHA hierarchies: ' + CAST(@pha_state_rule_states_count AS VARCHAR);
-
--- =============================================================================
--- Step 7: Create Hierarchy Splits for each policy's product code
--- Uses the schedule from raw_certificate_info
--- =============================================================================
-PRINT '';
-PRINT 'Step 7: Creating hierarchy splits for policy products...';
+PRINT 'Step 6: Creating hierarchy splits for PHA products (catch-all rules only)...';
 
 -- Get unique (HierarchyVersionId, ProductCode, ScheduleCode) from PHA policies
 DROP TABLE IF EXISTS #tmp_pha_products;
@@ -306,8 +256,8 @@ WHERE pha.HierarchyId IS NOT NULL
   AND p.ProductCode IS NOT NULL
   AND p.ProductCode <> '';
 
--- Create hierarchy splits for each product in ALL state rules
--- This ensures the product is available for any state
+-- Create hierarchy splits ONLY for catch-all "ALL" state rules (Type=1)
+-- This ensures products are linked to the catch-all rule, not per-state rules
 INSERT INTO [etl].[stg_hierarchy_splits] (
     Id, StateRuleId, ProductId, ProductCode, ProductName, 
     SortOrder, CreationTime, IsDeleted
@@ -324,6 +274,7 @@ SELECT DISTINCT
 FROM #tmp_pha_products pp
 INNER JOIN [etl].[stg_state_rules] sr 
     ON sr.HierarchyVersionId = pp.HierarchyVersionId
+    AND sr.[Type] = 1  -- Only catch-all rules (Type=1), NOT per-state rules (Type=0)
 LEFT JOIN [etl].[stg_products] prod ON prod.ProductCode = pp.ProductCode
 WHERE NOT EXISTS (
     SELECT 1 FROM [etl].[stg_hierarchy_splits] hs
@@ -334,8 +285,6 @@ DECLARE @pha_splits_count INT = @@ROWCOUNT;
 PRINT 'Hierarchy splits created for PHA products: ' + CAST(@pha_splits_count AS VARCHAR);
 
 -- Cleanup temp tables
-DROP TABLE IF EXISTS #tmp_all_states;
-DROP TABLE IF EXISTS #tmp_pha_hierarchy_versions;
 DROP TABLE IF EXISTS #tmp_pha_products;
 
 -- =============================================================================
@@ -370,14 +319,17 @@ SELECT 'Participants with schedule' AS metric,
     SUM(CASE WHEN ScheduleId IS NULL THEN 1 ELSE 0 END) AS without_schedule
 FROM [etl].[stg_policy_hierarchy_participants];
 
--- State rules created for PHA
-SELECT 'State rules (PHA-generated)' AS metric, COUNT(*) AS cnt
-FROM [etl].[stg_state_rules]
-WHERE [Description] LIKE '%PHA-generated%';
-
--- Hierarchy splits count
+-- Hierarchy splits count (should only be on catch-all "ALL" rules)
 SELECT 'Total Hierarchy Splits' AS metric, COUNT(*) AS cnt
 FROM [etl].[stg_hierarchy_splits];
+
+-- Catch-all vs per-state splits breakdown
+SELECT 'Hierarchy Splits by rule type' AS metric,
+    CASE WHEN sr.[Type] = 1 THEN 'Catch-all (ALL)' ELSE 'Per-state' END AS rule_type,
+    COUNT(*) AS split_count
+FROM [etl].[stg_hierarchy_splits] hs
+INNER JOIN [etl].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+GROUP BY CASE WHEN sr.[Type] = 1 THEN 'Catch-all (ALL)' ELSE 'Per-state' END;
 
 -- Cleanup temp tables
 DROP TABLE IF EXISTS #tmp_nonconformant_policies;

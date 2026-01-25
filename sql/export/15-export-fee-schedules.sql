@@ -28,7 +28,7 @@ SELECT
     COUNT(*) AS FeeCount
 INTO #GroupFees
 FROM [etl].[stg_fee_schedules] f
-LEFT JOIN [dbo].[Group] g ON g.Id = f.GroupId
+LEFT JOIN [dbo].[EmployerGroups] g ON g.Id = f.GroupId
 WHERE f.GroupId IS NOT NULL
 GROUP BY f.GroupId, COALESCE(g.GroupName, f.GroupName);
 
