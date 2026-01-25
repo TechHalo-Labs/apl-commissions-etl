@@ -57,7 +57,8 @@ SELECT
     COALESCE(sp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
 FROM [etl].[stg_policies] sp
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Policies]);
+WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Policies])
+  AND sp.GroupId IN (SELECT Id FROM [etl].[stg_included_groups]);  -- 🔧 Only policies for included groups
 
 DECLARE @policyCount INT;
 SELECT @policyCount = @@ROWCOUNT;

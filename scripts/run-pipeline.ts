@@ -217,6 +217,7 @@ const sqlFiles = {
     'sql/transforms/06d-proposals-year-differentiated.sql', // Step 4: Year-differentiated proposals
     'sql/transforms/06e-proposals-granular.sql',           // Step 5: Granular proposals for remainder
     'sql/transforms/06f-consolidate-proposals.sql',        // Step 6: Consolidate proposals
+    'sql/transforms/06g-normalize-proposal-date-ranges.sql', // Step 7: Normalize effective date ranges
     
     // Phase 4: Hierarchies and splits
     'sql/transforms/07-hierarchies.sql',

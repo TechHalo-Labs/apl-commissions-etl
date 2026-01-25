@@ -120,7 +120,8 @@ PRINT 'State rule states deleted for catch-all conversion: ' + CAST(@@ROWCOUNT A
 UPDATE sr
 SET sr.ShortName = 'ALL',
     sr.Name = 'All States',
-    sr.[Description] = 'Catch-all state rule (applies to all states)'
+    sr.[Description] = 'Catch-all state rule (applies to all states)',
+    sr.[Type] = 1  -- 1 = CatchAll (0 = Specific)
 FROM [etl].[stg_state_rules] sr
 WHERE sr.Id IN (SELECT StateRuleId FROM #single_rule_hierarchies);
 

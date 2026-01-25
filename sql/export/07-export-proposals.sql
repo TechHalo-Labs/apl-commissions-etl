@@ -10,6 +10,7 @@ INSERT INTO [dbo].[Proposals] (
     SpecialCase, SpecialCaseCode, SitusState, BrokerId, BrokerName,
     GroupId, GroupName, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, EnableEffectiveDateFiltering,
+    ConstrainingEffectiveDateFrom, ConstrainingEffectiveDateTo,
     CreationTime, IsDeleted
 )
 SELECT 
@@ -34,8 +35,10 @@ SELECT
     sp.GroupName,
     sp.EffectiveDateFrom,
     sp.EffectiveDateTo,
-    0 AS EnablePlanCodeFiltering,
-    0 AS EnableEffectiveDateFiltering,
+    COALESCE(sp.EnablePlanCodeFiltering, 0) AS EnablePlanCodeFiltering,
+    COALESCE(sp.EnableEffectiveDateFiltering, 0) AS EnableEffectiveDateFiltering,
+    sp.ConstrainingEffectiveDateFrom,
+    sp.ConstrainingEffectiveDateTo,
     sp.CreationTime,
     sp.IsDeleted
 FROM [etl].[stg_proposals] sp
@@ -48,6 +51,29 @@ PRINT 'Proposals exported: ' + CAST(@proposalCount AS VARCHAR);
 DECLARE @totalProposals INT;
 SELECT @totalProposals = COUNT(*) FROM [dbo].[Proposals];
 PRINT 'Total proposals in dbo: ' + CAST(@totalProposals AS VARCHAR);
+GO
+
+-- =====================================================
+-- Update EffectiveDateTo for existing proposals
+-- This ensures proposals with multiple EffectiveDateFrom values
+-- have their EffectiveDateTo properly set
+-- =====================================================
+PRINT 'Updating EffectiveDateTo for existing proposals...';
+
+UPDATE p
+SET 
+    p.EffectiveDateTo = sp.EffectiveDateTo,
+    p.LastModificationTime = GETUTCDATE()
+FROM [dbo].[Proposals] p
+INNER JOIN [etl].[stg_proposals] sp ON sp.Id = p.Id
+WHERE sp.EffectiveDateTo IS NOT NULL
+    AND (
+        p.EffectiveDateTo IS NULL 
+        OR p.EffectiveDateTo != sp.EffectiveDateTo
+    );
+
+DECLARE @updated_count INT = @@ROWCOUNT;
+PRINT 'Updated EffectiveDateTo for ' + CAST(@updated_count AS VARCHAR) + ' existing proposals.';
 GO
 
 PRINT 'Exporting missing ProposalProducts to dbo.ProposalProducts...';

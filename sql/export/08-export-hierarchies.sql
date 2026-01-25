@@ -120,6 +120,30 @@ WHERE sr.Id NOT IN (SELECT Id FROM [dbo].[StateRules])
 DECLARE @srCount INT;
 SELECT @srCount = @@ROWCOUNT;
 PRINT 'StateRules exported: ' + CAST(@srCount AS VARCHAR);
+
+-- Update existing state rules that were converted to catch-all
+PRINT 'Updating existing StateRules converted to catch-all...';
+
+UPDATE dbo_sr
+SET 
+    dbo_sr.ShortName = stg_sr.ShortName,
+    dbo_sr.Name = stg_sr.Name,
+    dbo_sr.[Description] = stg_sr.[Description],
+    dbo_sr.[Type] = stg_sr.[Type],
+    dbo_sr.LastModificationTime = GETUTCDATE()
+FROM [dbo].[StateRules] dbo_sr
+INNER JOIN [etl].[stg_state_rules] stg_sr ON dbo_sr.Id = stg_sr.Id
+WHERE stg_sr.[Type] = 1  -- Catch-all
+  AND stg_sr.ShortName = 'ALL'
+  AND (
+      dbo_sr.ShortName <> stg_sr.ShortName
+      OR dbo_sr.Name <> stg_sr.Name
+      OR dbo_sr.[Type] <> stg_sr.[Type]
+  );
+
+DECLARE @srUpdatedCount INT;
+SELECT @srUpdatedCount = @@ROWCOUNT;
+PRINT 'StateRules updated to catch-all: ' + CAST(@srUpdatedCount AS VARCHAR);
 GO
 
 PRINT 'Exporting missing StateRuleStates...';
@@ -141,6 +165,20 @@ WHERE srs.Id NOT IN (SELECT Id FROM [dbo].[StateRuleStates])
 DECLARE @srsCount INT;
 SELECT @srsCount = @@ROWCOUNT;
 PRINT 'StateRuleStates exported: ' + CAST(@srsCount AS VARCHAR);
+
+-- Delete state rule states for catch-all rules (catch-all has no states)
+PRINT 'Deleting StateRuleStates for catch-all rules...';
+
+DELETE dbo_srs
+FROM [dbo].[StateRuleStates] dbo_srs
+INNER JOIN [dbo].[StateRules] dbo_sr ON dbo_srs.StateRuleId = dbo_sr.Id
+WHERE dbo_sr.[Type] = 1  -- Catch-all
+  AND dbo_sr.ShortName = 'ALL'
+  AND dbo_srs.IsDeleted = 0;
+
+DECLARE @srsDeletedCount INT;
+SELECT @srsDeletedCount = @@ROWCOUNT;
+PRINT 'StateRuleStates deleted for catch-all rules: ' + CAST(@srsDeletedCount AS VARCHAR);
 GO
 
 PRINT 'Exporting missing HierarchySplits...';

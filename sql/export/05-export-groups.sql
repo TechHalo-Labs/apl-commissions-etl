@@ -4,12 +4,14 @@
 -- Maps staging columns to production schema
 -- =====================================================
 
-PRINT 'Exporting missing Groups to dbo.Group...';
+PRINT 'Exporting missing Groups to dbo.EmployerGroups...';
 
-INSERT INTO [dbo].[Group] (
+-- 🔧 Apply filtered groups exclusion
+INSERT INTO [dbo].[EmployerGroups] (
     Id, GroupNumber, GroupName, StateAbbreviation, SitusState, GroupSize,
     TaxId, IsPublicSector, IsNonConformant, NonConformantDescription,
-    CreationTime, IsDeleted
+    PercentConformant, ConformantPolicies, NonConformantPolicies, TotalPoliciesAnalyzed,
+    NextProposalNumber, CreationTime, IsDeleted
 )
 SELECT 
     sg.Id,
@@ -17,38 +19,46 @@ SELECT
     sg.Name AS GroupName,
     sg.[State] AS StateAbbreviation,
     sg.[State] AS SitusState,
-    0 AS GroupSize,  -- Will be updated from policy counts
+    0 AS GroupSize,  -- Will be updated from distinct CustomerId counts (lives)
     sg.TaxId,
     0 AS IsPublicSector,  -- Default to false
     COALESCE(sg.IsNonConformant, 0) AS IsNonConformant,
     sg.NonConformantDescription,
+    sg.PercentConformant,
+    sg.ConformantPolicies,
+    sg.NonConformantPolicies,
+    sg.TotalPoliciesAnalyzed,
+    1 AS NextProposalNumber,  -- Default
     sg.CreationTime,
     COALESCE(sg.IsDeleted, 0) AS IsDeleted
 FROM [etl].[stg_groups] sg
-WHERE sg.Id NOT IN (SELECT Id FROM [dbo].[Group]);
+WHERE sg.Id NOT IN (SELECT Id FROM [dbo].[EmployerGroups])
+  AND sg.Id IN (SELECT Id FROM [etl].[stg_included_groups]);  -- 🔧 Only included groups
 
 DECLARE @groupCount INT;
 SELECT @groupCount = @@ROWCOUNT;
 PRINT 'Groups exported: ' + CAST(@groupCount AS VARCHAR);
 GO
 
--- Update GroupSize from policy counts
-PRINT 'Updating GroupSize from policy counts...';
+-- Update GroupSize from distinct CustomerId counts (number of lives)
+PRINT 'Updating GroupSize from distinct CustomerId counts (lives)...';
 
 UPDATE g
-SET g.GroupSize = COALESCE(pc.PolicyCount, 0)
-FROM [dbo].[Group] g
+SET g.GroupSize = COALESCE(pc.LivesCount, 0)
+FROM [dbo].[EmployerGroups] g
 LEFT JOIN (
-    SELECT GroupId, COUNT(*) AS PolicyCount 
+    SELECT GroupId, COUNT(DISTINCT CustomerId) AS LivesCount 
     FROM [dbo].[Policies] 
+    WHERE CustomerId IS NOT NULL AND CustomerId <> ''
     GROUP BY GroupId
 ) pc ON pc.GroupId = g.Id;
 
-PRINT 'GroupSize updated';
+DECLARE @updatedCount INT = @@ROWCOUNT;
+PRINT 'GroupSize updated for ' + CAST(@updatedCount AS VARCHAR) + ' groups based on distinct CustomerId (lives)';
 GO
 
 DECLARE @totalGroups INT;
-SELECT @totalGroups = COUNT(*) FROM [dbo].[Group];
+SELECT @totalGroups = COUNT(*) FROM [dbo].[EmployerGroups];
 PRINT 'Total groups in dbo: ' + CAST(@totalGroups AS VARCHAR);
 GO
 
