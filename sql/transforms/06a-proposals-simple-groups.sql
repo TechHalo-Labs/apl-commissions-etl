@@ -110,7 +110,7 @@ TRUNCATE TABLE [etl].[stg_proposals];
 INSERT INTO [etl].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
-    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, CreationTime, IsDeleted
@@ -124,7 +124,15 @@ SELECT
     0 AS SpecialCase,
     0 AS SpecialCaseCode,
     g.[State] AS SitusState,
-    TRY_CAST(REPLACE(sg.WritingBrokerId, 'P', '') AS BIGINT) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (strip 'P' prefix, get numeric string)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     CONCAT('G', sg.GroupId) AS GroupId,
     g.Name AS GroupName,
@@ -142,7 +150,7 @@ SELECT
     0 AS IsDeleted
 FROM [etl].[simple_groups] sg
 LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', sg.GroupId)
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(sg.WritingBrokerId, 'P', '') AS BIGINT);
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '');
 
 DECLARE @proposals_created INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
@@ -225,14 +233,24 @@ TRUNCATE TABLE [etl].[stg_premium_split_participants];
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
 INSERT INTO [etl].[stg_premium_split_participants] (
-    Id, VersionId, BrokerId, BrokerName, SplitPercent, IsWritingAgent,
+    Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
 )
 SELECT
     ROW_NUMBER() OVER (ORDER BY sg.GroupId, j.splitSeq) AS Id,
     CONCAT('PSV-P-G', sg.GroupId, '-1') AS VersionId,
-    TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) AS BrokerId,
+    -- BrokerId (required, deprecated but still needed)
+    COALESCE(b.Id, TRY_CAST(REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '') AS BIGINT), 0) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     TRY_CAST(j.[percent] AS DECIMAL(5,2)) AS SplitPercent,
     1 AS IsWritingAgent,
@@ -254,7 +272,7 @@ CROSS APPLY OPENJSON(sg.ConfigJson)
         schedule NVARCHAR(100) '$.schedule'
     ) j
 LEFT JOIN [etl].[stg_brokers] b 
-    ON b.Id = TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT)
+    ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1;  -- Only writing broker level (split participants)
 
 DECLARE @split_participants_created INT = @@ROWCOUNT;

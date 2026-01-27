@@ -37,6 +37,8 @@ WITH unique_splits AS (
         LTRIM(RTRIM(ci.GroupId)) AS RawGroupId,
         CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
         TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
+        -- NEW: Extract BrokerUniquePartyId (strip 'P' prefix, get numeric string)
+        REPLACE(REPLACE(LTRIM(RTRIM(ci.WritingBrokerID)), 'P', ''), ' ', '') AS WritingBrokerUniquePartyId,
         TRY_CAST(ci.CertSplitPercent AS DECIMAL(5,2)) AS SplitPercent,
         MIN(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS MinEffDate,
         MAX(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS MaxEffDate,
@@ -51,12 +53,14 @@ WITH unique_splits AS (
     GROUP BY 
         LTRIM(RTRIM(ci.GroupId)),
         TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT),
+        REPLACE(REPLACE(LTRIM(RTRIM(ci.WritingBrokerID)), 'P', ''), ' ', ''),
         TRY_CAST(ci.CertSplitPercent AS DECIMAL(5,2))
 )
 SELECT 
     RawGroupId,
     GroupId,
     WritingBrokerId,
+    WritingBrokerUniquePartyId,  -- NEW: BrokerUniquePartyId field
     SplitPercent,
     -- Assign sequence based on split percent (highest first) within each group
     ROW_NUMBER() OVER (PARTITION BY GroupId ORDER BY SplitPercent DESC, WritingBrokerId) AS SplitSequence,
@@ -77,18 +81,40 @@ PRINT 'Step 2: Creating proposal data (one per group)...';
 
 DROP TABLE IF EXISTS #group_proposals;
 
+-- Calculate MinEffDate from ALL certificates in the group (not just SplitBrokerSeq = 1)
+-- This ensures EffectiveDateFrom covers all policies, including those with earlier dates
 SELECT 
-    GroupId,
-    RawGroupId,
-    MIN(MinEffDate) AS MinEffDate,
-    MAX(MaxEffDate) AS MaxEffDate,
-    MAX(SitusState) AS SitusState,
-    SUM(SplitPercent) AS TotalSplitPercent,
-    COUNT(DISTINCT WritingBrokerId) AS ParticipantCount,
-    COUNT(DISTINCT SplitSequence) AS SplitCount
+    gp.GroupId,
+    gp.RawGroupId,
+    -- Get the TRUE minimum effective date from ALL certificates in the group
+    COALESCE(
+        (SELECT MIN(TRY_CAST(ci.CertEffectiveDate AS DATE))
+         FROM [etl].[input_certificate_info] ci
+         WHERE CONCAT('G', LTRIM(RTRIM(ci.GroupId))) = gp.GroupId
+           AND LTRIM(RTRIM(ci.GroupId)) <> ''
+           AND ci.CertEffectiveDate IS NOT NULL
+           AND TRY_CAST(ci.CertEffectiveDate AS DATE) IS NOT NULL),
+        MIN(gp.MinEffDate)  -- Fallback to minimum from split configs if no certificates found
+    ) AS MinEffDate,
+    MAX(gp.MaxEffDate) AS MaxEffDate,
+    MAX(gp.SitusState) AS SitusState,
+    SUM(gp.SplitPercent) AS TotalSplitPercent,
+    COUNT(DISTINCT gp.WritingBrokerId) AS ParticipantCount,
+    COUNT(DISTINCT gp.SplitSequence) AS SplitCount
 INTO #group_proposals
-FROM #group_split_configs
-GROUP BY GroupId, RawGroupId;
+FROM (
+    SELECT DISTINCT
+        GroupId,
+        RawGroupId,
+        MinEffDate,
+        MaxEffDate,
+        SitusState,
+        SplitPercent,
+        WritingBrokerId,
+        SplitSequence
+    FROM #group_split_configs
+) gp
+GROUP BY gp.GroupId, gp.RawGroupId;
 
 PRINT 'Group proposals: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
@@ -103,7 +129,7 @@ TRUNCATE TABLE [etl].[stg_proposals];
 INSERT INTO [etl].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
-    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, ConstrainingEffectiveDateFrom, ConstrainingEffectiveDateTo,
     EffectiveDateFrom, EffectiveDateTo,
@@ -118,10 +144,22 @@ SELECT
     0 AS SpecialCase,
     0 AS SpecialCaseCode,
     COALESCE(gp.SitusState, g.[State]) AS SitusState,
-    -- Use the first writing broker as the "lead" broker
-    (SELECT TOP 1 WritingBrokerId FROM #group_split_configs WHERE GroupId = gp.GroupId ORDER BY SplitPercent DESC) AS BrokerId,
+    -- Use the first writing broker's ExternalPartyId as the "lead" broker
+    -- Only populate if broker exists in stg_brokers (validation)
+    (SELECT TOP 1 
+        CASE 
+            WHEN EXISTS (
+                SELECT 1 FROM [etl].[stg_brokers] b 
+                WHERE b.ExternalPartyId = sc.WritingBrokerUniquePartyId
+            )
+            THEN sc.WritingBrokerUniquePartyId
+            ELSE NULL
+        END
+     FROM #group_split_configs sc 
+     WHERE sc.GroupId = gp.GroupId 
+     ORDER BY sc.SplitPercent DESC) AS BrokerUniquePartyId,
     (SELECT TOP 1 b.Name FROM #group_split_configs sc 
-     LEFT JOIN [etl].[stg_brokers] b ON b.Id = sc.WritingBrokerId
+     LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
      WHERE sc.GroupId = gp.GroupId ORDER BY sc.SplitPercent DESC) AS BrokerName,
     gp.GroupId,
     g.Name AS GroupName,
@@ -146,6 +184,31 @@ WHERE gp.GroupId IS NOT NULL AND gp.GroupId <> 'G';
 
 DECLARE @proposal_count INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposal_count AS VARCHAR);
+
+-- =============================================================================
+-- Step 3.5: Update BrokerName from stg_brokers (populate if NULL/empty)
+-- =============================================================================
+PRINT '';
+PRINT 'Step 3.5: Updating BrokerName from stg_brokers...';
+
+UPDATE sp
+SET sp.BrokerName = COALESCE(
+    NULLIF(LTRIM(RTRIM(b.Name)), ''),
+    CONCAT('Broker ', sp.BrokerUniquePartyId)
+)
+FROM [etl].[stg_proposals] sp
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
+WHERE sp.BrokerUniquePartyId IS NOT NULL
+    AND (
+        sp.BrokerName IS NULL 
+        OR LTRIM(RTRIM(sp.BrokerName)) = ''
+        OR sp.BrokerName = CONCAT('Broker ', sp.BrokerUniquePartyId)  -- Update placeholder names too
+    )
+    AND b.Name IS NOT NULL
+    AND LTRIM(RTRIM(b.Name)) <> '';
+
+DECLARE @broker_name_updated INT = @@ROWCOUNT;
+PRINT 'BrokerName updated for ' + CAST(@broker_name_updated AS VARCHAR) + ' proposals';
 
 -- =============================================================================
 -- Step 4: Populate stg_split_configs
@@ -208,6 +271,8 @@ PRINT 'Step 6: Populating stg_premium_split_participants (combined)...';
 TRUNCATE TABLE [etl].[stg_premium_split_participants];
 
 -- First, pick ONE hierarchy per (Group, Broker) combination
+-- Note: stg_hierarchies still uses BrokerId, so we'll join by BrokerId for now
+-- TODO: Update stg_hierarchies to also have BrokerUniquePartyId in future phase
 DROP TABLE IF EXISTS #broker_hierarchies;
 
 SELECT 
@@ -220,30 +285,40 @@ FROM [etl].[stg_hierarchies] h
 GROUP BY h.GroupId, h.BrokerId;
 
 INSERT INTO [etl].[stg_premium_split_participants] (
-    Id, VersionId, BrokerId, BrokerName, SplitPercent, IsWritingAgent,
+    Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, EffectiveFrom, CreationTime, IsDeleted
 )
 SELECT
     ROW_NUMBER() OVER (ORDER BY psv.Id, sc.SplitSequence) AS Id,
     psv.Id AS VersionId,
-    sc.WritingBrokerId AS BrokerId,
+    -- BrokerId (required, deprecated but still needed)
+    COALESCE(b.Id, sc.WritingBrokerId, 0) AS BrokerId,
+    -- NEW: Populate BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b 
+            WHERE b.ExternalPartyId = sc.WritingBrokerUniquePartyId
+        )
+        THEN sc.WritingBrokerUniquePartyId
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     sc.SplitPercent,
     1 AS IsWritingAgent,
     bh.HierarchyId,
     bh.HierarchyName,
     sc.SplitSequence AS Sequence,
-    sc.WritingBrokerId,
+    sc.WritingBrokerId,  -- Keep for hierarchy lookup (stg_hierarchies still uses BrokerId)
     p.EffectiveDateFrom AS EffectiveFrom,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #group_split_configs sc
 INNER JOIN [etl].[stg_proposals] p ON p.GroupId = sc.GroupId
 INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = p.Id
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = sc.WritingBrokerId
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
 LEFT JOIN #broker_hierarchies bh 
     ON bh.GroupId = sc.GroupId
-    AND bh.BrokerId = CAST(sc.WritingBrokerId AS VARCHAR);
+    AND bh.BrokerId = sc.WritingBrokerId;  -- Join by BrokerId (hierarchies still use BrokerId)
 
 DROP TABLE IF EXISTS #broker_hierarchies;
 
@@ -332,7 +407,7 @@ PRINT 'Sample: Groups with multiple split participants:';
 SELECT TOP 20
     psv.GroupId,
     psv.TotalSplitPercent,
-    psp.BrokerId,
+    psp.BrokerUniquePartyId,
     psp.BrokerName,
     psp.SplitPercent,
     psp.Sequence
