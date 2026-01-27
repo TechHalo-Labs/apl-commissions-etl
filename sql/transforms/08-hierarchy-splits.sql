@@ -295,8 +295,9 @@ SELECT
     hp.EntityId AS ParticipantEntityId,
     -- Percentage: Use the participant's SplitPercent if available, otherwise equal distribution
     COALESCE(hp.SplitPercent, 100.0 / NULLIF(participant_counts.cnt, 0)) AS Percentage,
-    hp.ScheduleId AS ScheduleId,
-    s.Name AS ScheduleName,
+    -- Resolve ScheduleId from ScheduleCode if ScheduleId is NULL
+    COALESCE(hp.ScheduleId, s_resolved.Id) AS ScheduleId,
+    COALESCE(s.Name, s_resolved.Name) AS ScheduleName,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [etl].[stg_hierarchy_splits] hs
@@ -304,8 +305,10 @@ FROM [etl].[stg_hierarchy_splits] hs
 INNER JOIN [etl].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
 -- Get all participants for this hierarchy version
 INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = sr.HierarchyVersionId
--- Get schedule name
+-- Get schedule name (from ScheduleId if available)
 LEFT JOIN [etl].[stg_schedules] s ON s.Id = hp.ScheduleId
+-- Resolve ScheduleId from ScheduleCode if ScheduleId is NULL
+LEFT JOIN [etl].[stg_schedules] s_resolved ON s_resolved.ExternalId = hp.ScheduleCode AND hp.ScheduleId IS NULL
 -- Get participant count for equal distribution fallback
 CROSS APPLY (
     SELECT COUNT(*) as cnt

@@ -67,7 +67,7 @@ GROUP BY GroupId;
 INSERT INTO [etl].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
-    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, PlanCodeConstraints,
@@ -82,7 +82,15 @@ SELECT
     0 AS SpecialCase,
     0 AS SpecialCaseCode,
     g.[State] AS SitusState,
-    TRY_CAST(REPLACE(JSON_VALUE(gk.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(gk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(JSON_VALUE(gk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     CONCAT('G', gk.GroupId) AS GroupId,
     g.Name AS GroupName,
@@ -102,7 +110,7 @@ SELECT
 FROM [etl].[granular_keys] gk
 LEFT JOIN #max_proposal_num mpn ON mpn.GroupId = CONCAT('G', gk.GroupId)
 LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', gk.GroupId)
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(JSON_VALUE(gk.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT);
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(gk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '');
 
 DECLARE @proposals_created INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);

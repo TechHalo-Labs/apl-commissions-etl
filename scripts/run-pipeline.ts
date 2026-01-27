@@ -8,8 +8,9 @@
  * 
  * Options:
  *   --restore-backup   Restore raw data from raw_data schema backup (instead of CSV)
+ *   --from-new-data    Read raw data from new_data schema (instead of CSV or raw_data)
  *   --skip-schema      Skip schema setup (preserves existing raw/staging tables)
- *   --skip-ingest      Skip CSV data ingestion (use with --restore-backup or existing data)
+ *   --skip-ingest      Skip CSV data ingestion (use with --restore-backup or --from-new-data)
  *   --skip-transform   Skip transform phase
  *   --skip-calc        Skip commission calculation phase
  *   --skip-export      Skip export to production phase
@@ -219,6 +220,9 @@ const sqlFiles = {
     'sql/transforms/06f-consolidate-proposals.sql',        // Step 6: Consolidate proposals
     'sql/transforms/06g-normalize-proposal-date-ranges.sql', // Step 7: Normalize effective date ranges
     
+    // Phase 3.5: Post-proposal updates (populate BrokerName from Brokers)
+    'sql/transforms/06z-update-proposal-broker-names.sql',  // Step 7.5: Update BrokerName from stg_brokers
+    
     // Phase 4: Hierarchies and splits
     'sql/transforms/07-hierarchies.sql',
     'sql/transforms/08-hierarchy-splits.sql',
@@ -258,7 +262,11 @@ const sqlFiles = {
     'sql/export/12-export-assignments.sql',
     'sql/export/13-export-licenses.sql',
     'sql/export/16-export-broker-banking-infos.sql',
-    // 7. Calculated results (commented out in files)
+    // 7. Rate extensions (depend on ScheduleRates and HierarchyParticipants)
+    'sql/export/17-export-special-schedule-rates.sql',      // Heaped year rates
+    'sql/export/18-export-schedule-rate-tiers.sql',         // Group-size tiered rates
+    'sql/export/19-export-hierarchy-product-rates.sql',     // Product-specific participant rates
+    // 8. Calculated results (commented out in files)
     'sql/export/03-export-gl-entries.sql',
     'sql/export/04-export-traceability.sql',
   ],
@@ -492,6 +500,252 @@ async function restoreFromBackup(pool: sql.ConnectionPool): Promise<void> {
   log('Input tables populated', 'success');
 }
 
+/**
+ * Copy table with automatic column mapping (handles schema mismatches)
+ */
+async function copyTableWithMapping(
+  pool: sql.ConnectionPool,
+  sourceSchema: string,
+  sourceTable: string,
+  targetSchema: string,
+  targetTable: string,
+  displayName: string
+): Promise<number> {
+  try {
+    // Check if target already has data
+    const targetCountResult = await pool.request().query(`SELECT COUNT(*) as cnt FROM [${targetSchema}].[${targetTable}]`);
+    const targetRowCount = targetCountResult.recordset[0].cnt;
+    
+    if (targetRowCount > 0) {
+      log(`  ⏭️  ${displayName}: Already has ${targetRowCount.toLocaleString()} rows, skipping`, 'info');
+      return targetRowCount;
+    }
+    
+    // Check row count in source
+    const countResult = await pool.request().query(`SELECT COUNT(*) as cnt FROM [${sourceSchema}].[${sourceTable}]`);
+    const rowCount = countResult.recordset[0].cnt;
+    
+    log(`  Copying ${displayName}: Found ${rowCount.toLocaleString()} rows in source`);
+    
+    if (rowCount === 0) {
+      log(`  ⚠️  Warning: [${sourceSchema}].[${sourceTable}] is empty, skipping`, 'warn');
+      return 0;
+    }
+    
+    // Get column schemas
+    const sourceColsResult = await pool.request().query(`
+      SELECT COLUMN_NAME
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = '${sourceSchema}' AND TABLE_NAME = '${sourceTable}'
+      ORDER BY ORDINAL_POSITION
+    `);
+    const targetColsResult = await pool.request().query(`
+      SELECT COLUMN_NAME
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = '${targetSchema}' AND TABLE_NAME = '${targetTable}'
+      ORDER BY ORDINAL_POSITION
+    `);
+    
+    const sourceColumns = sourceColsResult.recordset.map((r: any) => r.COLUMN_NAME);
+    const targetColumns = targetColsResult.recordset.map((r: any) => r.COLUMN_NAME);
+    
+    // Build explicit SELECT for columns that exist in source, NULL for missing
+    const missingCols: string[] = [];
+    const selectList = targetColumns.map(targetCol => {
+      if (sourceColumns.includes(targetCol)) {
+        return `[${targetCol}]`;
+      } else {
+        missingCols.push(targetCol);
+        return `NULL AS [${targetCol}]`;
+      }
+    }).join(',\n      ');
+    
+    if (missingCols.length > 0) {
+      log(`    ⚠️  ${missingCols.length} columns missing in source: ${missingCols.slice(0, 3).join(', ')}${missingCols.length > 3 ? '...' : ''}`, 'warn');
+    }
+    
+    // Truncate and copy
+    await pool.request().query(`TRUNCATE TABLE [${targetSchema}].[${targetTable}]`);
+    const insertResult = await pool.request().query(`
+      INSERT INTO [${targetSchema}].[${targetTable}]
+      SELECT ${selectList}
+      FROM [${sourceSchema}].[${sourceTable}]
+    `);
+    
+    const rowsCopied = insertResult.rowsAffected?.[0] ?? 0;
+    
+    if (rowsCopied === 0 && rowCount > 0) {
+      log(`  ❌ ERROR: 0 rows copied despite ${rowCount.toLocaleString()} rows in source!`, 'error');
+      log(`    This may indicate a schema mismatch or data type incompatibility`, 'error');
+    } else {
+      log(`  ✅ ${displayName}: ${rowsCopied.toLocaleString()} rows copied`, 'success');
+    }
+    
+    return rowsCopied;
+  } catch (err: any) {
+    log(`  ❌ Error copying ${displayName}: ${err.message}`, 'error');
+    throw err;
+  }
+}
+
+async function restoreFromNewData(pool: sql.ConnectionPool): Promise<void> {
+  log('');
+  log('='.repeat(60));
+  log('STEP 2: Restore Raw Data from new_data schema');
+  log('='.repeat(60));
+  
+  // Helper to get row count from result
+  const getRowCount = (result: sql.IResult<any>) => result.rowsAffected?.[0] ?? 0;
+  
+  // Copy all tables using helper function (handles schema mismatches)
+  // These will skip if target already has data (speeds up re-runs)
+  await copyTableWithMapping(pool, 'new_data', 'CertificateInfo', 'etl', 'raw_certificate_info', 'raw_certificate_info');
+  await copyTableWithMapping(pool, 'new_data', 'CommissionsDetail', 'etl', 'raw_commissions_detail', 'raw_commissions_detail');
+  
+  // Individual brokers - explicit mapping (exclude Id and banking columns from new_data)
+  log(`Copying IndividualRoster -> raw_individual_brokers...`);
+  const indCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [new_data].[IndividualRoster]`);
+  const indCount = indCheck.recordset[0].cnt;
+  if (indCount > 0) {
+    const targetIndCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_individual_brokers]`);
+    if (targetIndCheck.recordset[0].cnt === 0) {
+      await pool.request().query(`TRUNCATE TABLE [etl].[raw_individual_brokers]`);
+      const indResult = await pool.request().query(`
+        INSERT INTO [etl].[raw_individual_brokers] (PartyUniqueId, IndividualLastName, IndividualFirstName, HireDate, EmailAddress, CurrentStatus, BrokerType)
+        SELECT PartyUniqueId, IndividualLastName, IndividualFirstName, HireDate, EmailAddress, CurrentStatus, NULL AS BrokerType
+        FROM [new_data].[IndividualRoster]
+        WHERE PartyUniqueId IS NOT NULL AND LTRIM(RTRIM(PartyUniqueId)) <> ''
+      `);
+      log(`  raw_individual_brokers: ${getRowCount(indResult).toLocaleString()} rows copied`, 'success');
+    } else {
+      log(`  ⏭️  raw_individual_brokers: Already has data, skipping`, 'info');
+    }
+  }
+  
+  // Organization brokers - explicit mapping (exclude Id and banking columns)
+  log(`Copying OrganizationRoster -> raw_org_brokers...`);
+  const orgCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [new_data].[OrganizationRoster]`);
+  const orgCount = orgCheck.recordset[0].cnt;
+  if (orgCount > 0) {
+    const targetOrgCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_org_brokers]`);
+    if (targetOrgCheck.recordset[0].cnt === 0) {
+      await pool.request().query(`TRUNCATE TABLE [etl].[raw_org_brokers]`);
+      const orgResult = await pool.request().query(`
+        INSERT INTO [etl].[raw_org_brokers] (PartyUniqueId, OrganizationName, HireDate, EmailAddress, CurrentStatus)
+        SELECT PartyUniqueId, OrganizationName, HireDate, EmailAddress, CurrentStatus
+        FROM [new_data].[OrganizationRoster]
+        WHERE PartyUniqueId IS NOT NULL AND LTRIM(RTRIM(PartyUniqueId)) <> ''
+      `);
+      log(`  raw_org_brokers: ${getRowCount(orgResult).toLocaleString()} rows copied`, 'success');
+    } else {
+      log(`  ⏭️  raw_org_brokers: Already has data, skipping`, 'info');
+    }
+  }
+  
+  await copyTableWithMapping(pool, 'new_data', 'BrokerLicenses', 'etl', 'raw_licenses', 'raw_licenses');
+  await copyTableWithMapping(pool, 'new_data', 'BrokerEO', 'etl', 'raw_eo_insurance', 'raw_eo_insurance');
+  await copyTableWithMapping(pool, 'new_data', 'PerfScheduleModel', 'etl', 'raw_schedule_rates', 'raw_schedule_rates');
+  await copyTableWithMapping(pool, 'new_data', 'PerfGroupModel', 'etl', 'raw_perf_groups', 'raw_perf_groups');
+  
+  log('');
+  log('✅ Raw data tables ready (existing data preserved)');
+  log('   To force re-copy, truncate the etl.raw_* tables first');
+  
+  // Handle premiums separately if it exists in new_data
+  try {
+    await copyTableWithMapping(pool, 'new_data', 'premiums', 'etl', 'raw_premiums', 'raw_premiums');
+  } catch (err: any) {
+    log(`  premiums: Table not found in new_data, skipping`, 'info');
+  }
+  
+  // Now populate input tables from raw tables
+  log('');
+  log('Populating input tables from raw data...');
+  
+  // input_certificate_info - Check if already populated
+  const inputCertCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[input_certificate_info]`);
+  const inputCertCount = inputCertCheck.recordset[0].cnt;
+  
+  if (inputCertCount > 0) {
+    log(`  ⏭️  input_certificate_info: Already has ${inputCertCount.toLocaleString()} rows, skipping`, 'info');
+  } else {
+    // Filter for Active certificates and Active records only
+    // Handle NOT NULL columns: CertificateId, CertSplitSeq, SplitBrokerSeq need default 0
+    await pool.request().query(`TRUNCATE TABLE [etl].[input_certificate_info]`);
+    const certInputResult = await pool.request().query(`
+      INSERT INTO [etl].[input_certificate_info]
+      SELECT 
+        Company, ProductMasterCategory, ProductCategory, GroupId, Product, PlanCode,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertificateId, ''))) IN ('', 'NULL') THEN 0 ELSE CertificateId END AS BIGINT) AS CertificateId,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertEffectiveDate, ''))) IN ('', 'NULL') THEN NULL ELSE CertEffectiveDate END AS DATE) AS CertEffectiveDate,
+        CertIssuedState, CertStatus,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertPremium, ''))) IN ('', 'NULL') THEN NULL ELSE CertPremium END AS DECIMAL(18,4)) AS CertPremium,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertSplitSeq, ''))) IN ('', 'NULL') THEN 0 ELSE CertSplitSeq END AS INT) AS CertSplitSeq,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertSplitPercent, ''))) IN ('', 'NULL') THEN NULL ELSE CertSplitPercent END AS DECIMAL(18,4)) AS CertSplitPercent,
+        CustomerId, RecStatus, HierDriver, HierVersion, CommissionsSchedule, CommissionType,
+        WritingBrokerID, SplitBrokerId,
+        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(SplitBrokerSeq, ''))) IN ('', 'NULL') THEN 0 ELSE SplitBrokerSeq END AS INT) AS SplitBrokerSeq,
+        ReassignedType, PaidBrokerId
+      FROM [etl].[raw_certificate_info]
+      WHERE LTRIM(RTRIM(CertStatus)) = 'A'  -- Active certificates only (exclude Lapsed 'L' and Pending 'P')
+        AND LTRIM(RTRIM(RecStatus)) = 'A'   -- Active split configurations only (exclude historical/deleted)
+    `);
+    log(`  input_certificate_info: ${getRowCount(certInputResult).toLocaleString()} rows (Active only)`, 'success');
+  }
+  
+  // input_commission_details - Check if already populated
+  const inputCommCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[input_commission_details]`);
+  const inputCommCount = inputCommCheck.recordset[0].cnt;
+  
+  if (inputCommCount > 0) {
+    log(`  ⏭️  input_commission_details: Already has ${inputCommCount.toLocaleString()} rows, skipping`, 'info');
+  } else {
+    const rawCommCount = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_commissions_detail]`);
+    const rawCommRows = rawCommCount.recordset[0].cnt;
+    log(`  raw_commissions_detail has ${rawCommRows.toLocaleString()} rows`);
+    
+    if (rawCommRows === 0) {
+      log(`  Skipping input_commission_details population (no raw data)`, 'warn');
+    } else {
+      // Handle literal 'NULL' strings by converting them to actual NULL before casting
+      // Skip simple insert, go straight to explicit column mapping
+      await pool.request().query(`TRUNCATE TABLE [etl].[input_commission_details]`);
+      
+      log(`  Populating with explicit column mapping and type conversion...`);
+      const commInputResult = await pool.request().query(`
+        INSERT INTO [etl].[input_commission_details] (
+          Company, CertificateId, CertEffectiveDate, SplitBrokerId, PmtPostedDate,
+          PaidToDate, PaidAmount, TransActionType, InvoiceNumber, CertInForceMonths,
+          CommissionRate, RealCommissionRate, PaidBrokerId, TransactionId
+        )
+        SELECT 
+          Company, 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertificateId, ''))) IN ('', 'NULL') THEN NULL ELSE CertificateId END AS BIGINT), 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertEffectiveDate, ''))) IN ('', 'NULL') THEN NULL ELSE CertEffectiveDate END AS DATE), 
+          CASE WHEN LTRIM(RTRIM(ISNULL(SplitBrokerId, ''))) IN ('', 'NULL') THEN NULL ELSE SplitBrokerId END, 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PmtPostedDate, ''))) IN ('', 'NULL') THEN NULL ELSE PmtPostedDate END AS DATE),
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PaidToDate, ''))) IN ('', 'NULL') THEN NULL ELSE PaidToDate END AS DATE), 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PaidAmount, ''))) IN ('', 'NULL') THEN NULL ELSE PaidAmount END AS DECIMAL(18,2)), 
+          CASE WHEN LTRIM(RTRIM(ISNULL(TransActionType, ''))) IN ('', 'NULL') THEN NULL ELSE TransActionType END, 
+          CASE WHEN LTRIM(RTRIM(ISNULL(InvoiceNumber, ''))) IN ('', 'NULL') THEN NULL ELSE InvoiceNumber END, 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertInForceMonths, ''))) IN ('', 'NULL') THEN NULL ELSE CertInForceMonths END AS INT),
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CommissionRate, ''))) IN ('', 'NULL') THEN NULL ELSE CommissionRate END AS DECIMAL(18,4)), 
+          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(RealCommissionRate, ''))) IN ('', 'NULL') THEN NULL ELSE RealCommissionRate END AS DECIMAL(18,4)), 
+          CASE WHEN LTRIM(RTRIM(ISNULL(PaidBrokerId, ''))) IN ('', 'NULL') THEN NULL ELSE PaidBrokerId END, 
+          CASE WHEN LTRIM(RTRIM(ISNULL(TransactionId, ''))) IN ('', 'NULL') THEN NULL ELSE TransactionId END
+        FROM [etl].[raw_commissions_detail]
+      `);
+      log(`  input_commission_details: ${getRowCount(commInputResult).toLocaleString()} rows`, 'success');
+    }  // Close rawCommRows check
+  }  // Close inputCommCount check
+  
+  // Note: Other input tables (input_individual_brokers, input_org_brokers, etc.)
+  // are no longer created by 02-input-tables.sql. The transforms use raw_* tables directly.
+  log('  (Transforms will use raw_* tables for brokers, licenses, schedules, etc.)');
+  log('');
+  log('✅ Input tables ready (existing data preserved)');
+}
+
 async function ingestCsvData(pool: sql.ConnectionPool): Promise<void> {
   log('');
   log('='.repeat(60));
@@ -607,6 +861,7 @@ async function main(): Promise<void> {
   const skipSchema = args.includes('--skip-schema');
   const skipIngest = args.includes('--skip-ingest');
   const restoreBackup = args.includes('--restore-backup');
+  const fromNewData = args.includes('--from-new-data');
   const skipTransform = args.includes('--skip-transform');
   const skipCalc = args.includes('--skip-calc');
   const skipExport = args.includes('--skip-export');
@@ -618,7 +873,9 @@ async function main(): Promise<void> {
   log('='.repeat(60));
   log(`Server: ${config.server}`);
   log(`Database: ${config.database}`);
-  if (restoreBackup) {
+  if (fromNewData) {
+    log('Data Source: new_data schema');
+  } else if (restoreBackup) {
     log('Data Source: raw_data schema backup');
   } else {
     log(`Data Source: CSV files from ${CSV_DATA_PATH}`);
@@ -640,8 +897,10 @@ async function main(): Promise<void> {
       log('Skipping schema setup (--skip-schema)');
     }
     
-    // Data ingestion: either from backup or CSV
-    if (restoreBackup) {
+    // Data ingestion: either from new_data, backup, or CSV
+    if (fromNewData) {
+      await restoreFromNewData(pool);
+    } else if (restoreBackup) {
       await restoreFromBackup(pool);
     } else if (!skipIngest) {
       await ingestCsvData(pool);

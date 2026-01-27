@@ -95,7 +95,7 @@ SELECT
     END AS [Status],
     WritingBrokerId AS BrokerId,
     CONCAT('G', GroupId) AS GroupId,  -- Canonical G-prefixed GroupId
-    Company AS CarrierName,
+    COALESCE(NULLIF(LTRIM(RTRIM(Company)), ''), 'APL') AS CarrierName,  -- Default to 'APL' if NULL
     Product AS ProductCode,
     CONCAT(COALESCE(ProductCategory, ''), ' - ', COALESCE(Product, '')) AS ProductName,
     PlanCode,
@@ -105,7 +105,7 @@ SELECT
     COALESCE(TRY_CAST(CertPremium AS DECIMAL(18,2)), 0.00) AS Premium,
     COALESCE(TRY_CAST(CertEffectiveDate AS DATE), '2020-01-01') AS EffectiveDate,
     CertIssuedState AS [State],
-    Company AS CompanyCode,
+    COALESCE(NULLIF(LTRIM(RTRIM(Company)), ''), 'APL') AS CompanyCode,  -- Default to 'APL' if NULL
     NULLIF(LTRIM(RTRIM(CustomerId)), '') AS CustomerId,
     NULL AS ProposalId,
     GETUTCDATE() AS CreationTime,

@@ -94,10 +94,16 @@ SELECT
     NULL AS SourceTraceabilityReportId,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[non_conformant_certs] ncc;
+FROM [etl].[non_conformant_certs] ncc
+WHERE JSON_VALUE(ncc.ConfigJson, '$[0].brokerId') IS NOT NULL
+  AND LTRIM(RTRIM(JSON_VALUE(ncc.ConfigJson, '$[0].brokerId'))) <> ''
+  AND TRY_CAST(REPLACE(JSON_VALUE(ncc.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT) IS NOT NULL;
 
 DECLARE @pha_created INT = @@ROWCOUNT;
+DECLARE @pha_skipped INT = (SELECT COUNT(*) FROM [etl].[non_conformant_certs]) - @pha_created;
 PRINT 'PolicyHierarchyAssignment records created: ' + CAST(@pha_created AS VARCHAR);
+IF @pha_skipped > 0
+    PRINT '  ⚠️  Skipped ' + CAST(@pha_skipped AS VARCHAR) + ' certificates with NULL/invalid brokerId';
 
 -- =============================================================================
 -- Step 4: Create PolicyHierarchyParticipants from the config JSON
@@ -146,7 +152,9 @@ WITH (
     schedule NVARCHAR(50) '$.schedule'
 ) p
 LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(p.brokerId, 'P', '') AS BIGINT)
-WHERE p.brokerId IS NOT NULL;
+WHERE p.brokerId IS NOT NULL 
+  AND LTRIM(RTRIM(p.brokerId)) <> ''
+  AND TRY_CAST(REPLACE(p.brokerId, 'P', '') AS BIGINT) IS NOT NULL;
 
 DECLARE @php_created INT = @@ROWCOUNT;
 PRINT 'PolicyHierarchyParticipants created: ' + CAST(@php_created AS VARCHAR);
