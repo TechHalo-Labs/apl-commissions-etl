@@ -34,7 +34,7 @@ SELECT
     PlanCodes,
     EffectiveDateFrom,
     EffectiveDateTo,
-    BrokerId,
+    BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
     BrokerName,
     SitusState,
     Notes,
@@ -65,7 +65,7 @@ SELECT
     MIN(EffectiveDateFrom) AS EffectiveDateFrom,
     MAX(EffectiveDateTo) AS EffectiveDateTo,
     COUNT(*) AS OriginalProposalCount,
-    MIN(BrokerId) AS BrokerId,
+    MIN(BrokerUniquePartyId) AS BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
     MIN(BrokerName) AS BrokerName,
     MIN(SitusState) AS SitusState
 INTO #consolidation_groups
@@ -149,7 +149,7 @@ GROUP BY GroupId;
 INSERT INTO [etl].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
-    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, PlanCodeConstraints,
@@ -164,7 +164,7 @@ SELECT
     0 AS SpecialCase,
     0 AS SpecialCaseCode,
     cg.SitusState,
-    cg.BrokerId,
+    cg.BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
     cg.BrokerName,
     cg.GroupId,
     g.Name AS GroupName,
@@ -376,14 +376,24 @@ PRINT 'Step 8: Creating PremiumSplitParticipants for consolidated proposals...';
 DECLARE @max_psp_id INT = (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) FROM [etl].[stg_premium_split_participants]);
 
 INSERT INTO [etl].[stg_premium_split_participants] (
-    Id, VersionId, BrokerId, BrokerName, SplitPercent, IsWritingAgent,
+    Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
 )
 SELECT
     @max_psp_id + ROW_NUMBER() OVER (ORDER BY cc.ProposalId, j.splitSeq) AS Id,
     CONCAT('PSV-', cc.ProposalId) AS VersionId,
-    TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) AS BrokerId,
+    -- BrokerId (required, deprecated but still needed)
+    COALESCE(b.Id, TRY_CAST(REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '') AS BIGINT), 0) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     TRY_CAST(j.[percent] AS DECIMAL(5,2)) AS SplitPercent,
     1 AS IsWritingAgent,
@@ -403,7 +413,7 @@ CROSS APPLY OPENJSON(cc.ConfigJson)
         brokerId NVARCHAR(50) '$.brokerId',
         [percent] DECIMAL(5,2) '$.percent'
     ) j
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT)
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1
   AND j.brokerId IS NOT NULL
   AND TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) IS NOT NULL

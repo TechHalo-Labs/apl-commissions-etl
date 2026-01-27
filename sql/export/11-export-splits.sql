@@ -62,7 +62,14 @@ WHERE spsv.Id NOT IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
             'O',''),'P',''),'Q',''),'R',''),'S',''),'T',''),'U',''),
             'V',''),'W',''),'X',''),'Y',''),'Z','')
         AS BIGINT
-      ) IS NOT NULL;
+      ) IS NOT NULL
+  -- EXCLUDE broken split versions: versions that have participants without HierarchyId
+  AND NOT EXISTS (
+    SELECT 1 
+    FROM [etl].[stg_premium_split_participants] spsp
+    WHERE spsp.VersionId = spsv.Id
+      AND spsp.HierarchyId IS NULL
+  );
 
 DECLARE @psvCount INT;
 SELECT @psvCount = @@ROWCOUNT;
@@ -76,14 +83,14 @@ PRINT 'Exporting missing PremiumSplitParticipants...';
 -- These columns exist in staging but not in production
 
 INSERT INTO [dbo].[PremiumSplitParticipants] (
-    Id, VersionId, BrokerId, BrokerName, BrokerNPN, SplitPercent,
+    Id, VersionId, BrokerUniquePartyId, BrokerName, BrokerNPN, SplitPercent,
     IsWritingAgent, HierarchyId, HierarchyName, TemplateId, TemplateName,
     EffectiveFrom, EffectiveTo, Notes
 )
 SELECT 
     spsp.Id,
     spsp.VersionId,
-    spsp.BrokerId,
+    spsp.BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
     spsp.BrokerName,
     spsp.BrokerNPN,
     spsp.SplitPercent,
@@ -97,7 +104,9 @@ SELECT
     spsp.Notes
 FROM [etl].[stg_premium_split_participants] spsp
 WHERE spsp.Id NOT IN (SELECT Id FROM [dbo].[PremiumSplitParticipants])
-  AND spsp.VersionId IN (SELECT Id FROM [dbo].[PremiumSplitVersions]);
+  AND spsp.VersionId IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
+  AND spsp.BrokerUniquePartyId IS NOT NULL  -- Only export if broker reference is valid
+  AND spsp.HierarchyId IS NOT NULL;  -- EXCLUDE broken participants: only export participants with HierarchyId
 
 DECLARE @pspCount INT;
 SELECT @pspCount = @@ROWCOUNT;

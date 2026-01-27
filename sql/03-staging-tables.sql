@@ -359,7 +359,8 @@ CREATE TABLE [etl].[stg_proposals] (
     SitusState NVARCHAR(10),
     ProductId NVARCHAR(100),
     ProductName NVARCHAR(500),
-    BrokerId BIGINT,
+    BrokerId BIGINT,  -- DEPRECATED: Will be removed after migration
+    BrokerUniquePartyId NVARCHAR(50),  -- NEW: Primary broker reference (ExternalPartyId)
     BrokerName NVARCHAR(500),
     GroupId NVARCHAR(100),
     GroupName NVARCHAR(500),
@@ -724,7 +725,8 @@ DROP TABLE IF EXISTS [etl].[stg_premium_split_participants];
 CREATE TABLE [etl].[stg_premium_split_participants] (
     Id NVARCHAR(100) NOT NULL,
     VersionId NVARCHAR(100) NOT NULL,
-    BrokerId BIGINT NOT NULL,
+    BrokerId BIGINT NOT NULL,  -- DEPRECATED: Will be removed after migration
+    BrokerUniquePartyId NVARCHAR(50),  -- NEW: Primary broker reference (ExternalPartyId)
     BrokerName NVARCHAR(500),
     BrokerNPN NVARCHAR(50),
     SplitPercent DECIMAL(18,4) NOT NULL,

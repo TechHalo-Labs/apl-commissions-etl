@@ -88,7 +88,7 @@ GROUP BY GroupId;
 INSERT INTO [etl].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
-    BrokerId, BrokerName, GroupId, GroupName, Notes,
+    BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, PlanCodeConstraints,
@@ -103,7 +103,15 @@ SELECT
     0 AS SpecialCase,
     0 AS SpecialCaseCode,
     g.[State] AS SitusState,
-    TRY_CAST(REPLACE(JSON_VALUE(pdk.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(pdk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(JSON_VALUE(pdk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     CONCAT('G', pdk.GroupId) AS GroupId,
     g.Name AS GroupName,
@@ -123,7 +131,7 @@ SELECT
 FROM [etl].[plan_differentiated_keys] pdk
 LEFT JOIN #max_proposal_num mpn ON mpn.GroupId = CONCAT('G', pdk.GroupId)
 LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', pdk.GroupId)
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(JSON_VALUE(pdk.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT);
+LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(pdk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '');
 
 DECLARE @proposals_created INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
@@ -210,7 +218,7 @@ PRINT 'Step 5: Creating PremiumSplitParticipants for plan-differentiated proposa
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
 INSERT INTO [etl].[stg_premium_split_participants] (
-    Id, VersionId, BrokerId, BrokerName, SplitPercent, IsWritingAgent,
+    Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
 )
@@ -218,14 +226,24 @@ SELECT
     (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) + 1 FROM [etl].[stg_premium_split_participants]) + 
         ROW_NUMBER() OVER (ORDER BY p.Id, j.splitSeq) - 1 AS Id,
     CONCAT('PSV-', p.Id) AS VersionId,
-    TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) AS BrokerId,
+    -- BrokerId (required, deprecated but still needed)
+    COALESCE(b.Id, TRY_CAST(REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '') AS BIGINT), 0) AS BrokerId,
+    -- NEW: Use BrokerUniquePartyId (only if broker exists)
+    CASE 
+        WHEN EXISTS (
+            SELECT 1 FROM [etl].[stg_brokers] b2 
+            WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        )
+        THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+        ELSE NULL
+    END AS BrokerUniquePartyId,
     b.Name AS BrokerName,
     TRY_CAST(j.[percent] AS DECIMAL(5,2)) AS SplitPercent,
     1 AS IsWritingAgent,
     NULL AS HierarchyId,  -- Will be linked in 07-hierarchies.sql
     NULL AS HierarchyName,
     j.splitSeq AS Sequence,
-    TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) AS WritingBrokerId,
+    TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) AS WritingBrokerId,  -- Keep for hierarchy lookup
     p.GroupId AS GroupId,  -- Store for later hierarchy linking
     p.EffectiveDateFrom AS EffectiveFrom,
     GETUTCDATE() AS CreationTime,
@@ -246,7 +264,7 @@ CROSS APPLY OPENJSON(pdk.ConfigJson)
         schedule NVARCHAR(100) '$.schedule'
     ) j
 LEFT JOIN [etl].[stg_brokers] b 
-    ON b.Id = TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT)
+    ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1;
 
 DECLARE @pd_split_participants INT = @@ROWCOUNT;

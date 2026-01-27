@@ -1,4 +1,7 @@
 -- =====================================================
+SET NOCOUNT ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
 -- Export Proposals from etl staging to dbo
 -- Only exports proposals that don't already exist
 -- =====================================================
@@ -7,7 +10,7 @@ PRINT 'Exporting missing Proposals to dbo.Proposals...';
 
 INSERT INTO [dbo].[Proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
-    SpecialCase, SpecialCaseCode, SitusState, BrokerId, BrokerName,
+    SpecialCase, SpecialCaseCode, SitusState, BrokerUniquePartyId, BrokerName,
     GroupId, GroupName, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, EnableEffectiveDateFiltering,
     ConstrainingEffectiveDateFrom, ConstrainingEffectiveDateTo,
@@ -29,8 +32,13 @@ SELECT
     COALESCE(sp.SpecialCase, 0) AS SpecialCase,
     COALESCE(sp.SpecialCaseCode, 0) AS SpecialCaseCode,
     sp.SitusState,
-    sp.BrokerId,
-    sp.BrokerName,
+    sp.BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
+    -- Populate BrokerName from Brokers table using ExternalPartyId
+    COALESCE(
+        NULLIF(LTRIM(RTRIM(sp.BrokerName)), ''),
+        b.Name,
+        CONCAT('Broker ', sp.BrokerUniquePartyId)
+    ) AS BrokerName,
     sp.GroupId,
     sp.GroupName,
     sp.EffectiveDateFrom,
@@ -42,7 +50,18 @@ SELECT
     sp.CreationTime,
     sp.IsDeleted
 FROM [etl].[stg_proposals] sp
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Proposals]);
+LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
+WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Proposals])
+  AND sp.GroupId IN (SELECT Id FROM [etl].[stg_included_groups])  -- Only included groups
+  AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
+  -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
+  AND NOT EXISTS (
+    SELECT 1 
+    FROM [etl].[stg_premium_split_versions] spsv
+    INNER JOIN [etl].[stg_premium_split_participants] spsp ON spsp.VersionId = spsv.Id
+    WHERE spsv.ProposalId = sp.Id
+      AND spsp.HierarchyId IS NULL
+  );
 
 DECLARE @proposalCount INT;
 SELECT @proposalCount = @@ROWCOUNT;
@@ -76,8 +95,36 @@ DECLARE @updated_count INT = @@ROWCOUNT;
 PRINT 'Updated EffectiveDateTo for ' + CAST(@updated_count AS VARCHAR) + ' existing proposals.';
 GO
 
+-- =====================================================
+-- Update BrokerName for existing proposals (populate from Brokers table if NULL)
+-- =====================================================
+PRINT 'Updating BrokerName for existing proposals with NULL/empty names...';
+
+UPDATE p
+SET 
+    p.BrokerName = COALESCE(
+        NULLIF(LTRIM(RTRIM(b.Name)), ''),
+        CONCAT('Broker ', p.BrokerUniquePartyId)
+    ),
+    p.LastModificationTime = GETUTCDATE()
+FROM [dbo].[Proposals] p
+LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = p.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
+WHERE p.BrokerUniquePartyId IS NOT NULL
+    AND (
+        p.BrokerName IS NULL 
+        OR LTRIM(RTRIM(p.BrokerName)) = ''
+        OR p.BrokerName = CONCAT('Broker ', p.BrokerUniquePartyId)  -- Update placeholder names too
+    )
+    AND b.Name IS NOT NULL
+    AND LTRIM(RTRIM(b.Name)) <> '';
+
+DECLARE @broker_name_updated INT = @@ROWCOUNT;
+PRINT 'Updated BrokerName for ' + CAST(@broker_name_updated AS VARCHAR) + ' existing proposals.';
+GO
+
 PRINT 'Exporting missing ProposalProducts to dbo.ProposalProducts...';
 
+-- Method 1: From stg_proposal_products (unconsolidated proposals that match production)
 INSERT INTO [dbo].[ProposalProducts] (
     ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
     ResolvedScheduleName, CreatedAt
@@ -98,9 +145,42 @@ WHERE spp.ProposalId IN (SELECT Id FROM [dbo].[Proposals])
       AND pp.ProductCode = spp.ProductCode
 );
 
-DECLARE @productCount INT;
-SELECT @productCount = @@ROWCOUNT;
-PRINT 'ProposalProducts exported: ' + CAST(@productCount AS VARCHAR);
+DECLARE @productCount1 INT;
+SELECT @productCount1 = @@ROWCOUNT;
+PRINT 'ProposalProducts exported (from stg_proposal_products): ' + CAST(@productCount1 AS VARCHAR);
+
+-- Method 2: From stg_proposals.ProductCodes JSON (consolidated proposals)
+-- This handles consolidated proposals (-CS1, -CS2, etc.) that have ProductCodes stored as JSON
+INSERT INTO [dbo].[ProposalProducts] (
+    ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
+    ResolvedScheduleName, CreatedAt
+)
+SELECT DISTINCT
+    sp.Id AS ProposalId,
+    TRIM(pc.[value]) AS ProductCode,
+    pr.ProductName AS ProductName,
+    NULL AS CommissionStructure,
+    NULL AS ResolvedScheduleId,
+    NULL AS ResolvedScheduleName,
+    GETUTCDATE() AS CreatedAt
+FROM [etl].[stg_proposals] sp
+CROSS APPLY OPENJSON(sp.ProductCodes) AS pc
+LEFT JOIN [dbo].[Products] pr ON pr.ProductCode = TRIM(pc.[value])
+WHERE sp.Id IN (SELECT Id FROM [dbo].[Proposals])  -- Proposal exists in production
+  AND sp.ProductCodes IS NOT NULL
+  AND sp.ProductCodes != '[]'
+  AND sp.ProductCodes != ''
+  AND sp.ProductCodes != '*'
+  AND ISJSON(sp.ProductCodes) = 1  -- Skip invalid JSON
+  AND NOT EXISTS (
+    SELECT 1 FROM [dbo].[ProposalProducts] pp
+    WHERE pp.ProposalId = sp.Id
+      AND pp.ProductCode = TRIM(pc.[value])
+);
+
+DECLARE @productCount2 INT;
+SELECT @productCount2 = @@ROWCOUNT;
+PRINT 'ProposalProducts exported (from JSON ProductCodes): ' + CAST(@productCount2 AS VARCHAR);
 
 DECLARE @totalProducts INT;
 SELECT @totalProducts = COUNT(*) FROM [dbo].[ProposalProducts];
