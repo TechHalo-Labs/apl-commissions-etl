@@ -13,8 +13,24 @@ PRINT '============================================================';
 PRINT '';
 
 -- =============================================================================
+-- Feature Flag: USE_NONCONFORMANT_FLAG
+-- =============================================================================
+-- Controls whether to force policies in non-conformant groups into PHA
+-- Default (0): Only include policies with ProposalId = NULL (self-regulating)
+-- Enabled (1): Also include policies in groups flagged as IsNonConformant = 1
+-- Usage: Pass -v USE_NONCONFORMANT_FLAG=1 to sqlcmd to enable
+-- =============================================================================
+DECLARE @UseNonConformantFlag BIT = 
+    CASE WHEN '$(USE_NONCONFORMANT_FLAG)' = '1' THEN 1 ELSE 0 END;
+
+PRINT 'Feature Flag - USE_NONCONFORMANT_FLAG: ' + 
+    CASE WHEN @UseNonConformantFlag = 1 THEN 'ENABLED (force non-conformant groups to PHA)' 
+         ELSE 'DISABLED (default - ProposalId-based only)' END;
+PRINT '';
+
+-- =============================================================================
 -- Step 1: Identify non-conformant policies
--- DTC (GroupId = G00000) + policies in non-conformant groups
+-- DTC (GroupId = G00000) + policies in non-conformant groups (if flag enabled)
 -- =============================================================================
 PRINT 'Step 1: Identifying non-conformant policies...';
 
@@ -45,20 +61,20 @@ SELECT
 INTO #tmp_nonconformant_policies
 FROM [etl].[stg_policies] p
 LEFT JOIN [etl].[stg_groups] g ON g.Id = p.GroupId
-WHERE p.GroupId = 'G00000'  -- DTC policies
-   OR g.IsNonConformant = 1  -- Non-conformant groups (flagged by 06b)
+WHERE p.GroupId = 'G00000'  -- DTC policies (always)
+   OR p.ProposalId IS NULL  -- Policies without proposal (always - self-regulating)
+   OR (@UseNonConformantFlag = 1 AND g.IsNonConformant = 1)  -- Non-conformant groups (optional via feature flag)
    OR EXISTS (
        SELECT 1 FROM [etl].[stg_premium_split_versions] psv
        WHERE psv.GroupId = p.GroupId AND psv.TotalSplitPercent <> 100
-   )  -- Groups with TotalSplitPercent != 100
+   )  -- Groups with TotalSplitPercent != 100 (always)
    OR EXISTS (
        SELECT 1 FROM [etl].[input_certificate_info] ci
        WHERE TRY_CAST(ci.CertificateId AS BIGINT) = TRY_CAST(p.Id AS BIGINT)
          AND ci.RecStatus = 'A'
        GROUP BY ci.CertificateId
        HAVING SUM(ci.CertSplitPercent) <> 100
-   )  -- Certificates with TotalSplitPercent != 100
-   OR p.ProposalId IS NULL;  -- Any policy without a proposal
+   );  -- Certificates with TotalSplitPercent != 100 (always)
 
 DECLARE @nonconf_count INT = @@ROWCOUNT;
 PRINT 'Non-conformant policies identified: ' + CAST(@nonconf_count AS VARCHAR);

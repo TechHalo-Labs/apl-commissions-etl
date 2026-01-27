@@ -62,4 +62,24 @@ SELECT @totalGroups = COUNT(*) FROM [dbo].[EmployerGroups];
 PRINT 'Total groups in dbo: ' + CAST(@totalGroups AS VARCHAR);
 GO
 
+-- =====================================================
+-- Post-Export: Flag Non-Conformant Groups
+-- Sets IsNonConformant = 1 for groups identified in etl.non_conformant_keys
+-- =====================================================
+PRINT 'Flagging non-conformant groups from ETL analysis...';
+
+UPDATE g
+SET g.IsNonConformant = 1,
+    g.LastModificationTime = GETUTCDATE()
+FROM [dbo].[EmployerGroups] g
+WHERE EXISTS (
+    SELECT 1 FROM [etl].[non_conformant_keys] nck
+    WHERE CONCAT('G', nck.GroupId) = g.Id
+)
+AND (g.IsNonConformant IS NULL OR g.IsNonConformant = 0);  -- Only update if not already flagged
+
+DECLARE @flaggedCount INT = @@ROWCOUNT;
+PRINT 'Non-conformant groups flagged: ' + CAST(@flaggedCount AS VARCHAR);
+GO
+
 PRINT '=== Group Export Complete ===';

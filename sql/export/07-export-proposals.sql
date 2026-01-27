@@ -52,7 +52,7 @@ SELECT
 FROM [etl].[stg_proposals] sp
 LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
 WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Proposals])
-  AND sp.GroupId IN (SELECT Id FROM [etl].[stg_included_groups])  -- Only included groups
+  -- Removed stg_included_groups filter - table may not exist and prevents export of fixed proposals
   AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
   -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
   AND NOT EXISTS (

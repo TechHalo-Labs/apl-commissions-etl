@@ -25,6 +25,10 @@ WITH proposal_groups AS (
     SELECT DISTINCT GroupId FROM [etl].[plan_differentiated_keys]
     UNION
     SELECT DISTINCT GroupId FROM [etl].[year_differentiated_keys]
+    UNION
+    -- Include all groups that have proposals in staging (e.g., consolidated proposals, non-conformant)
+    SELECT DISTINCT GroupId FROM [etl].[stg_proposals]
+    WHERE GroupId IS NOT NULL AND GroupId <> ''
 )
 INSERT INTO [etl].[work_split_participants] (GroupId, CertSplitSeq, WritingBrokerId, [Level], BrokerId, ScheduleCode, SplitPercent, MinEffDate)
 SELECT 
@@ -37,7 +41,7 @@ SELECT
     TRY_CAST(ci.CertSplitPercent AS DECIMAL(18,4)) AS SplitPercent,
     MIN(ci.CertEffectiveDate) AS MinEffDate
 FROM [etl].[input_certificate_info] ci
-INNER JOIN proposal_groups pg ON pg.GroupId = LTRIM(RTRIM(ci.GroupId))
+INNER JOIN proposal_groups pg ON pg.GroupId = CONCAT('G', LTRIM(RTRIM(ci.GroupId)))
 WHERE ci.WritingBrokerID IS NOT NULL AND ci.WritingBrokerID <> ''
   AND ci.SplitBrokerId IS NOT NULL AND ci.SplitBrokerId <> ''
   AND ci.RecStatus = 'A'  -- Only active split configurations (filter out historical/deleted)
