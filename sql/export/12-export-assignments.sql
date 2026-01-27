@@ -6,7 +6,7 @@
 
 PRINT 'Exporting missing CommissionAssignmentVersions...';
 
-INSERT INTO [dbo].[CommissionAssignmentVersions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[CommissionAssignmentVersions] (
     Id, BrokerId, BrokerName, ProposalId, GroupId, HierarchyId, HierarchyVersionId,
     HierarchyParticipantId, VersionNumber, EffectiveFrom, EffectiveTo,
     [Status], [Type], ChangeDescription, TotalAssignedPercent,
@@ -30,8 +30,8 @@ SELECT
     COALESCE(scav.TotalAssignedPercent, 0) AS TotalAssignedPercent,
     COALESCE(scav.CreationTime, GETUTCDATE()) AS CreationTime,
     0 AS IsDeleted  -- Default to not deleted
-FROM [etl].[stg_commission_assignment_versions] scav
-WHERE scav.Id NOT IN (SELECT Id FROM [dbo].[CommissionAssignmentVersions]);
+FROM [$(ETL_SCHEMA)].[stg_commission_assignment_versions] scav
+WHERE scav.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[CommissionAssignmentVersions]);
 
 DECLARE @cavCount INT;
 SELECT @cavCount = @@ROWCOUNT;
@@ -43,7 +43,7 @@ PRINT 'Exporting missing CommissionAssignmentRecipients...';
 -- Production schema: Id, VersionId, RecipientBrokerId, RecipientName, RecipientNPN, Percentage, RecipientHierarchyId, Notes
 -- Staging schema: Id, AssignmentVersionId, RecipientBrokerId, RecipientBrokerName, Percent, RecipientType, CreationTime, IsDeleted
 
-INSERT INTO [dbo].[CommissionAssignmentRecipients] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[CommissionAssignmentRecipients] (
     Id, VersionId, RecipientBrokerId, RecipientName, 
     RecipientNPN, Percentage, RecipientHierarchyId, Notes
 )
@@ -56,10 +56,10 @@ SELECT
     scar.[Percent] AS Percentage,
     NULL AS RecipientHierarchyId,
     NULL AS Notes
-FROM [etl].[stg_commission_assignment_recipients] scar
-WHERE scar.Id NOT IN (SELECT Id FROM [dbo].[CommissionAssignmentRecipients])
+FROM [$(ETL_SCHEMA)].[stg_commission_assignment_recipients] scar
+WHERE scar.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[CommissionAssignmentRecipients])
   -- Ensure the parent assignment version exists
-  AND scar.AssignmentVersionId IN (SELECT Id FROM [dbo].[CommissionAssignmentVersions]);
+  AND scar.AssignmentVersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[CommissionAssignmentVersions]);
 
 DECLARE @carCount INT = @@ROWCOUNT;
 PRINT 'CommissionAssignmentRecipients exported: ' + CAST(@carCount AS VARCHAR);

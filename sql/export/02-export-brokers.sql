@@ -5,9 +5,9 @@
 
 PRINT 'Exporting missing brokers to dbo.Brokers...';
 
-SET IDENTITY_INSERT [dbo].[Brokers] ON;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[Brokers] ON;
 
-INSERT INTO [dbo].[Brokers] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Brokers] (
     Id, ExternalPartyId, Name, FirstName, LastName, MiddleName, Suffix,
     [Type], [Status], Email, Phone, Npn, TaxId, Ssn,
     DateOfBirth, AppointmentDate, HireDate, DateContracted,
@@ -57,13 +57,13 @@ SELECT
     NULL AS GroupId,
     sb.CreationTime,
     sb.IsDeleted
-FROM [etl].[stg_brokers] sb
-WHERE sb.Id NOT IN (SELECT Id FROM [dbo].[Brokers]);
+FROM [$(ETL_SCHEMA)].[stg_brokers] sb
+WHERE sb.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers]);
 
-SET IDENTITY_INSERT [dbo].[Brokers] OFF;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[Brokers] OFF;
 
 DECLARE @brokerCount INT;
-SELECT @brokerCount = COUNT(*) FROM [dbo].[Brokers];
+SELECT @brokerCount = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Brokers];
 PRINT 'Total brokers in dbo: ' + CAST(@brokerCount AS VARCHAR);
 GO
 

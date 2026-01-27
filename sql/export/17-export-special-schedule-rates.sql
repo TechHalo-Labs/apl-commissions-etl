@@ -31,11 +31,11 @@ END
 -- Step 2: Check current state
 -- =============================================================================
 DECLARE @before_count INT;
-SELECT @before_count = COUNT(*) FROM [dbo].[SpecialScheduleRates];
+SELECT @before_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates];
 PRINT 'SpecialScheduleRates before export: ' + CAST(@before_count AS VARCHAR);
 
 DECLARE @staging_count INT;
-SELECT @staging_count = COUNT(*) FROM [etl].[stg_special_schedule_rates];
+SELECT @staging_count = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_special_schedule_rates];
 PRINT 'SpecialScheduleRates in staging: ' + CAST(@staging_count AS VARCHAR);
 
 IF @staging_count = 0
@@ -54,9 +54,9 @@ END
 PRINT '';
 PRINT 'Step 3: Exporting special schedule rates...';
 
-SET IDENTITY_INSERT [dbo].[SpecialScheduleRates] ON;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates] ON;
 
-INSERT INTO [dbo].[SpecialScheduleRates] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates] (
     Id,
     ScheduleRateId,
     [Year],
@@ -71,18 +71,18 @@ SELECT
     ssr.Rate,
     COALESCE(ssr.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(ssr.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_special_schedule_rates] ssr
+FROM [$(ETL_SCHEMA)].[stg_special_schedule_rates] ssr
 WHERE 
     -- ScheduleRate must exist in production
-    EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId)
+    EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId)
     -- Don't create duplicates
     AND NOT EXISTS (
-        SELECT 1 FROM [dbo].[SpecialScheduleRates] existing 
+        SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates] existing 
         WHERE existing.ScheduleRateId = ssr.ScheduleRateId
           AND existing.[Year] = ssr.[Year]
     );
 
-SET IDENTITY_INSERT [dbo].[SpecialScheduleRates] OFF;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates] OFF;
 
 DECLARE @exported INT = @@ROWCOUNT;
 PRINT 'New SpecialScheduleRates exported: ' + CAST(@exported AS VARCHAR);
@@ -96,8 +96,8 @@ PRINT 'Step 4: Reporting skipped records...';
 -- Report staging records that couldn't be exported due to missing schedule rate
 DECLARE @no_rate_count INT;
 SELECT @no_rate_count = COUNT(*)
-FROM [etl].[stg_special_schedule_rates] ssr
-WHERE NOT EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId);
+FROM [$(ETL_SCHEMA)].[stg_special_schedule_rates] ssr
+WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId);
 
 IF @no_rate_count > 0
 BEGIN
@@ -110,8 +110,8 @@ BEGIN
         ssr.[Year],
         ssr.Rate,
         'ScheduleRateId not in dbo.ScheduleRates' AS Reason
-    FROM [etl].[stg_special_schedule_rates] ssr
-    WHERE NOT EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId)
+    FROM [$(ETL_SCHEMA)].[stg_special_schedule_rates] ssr
+    WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = ssr.ScheduleRateId)
     ORDER BY ssr.ScheduleRateId, ssr.[Year];
 END
 
@@ -124,13 +124,13 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 DECLARE @after_count INT;
-SELECT @after_count = COUNT(*) FROM [dbo].[SpecialScheduleRates];
+SELECT @after_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates];
 PRINT 'SpecialScheduleRates after export: ' + CAST(@after_count AS VARCHAR);
 PRINT 'Net new records: ' + CAST(@after_count - @before_count AS VARCHAR);
 
 -- Breakdown by year
 SELECT 'Production by Year' AS Metric, [Year], COUNT(*) AS Cnt, AVG(Rate) AS AvgRate
-FROM [dbo].[SpecialScheduleRates]
+FROM [$(PRODUCTION_SCHEMA)].[SpecialScheduleRates]
 GROUP BY [Year]
 ORDER BY [Year];
 

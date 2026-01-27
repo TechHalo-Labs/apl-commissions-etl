@@ -8,7 +8,7 @@ SET ANSI_NULLS ON;
 
 PRINT 'Exporting missing Proposals to dbo.Proposals...';
 
-INSERT INTO [dbo].[Proposals] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState, BrokerUniquePartyId, BrokerName,
     GroupId, GroupName, EffectiveDateFrom, EffectiveDateTo,
@@ -49,16 +49,16 @@ SELECT
     sp.ConstrainingEffectiveDateTo,
     sp.CreationTime,
     sp.IsDeleted
-FROM [etl].[stg_proposals] sp
-LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Proposals])
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
+WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
   -- Removed stg_included_groups filter - table may not exist and prevents export of fixed proposals
   AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
   -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 
-    FROM [etl].[stg_premium_split_versions] spsv
-    INNER JOIN [etl].[stg_premium_split_participants] spsp ON spsp.VersionId = spsv.Id
+    FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv
+    INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp ON spsp.VersionId = spsv.Id
     WHERE spsv.ProposalId = sp.Id
       AND spsp.HierarchyId IS NULL
   );
@@ -68,7 +68,7 @@ SELECT @proposalCount = @@ROWCOUNT;
 PRINT 'Proposals exported: ' + CAST(@proposalCount AS VARCHAR);
 
 DECLARE @totalProposals INT;
-SELECT @totalProposals = COUNT(*) FROM [dbo].[Proposals];
+SELECT @totalProposals = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Proposals];
 PRINT 'Total proposals in dbo: ' + CAST(@totalProposals AS VARCHAR);
 GO
 
@@ -83,8 +83,8 @@ UPDATE p
 SET 
     p.EffectiveDateTo = sp.EffectiveDateTo,
     p.LastModificationTime = GETUTCDATE()
-FROM [dbo].[Proposals] p
-INNER JOIN [etl].[stg_proposals] sp ON sp.Id = p.Id
+FROM [$(PRODUCTION_SCHEMA)].[Proposals] p
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] sp ON sp.Id = p.Id
 WHERE sp.EffectiveDateTo IS NOT NULL
     AND (
         p.EffectiveDateTo IS NULL 
@@ -107,8 +107,8 @@ SET
         CONCAT('Broker ', p.BrokerUniquePartyId)
     ),
     p.LastModificationTime = GETUTCDATE()
-FROM [dbo].[Proposals] p
-LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = p.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
+FROM [$(PRODUCTION_SCHEMA)].[Proposals] p
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = p.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
 WHERE p.BrokerUniquePartyId IS NOT NULL
     AND (
         p.BrokerName IS NULL 
@@ -125,7 +125,7 @@ GO
 PRINT 'Exporting missing ProposalProducts to dbo.ProposalProducts...';
 
 -- Method 1: From stg_proposal_products (unconsolidated proposals that match production)
-INSERT INTO [dbo].[ProposalProducts] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ProposalProducts] (
     ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
     ResolvedScheduleName, CreatedAt
 )
@@ -137,10 +137,10 @@ SELECT
     spp.ResolvedScheduleId,
     NULL AS ResolvedScheduleName,
     COALESCE(spp.CreationTime, GETUTCDATE()) AS CreatedAt
-FROM [etl].[stg_proposal_products] spp
-WHERE spp.ProposalId IN (SELECT Id FROM [dbo].[Proposals])
+FROM [$(ETL_SCHEMA)].[stg_proposal_products] spp
+WHERE spp.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[ProposalProducts] pp
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts] pp
     WHERE pp.ProposalId = spp.ProposalId
       AND pp.ProductCode = spp.ProductCode
 );
@@ -151,7 +151,7 @@ PRINT 'ProposalProducts exported (from stg_proposal_products): ' + CAST(@product
 
 -- Method 2: From stg_proposals.ProductCodes JSON (consolidated proposals)
 -- This handles consolidated proposals (-CS1, -CS2, etc.) that have ProductCodes stored as JSON
-INSERT INTO [dbo].[ProposalProducts] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ProposalProducts] (
     ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
     ResolvedScheduleName, CreatedAt
 )
@@ -163,17 +163,17 @@ SELECT DISTINCT
     NULL AS ResolvedScheduleId,
     NULL AS ResolvedScheduleName,
     GETUTCDATE() AS CreatedAt
-FROM [etl].[stg_proposals] sp
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
 CROSS APPLY OPENJSON(sp.ProductCodes) AS pc
-LEFT JOIN [dbo].[Products] pr ON pr.ProductCode = TRIM(pc.[value])
-WHERE sp.Id IN (SELECT Id FROM [dbo].[Proposals])  -- Proposal exists in production
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Products] pr ON pr.ProductCode = TRIM(pc.[value])
+WHERE sp.Id IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])  -- Proposal exists in production
   AND sp.ProductCodes IS NOT NULL
   AND sp.ProductCodes != '[]'
   AND sp.ProductCodes != ''
   AND sp.ProductCodes != '*'
   AND ISJSON(sp.ProductCodes) = 1  -- Skip invalid JSON
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[ProposalProducts] pp
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts] pp
     WHERE pp.ProposalId = sp.Id
       AND pp.ProductCode = TRIM(pc.[value])
 );
@@ -183,7 +183,7 @@ SELECT @productCount2 = @@ROWCOUNT;
 PRINT 'ProposalProducts exported (from JSON ProductCodes): ' + CAST(@productCount2 AS VARCHAR);
 
 DECLARE @totalProducts INT;
-SELECT @totalProducts = COUNT(*) FROM [dbo].[ProposalProducts];
+SELECT @totalProducts = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts];
 PRINT 'Total proposal products in dbo: ' + CAST(@totalProducts AS VARCHAR);
 GO
 

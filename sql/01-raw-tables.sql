@@ -16,8 +16,8 @@ PRINT '';
 -- =============================================================================
 -- Premium Payments (from premiums.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_premiums];
-CREATE TABLE [etl].[raw_premiums] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_premiums];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_premiums] (
     Company NVARCHAR(100),
     GroupNumber NVARCHAR(100),
     Policy NVARCHAR(100),
@@ -43,18 +43,18 @@ CREATE TABLE [etl].[raw_premiums] (
     SplitSalesHierarchy NVARCHAR(500),
     LionRecNo NVARCHAR(50)
 );
-PRINT 'Created [etl].[raw_premiums]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_premiums]';
 
 -- Create index for common lookups
 CREATE NONCLUSTERED INDEX IX_raw_premiums_GroupNumber_Policy 
-ON [etl].[raw_premiums] (GroupNumber, Policy);
+ON [$(ETL_SCHEMA)].[raw_premiums] (GroupNumber, Policy);
 
 -- =============================================================================
 -- Commission Details (from CommissionsDetail*.csv files)
 -- NOTE: CSV schema changed in January 2026 - see COMMISSIONS_DETAIL_SCHEMA_CHANGE.md
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_commissions_detail];
-CREATE TABLE [etl].[raw_commissions_detail] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_commissions_detail];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_commissions_detail] (
     Company NVARCHAR(100),
     CertificateId NVARCHAR(100),
     CertEffectiveDate NVARCHAR(50),
@@ -71,19 +71,19 @@ CREATE TABLE [etl].[raw_commissions_detail] (
     CreaditCardType NVARCHAR(100),
     TransactionId NVARCHAR(100)
 );
-PRINT 'Created [etl].[raw_commissions_detail]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_commissions_detail]';
 
 CREATE NONCLUSTERED INDEX IX_raw_commissions_detail_CertificateId 
-ON [etl].[raw_commissions_detail] (CertificateId);
+ON [$(ETL_SCHEMA)].[raw_commissions_detail] (CertificateId);
 
 CREATE NONCLUSTERED INDEX IX_raw_commissions_detail_SplitBrokerId 
-ON [etl].[raw_commissions_detail] (SplitBrokerId);
+ON [$(ETL_SCHEMA)].[raw_commissions_detail] (SplitBrokerId);
 
 -- =============================================================================
 -- Certificate Info (from CertificateInfo.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_certificate_info];
-CREATE TABLE [etl].[raw_certificate_info] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_certificate_info];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_certificate_info] (
     Company NVARCHAR(100),
     ProductMasterCategory NVARCHAR(100),
     ProductCategory NVARCHAR(100),
@@ -109,19 +109,19 @@ CREATE TABLE [etl].[raw_certificate_info] (
     ReassignedType NVARCHAR(100),
     PaidBrokerId NVARCHAR(50)
 );
-PRINT 'Created [etl].[raw_certificate_info]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_certificate_info]';
 
 CREATE NONCLUSTERED INDEX IX_raw_certificate_info_CertificateId 
-ON [etl].[raw_certificate_info] (CertificateId);
+ON [$(ETL_SCHEMA)].[raw_certificate_info] (CertificateId);
 
 CREATE NONCLUSTERED INDEX IX_raw_certificate_info_GroupId 
-ON [etl].[raw_certificate_info] (GroupId);
+ON [$(ETL_SCHEMA)].[raw_certificate_info] (GroupId);
 
 -- =============================================================================
 -- Individual Brokers (from individual-roster.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_individual_brokers];
-CREATE TABLE [etl].[raw_individual_brokers] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_individual_brokers];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_individual_brokers] (
     PartyUniqueId NVARCHAR(50),
     IndividualLastName NVARCHAR(200),
     IndividualFirstName NVARCHAR(200),
@@ -130,32 +130,32 @@ CREATE TABLE [etl].[raw_individual_brokers] (
     CurrentStatus NVARCHAR(50),
     BrokerType NVARCHAR(100)
 );
-PRINT 'Created [etl].[raw_individual_brokers]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_individual_brokers]';
 
 CREATE NONCLUSTERED INDEX IX_raw_individual_brokers_PartyUniqueId 
-ON [etl].[raw_individual_brokers] (PartyUniqueId);
+ON [$(ETL_SCHEMA)].[raw_individual_brokers] (PartyUniqueId);
 
 -- =============================================================================
 -- Organization Brokers (from org.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_org_brokers];
-CREATE TABLE [etl].[raw_org_brokers] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_org_brokers];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_org_brokers] (
     PartyUniqueId NVARCHAR(50),
     OrganizationName NVARCHAR(500),
     HireDate NVARCHAR(50),
     EmailAddress NVARCHAR(500),
     CurrentStatus NVARCHAR(50)
 );
-PRINT 'Created [etl].[raw_org_brokers]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_org_brokers]';
 
 CREATE NONCLUSTERED INDEX IX_raw_org_brokers_PartyUniqueId 
-ON [etl].[raw_org_brokers] (PartyUniqueId);
+ON [$(ETL_SCHEMA)].[raw_org_brokers] (PartyUniqueId);
 
 -- =============================================================================
 -- Broker Licenses (from license.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_licenses];
-CREATE TABLE [etl].[raw_licenses] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_licenses];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_licenses] (
     PartyUniqueId NVARCHAR(50),
     StateCode NVARCHAR(10),
     CurrentStatus NVARCHAR(50),
@@ -166,16 +166,16 @@ CREATE TABLE [etl].[raw_licenses] (
     LicenseNumber NVARCHAR(100),
     ApplicableCounty NVARCHAR(200)
 );
-PRINT 'Created [etl].[raw_licenses]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_licenses]';
 
 CREATE NONCLUSTERED INDEX IX_raw_licenses_PartyUniqueId 
-ON [etl].[raw_licenses] (PartyUniqueId);
+ON [$(ETL_SCHEMA)].[raw_licenses] (PartyUniqueId);
 
 -- =============================================================================
 -- E&O Insurance (from eo.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_eo_insurance];
-CREATE TABLE [etl].[raw_eo_insurance] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_eo_insurance];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_eo_insurance] (
     PartyUniqueId NVARCHAR(50),
     CarrierName NVARCHAR(500),
     PolicyId NVARCHAR(100),
@@ -187,16 +187,16 @@ CREATE TABLE [etl].[raw_eo_insurance] (
     PolicyMaxAmount NVARCHAR(50),
     LiabilityLimit NVARCHAR(50)
 );
-PRINT 'Created [etl].[raw_eo_insurance]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_eo_insurance]';
 
 CREATE NONCLUSTERED INDEX IX_raw_eo_insurance_PartyUniqueId 
-ON [etl].[raw_eo_insurance] (PartyUniqueId);
+ON [$(ETL_SCHEMA)].[raw_eo_insurance] (PartyUniqueId);
 
 -- =============================================================================
 -- Schedule Rates (from perf.csv)
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_schedule_rates];
-CREATE TABLE [etl].[raw_schedule_rates] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_schedule_rates];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_schedule_rates] (
     ScheduleName NVARCHAR(200),
     ScheduleDescription NVARCHAR(1000),
     Category NVARCHAR(100),
@@ -230,17 +230,17 @@ CREATE TABLE [etl].[raw_schedule_rates] (
     Year99 NVARCHAR(50),
     [Level] NVARCHAR(50)
 );
-PRINT 'Created [etl].[raw_schedule_rates]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_schedule_rates]';
 
 CREATE NONCLUSTERED INDEX IX_raw_schedule_rates_ScheduleName_ProductCode 
-ON [etl].[raw_schedule_rates] (ScheduleName, ProductCode);
+ON [$(ETL_SCHEMA)].[raw_schedule_rates] (ScheduleName, ProductCode);
 
 -- =============================================================================
 -- Fees (from Fees_20260107.csv)
 -- Column names match the CSV headers exactly
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_fees];
-CREATE TABLE [etl].[raw_fees] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_fees];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_fees] (
     PRDNUM NVARCHAR(100),                    -- Group number
     PRODUCTCAT NVARCHAR(100),                -- Product category
     FREQ NVARCHAR(50),                       -- Frequency
@@ -257,19 +257,19 @@ CREATE TABLE [etl].[raw_fees] (
     FEETYPE NVARCHAR(200),                   -- Legacy fee type
     PartyUniqueId NVARCHAR(50)               -- Broker external ID (e.g., P19690)
 );
-PRINT 'Created [etl].[raw_fees]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_fees]';
 
 CREATE NONCLUSTERED INDEX IX_raw_fees_PRDNUM 
-ON [etl].[raw_fees] (PRDNUM);
+ON [$(ETL_SCHEMA)].[raw_fees] (PRDNUM);
 
 CREATE NONCLUSTERED INDEX IX_raw_fees_PartyUniqueId 
-ON [etl].[raw_fees] (PartyUniqueId);
+ON [$(ETL_SCHEMA)].[raw_fees] (PartyUniqueId);
 
 -- =============================================================================
 -- Performance Groups (from perf-group.csv) - Group master data with names
 -- =============================================================================
-DROP TABLE IF EXISTS [etl].[raw_perf_groups];
-CREATE TABLE [etl].[raw_perf_groups] (
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[raw_perf_groups];
+CREATE TABLE [$(ETL_SCHEMA)].[raw_perf_groups] (
     GroupNum NVARCHAR(100),
     GroupName NVARCHAR(500),
     StateAbbreviation NVARCHAR(10),
@@ -283,10 +283,10 @@ CREATE TABLE [etl].[raw_perf_groups] (
     CommissionTable NVARCHAR(200),
     FeeAgreement NVARCHAR(200)
 );
-PRINT 'Created [etl].[raw_perf_groups]';
+PRINT 'Created [$(ETL_SCHEMA)].[raw_perf_groups]';
 
 CREATE NONCLUSTERED INDEX IX_raw_perf_groups_GroupNum 
-ON [etl].[raw_perf_groups] (GroupNum);
+ON [$(ETL_SCHEMA)].[raw_perf_groups] (GroupNum);
 
 -- =============================================================================
 -- Verification

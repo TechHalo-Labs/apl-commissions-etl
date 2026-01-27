@@ -27,8 +27,8 @@ SELECT
     MIN(f.EffectiveDate) AS EarliestEffectiveDate,
     COUNT(*) AS FeeCount
 INTO #GroupFees
-FROM [etl].[stg_fee_schedules] f
-LEFT JOIN [dbo].[EmployerGroups] g ON g.Id = f.GroupId
+FROM [$(ETL_SCHEMA)].[stg_fee_schedules] f
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[EmployerGroups] g ON g.Id = f.GroupId
 WHERE f.GroupId IS NOT NULL
 GROUP BY f.GroupId, COALESCE(g.GroupName, f.GroupName);
 
@@ -53,7 +53,7 @@ SELECT
     gf.EarliestEffectiveDate,
     gf.FeeCount
 INTO #ProposalsWithFees
-FROM [dbo].[Proposals] p
+FROM [$(PRODUCTION_SCHEMA)].[Proposals] p
 INNER JOIN #GroupFees gf ON gf.GroupId = p.GroupId
 WHERE p.GroupId IS NOT NULL;
 
@@ -69,7 +69,7 @@ PRINT '';
 PRINT 'Step 3: Creating FeeSchedules...';
 
 -- Insert new fee schedules (skip existing)
-INSERT INTO [dbo].[FeeSchedules] (Id, [Name], [Description], ProposalId, CreationTime, IsDeleted)
+INSERT INTO [$(PRODUCTION_SCHEMA)].[FeeSchedules] (Id, [Name], [Description], ProposalId, CreationTime, IsDeleted)
 SELECT 
     CONCAT('FS-', pwf.ProposalId) AS Id,
     CONCAT('Fee Schedule - ', pwf.ProposalNumber) AS [Name],
@@ -79,7 +79,7 @@ SELECT
     0 AS IsDeleted
 FROM #ProposalsWithFees pwf
 WHERE NOT EXISTS (
-    SELECT 1 FROM [dbo].[FeeSchedules] fs 
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[FeeSchedules] fs 
     WHERE fs.Id = CONCAT('FS-', pwf.ProposalId)
 );
 
@@ -95,7 +95,7 @@ PRINT '';
 PRINT 'Step 4: Creating FeeScheduleVersions...';
 
 -- Insert new versions (skip existing)
-INSERT INTO [dbo].[FeeScheduleVersions] (Id, FeeScheduleId, VersionNumber, [Status], EffectiveDate, EndDate, ChangeReason, Content, CreationTime, IsDeleted)
+INSERT INTO [$(PRODUCTION_SCHEMA)].[FeeScheduleVersions] (Id, FeeScheduleId, VersionNumber, [Status], EffectiveDate, EndDate, ChangeReason, Content, CreationTime, IsDeleted)
 SELECT 
     CONCAT('FSV-', pwf.ProposalId, '-1.0') AS Id,
     CONCAT('FS-', pwf.ProposalId) AS FeeScheduleId,
@@ -109,7 +109,7 @@ SELECT
     0 AS IsDeleted
 FROM #ProposalsWithFees pwf
 WHERE NOT EXISTS (
-    SELECT 1 FROM [dbo].[FeeScheduleVersions] fsv 
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[FeeScheduleVersions] fsv 
     WHERE fsv.Id = CONCAT('FSV-', pwf.ProposalId, '-1.0')
 );
 
@@ -127,7 +127,7 @@ PRINT 'Step 5: Creating FeeScheduleItems...';
 -- stg_fee_schedules has: Id, GroupId, GroupName, FeeType, Amount, EffectiveDate, EndDate, Description, CreationTime, IsDeleted
 -- Production FeeScheduleItems has: Id, FeeScheduleVersionId, FeeTypeId, FeeTypeCode, FeeTypeName, Name, Frequency, Basis, Amount, Percent, Notes, DisplayOrder, EffectiveFrom, EffectiveTo, RecipientBrokerId, RecipientBrokerName, CreationTime, IsDeleted
 
-INSERT INTO [dbo].[FeeScheduleItems] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[FeeScheduleItems] (
     Id, FeeScheduleVersionId, FeeTypeId, FeeTypeCode, FeeTypeName, 
     [Name], Frequency, Basis, Amount, [Percent], Notes, DisplayOrder,
     EffectiveFrom, EffectiveTo, RecipientBrokerId, RecipientBrokerName,
@@ -155,11 +155,11 @@ SELECT
     NULL AS RecipientBrokerName,
     COALESCE(f.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(f.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_fee_schedules] f
+FROM [$(ETL_SCHEMA)].[stg_fee_schedules] f
 INNER JOIN #ProposalsWithFees pwf ON pwf.GroupId = f.GroupId
 WHERE f.GroupId IS NOT NULL
   AND NOT EXISTS (
-      SELECT 1 FROM [dbo].[FeeScheduleItems] fsi 
+      SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[FeeScheduleItems] fsi 
       WHERE fsi.Id = CONCAT(f.Id, '-P-', pwf.ProposalId)
   );
 
@@ -180,21 +180,21 @@ PRINT '';
 SELECT 
     'FeeSchedules (total)' AS Entity,
     COUNT(*) AS [Count]
-FROM [dbo].[FeeSchedules]
+FROM [$(PRODUCTION_SCHEMA)].[FeeSchedules]
 
 UNION ALL
 
 SELECT 
     'FeeScheduleVersions (total)' AS Entity,
     COUNT(*) AS [Count]
-FROM [dbo].[FeeScheduleVersions]
+FROM [$(PRODUCTION_SCHEMA)].[FeeScheduleVersions]
 
 UNION ALL
 
 SELECT 
     'FeeScheduleVersions (Active)' AS Entity,
     COUNT(*) AS [Count]
-FROM [dbo].[FeeScheduleVersions]
+FROM [$(PRODUCTION_SCHEMA)].[FeeScheduleVersions]
 WHERE [Status] = 1
 
 UNION ALL
@@ -202,15 +202,15 @@ UNION ALL
 SELECT 
     'FeeScheduleItems (total)' AS Entity,
     COUNT(*) AS [Count]
-FROM [dbo].[FeeScheduleItems]
+FROM [$(PRODUCTION_SCHEMA)].[FeeScheduleItems]
 
 UNION ALL
 
 SELECT 
     'Proposals with FeeSchedules' AS Entity,
     COUNT(DISTINCT p.Id) AS [Count]
-FROM [dbo].[Proposals] p
-INNER JOIN [dbo].[FeeSchedules] fs ON fs.ProposalId = p.Id;
+FROM [$(PRODUCTION_SCHEMA)].[Proposals] p
+INNER JOIN [$(PRODUCTION_SCHEMA)].[FeeSchedules] fs ON fs.ProposalId = p.Id;
 
 PRINT '';
 PRINT '============================================================';

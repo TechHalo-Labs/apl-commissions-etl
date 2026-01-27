@@ -4,15 +4,15 @@
 
 -- Clear existing traceability for this run
 PRINT 'Clearing existing traceability for SQL-ETL-V5...';
-DELETE FROM [dbo].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5';
-DELETE FROM [dbo].[CommissionTraceabilityReports] WHERE CommissionRunId = 'SQL-ETL-V5';
+DELETE FROM [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5';
+DELETE FROM [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports] WHERE CommissionRunId = 'SQL-ETL-V5';
 PRINT 'Cleared existing traceability';
 GO
 
 -- Export CommissionTraceabilityReports
 PRINT 'Exporting CommissionTraceabilityReports...';
 
-INSERT INTO [dbo].[CommissionTraceabilityReports] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports] (
     CommissionRunId, CertificateId, PolicyId, PremiumTransactionId,
     IsBootstrap, TraceabilityData, MarkdownReport, PremiumAmount, TotalCommission,
     SplitCount, PayeeCount, HasAssignments, [Status], MacViolation, FailureReason,
@@ -40,18 +40,18 @@ SELECT
     t.BasisYear,
     t.CreationTime,
     0 AS IsDeleted
-FROM [etl].[calc_traceability] t
+FROM [$(ETL_SCHEMA)].[calc_traceability] t
 WHERE t.PolicyId IS NOT NULL;
 
 DECLARE @traceCount INT;
-SELECT @traceCount = COUNT(*) FROM [dbo].[CommissionTraceabilityReports] WHERE CommissionRunId = 'SQL-ETL-V5';
+SELECT @traceCount = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports] WHERE CommissionRunId = 'SQL-ETL-V5';
 PRINT 'Traceability Reports exported: ' + CAST(@traceCount AS VARCHAR);
 GO
 
 -- Export BrokerTraceabilities (from GL entries directly)
 PRINT 'Exporting BrokerTraceabilities...';
 
-INSERT INTO [dbo].[BrokerTraceabilities] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities] (
     BrokerId, CommissionTraceabilityReportId, CommissionRunId, GroupId,
     [Level], LevelName, SplitSequence, SplitPercent, RatePercent, CommissionAmount,
     EarnerBrokerId, PaidBrokerId, PolicyId,
@@ -77,20 +77,20 @@ SELECT
     gl.BrokerName,
     gl.CreationTime,
     0 AS IsDeleted
-FROM [etl].[calc_gl_journal_entries] gl
-INNER JOIN [dbo].[CommissionTraceabilityReports] ctr 
+FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries] gl
+INNER JOIN [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports] ctr 
     ON CAST(ctr.CertificateId AS NVARCHAR) = CAST(gl.PolicyId AS NVARCHAR)
     AND ctr.CommissionRunId = 'SQL-ETL-V5'
-WHERE gl.BrokerId IN (SELECT Id FROM [dbo].[Brokers]);
+WHERE gl.BrokerId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers]);
 
 DECLARE @btCount INT;
-SELECT @btCount = COUNT(*) FROM [dbo].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5';
+SELECT @btCount = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5';
 PRINT 'Broker Traceabilities exported: ' + CAST(@btCount AS VARCHAR);
 GO
 
 -- Update CommissionRun broker traceabilities count
-UPDATE [dbo].[CommissionRuns]
-SET BrokerTraceabilitiesCount = (SELECT COUNT(*) FROM [dbo].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5')
+UPDATE [$(PRODUCTION_SCHEMA)].[CommissionRuns]
+SET BrokerTraceabilitiesCount = (SELECT COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities] WHERE CommissionRunId = 'SQL-ETL-V5')
 WHERE Id = 'SQL-ETL-V5';
 GO
 

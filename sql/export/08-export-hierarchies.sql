@@ -7,7 +7,7 @@
 
 PRINT 'Exporting missing Hierarchies...';
 
-INSERT INTO [dbo].[Hierarchies] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Hierarchies] (
     Id, Name, [Description], [Type], [Status], ProposalId, ProposalNumber,
     GroupId, GroupName, GroupNumber, BrokerId, BrokerName, BrokerLevel,
     SourceType, HasOverrides, DeviationCount, SitusState, EffectiveDate,
@@ -36,8 +36,8 @@ SELECT
     COALESCE(sh.CurrentVersionNumber, 1) AS CurrentVersionNumber,
     COALESCE(sh.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sh.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_hierarchies] sh
-WHERE sh.Id NOT IN (SELECT Id FROM [dbo].[Hierarchies]);
+FROM [$(ETL_SCHEMA)].[stg_hierarchies] sh
+WHERE sh.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]);
 
 DECLARE @hCount INT;
 SELECT @hCount = @@ROWCOUNT;
@@ -49,7 +49,7 @@ PRINT 'Exporting missing HierarchyVersions...';
 -- Production HierarchyVersions schema:
 -- Id, HierarchyId, Version (int), Status (int), EffectiveFrom, EffectiveTo, ChangeReason
 
-INSERT INTO [dbo].[HierarchyVersions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchyVersions] (
     Id, HierarchyId, [Version], [Status], EffectiveFrom, EffectiveTo,
     ChangeReason, CreationTime, IsDeleted
 )
@@ -63,8 +63,8 @@ SELECT
     shv.ChangeReason,
     COALESCE(shv.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(shv.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_hierarchy_versions] shv
-WHERE shv.Id NOT IN (SELECT Id FROM [dbo].[HierarchyVersions]);
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_versions] shv
+WHERE shv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
 
 DECLARE @hvCount INT;
 SELECT @hvCount = @@ROWCOUNT;
@@ -73,7 +73,7 @@ GO
 
 PRINT 'Exporting missing HierarchyParticipants...';
 
-INSERT INTO [dbo].[HierarchyParticipants] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchyParticipants] (
     Id, HierarchyVersionId, EntityId, EntityName, [Level], SortOrder,
     ScheduleCode, ScheduleId, CommissionRate, CreationTime, IsDeleted
 )
@@ -89,8 +89,8 @@ SELECT
     shp.CommissionRate,
     COALESCE(shp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(shp.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_hierarchy_participants] shp
-WHERE shp.Id NOT IN (SELECT Id FROM [dbo].[HierarchyParticipants]);
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_participants] shp
+WHERE shp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants]);
 
 DECLARE @hpCount INT;
 SELECT @hpCount = @@ROWCOUNT;
@@ -99,7 +99,7 @@ GO
 
 PRINT 'Exporting missing StateRules...';
 
-INSERT INTO [dbo].[StateRules] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[StateRules] (
     Id, HierarchyVersionId, ShortName, Name, [Description], [Type], SortOrder,
     CreationTime, IsDeleted
 )
@@ -113,9 +113,9 @@ SELECT
     COALESCE(sr.SortOrder, 0) AS SortOrder,
     COALESCE(sr.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sr.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_state_rules] sr
-WHERE sr.Id NOT IN (SELECT Id FROM [dbo].[StateRules])
-  AND sr.HierarchyVersionId IN (SELECT Id FROM [dbo].[HierarchyVersions]);
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
+WHERE sr.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules])
+  AND sr.HierarchyVersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
 
 DECLARE @srCount INT;
 SELECT @srCount = @@ROWCOUNT;
@@ -131,8 +131,8 @@ SET
     dbo_sr.[Description] = stg_sr.[Description],
     dbo_sr.[Type] = stg_sr.[Type],
     dbo_sr.LastModificationTime = GETUTCDATE()
-FROM [dbo].[StateRules] dbo_sr
-INNER JOIN [etl].[stg_state_rules] stg_sr ON dbo_sr.Id = stg_sr.Id
+FROM [$(PRODUCTION_SCHEMA)].[StateRules] dbo_sr
+INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] stg_sr ON dbo_sr.Id = stg_sr.Id
 WHERE stg_sr.[Type] = 1  -- Catch-all
   AND stg_sr.ShortName = 'ALL'
   AND (
@@ -148,7 +148,7 @@ GO
 
 PRINT 'Exporting missing StateRuleStates...';
 
-INSERT INTO [dbo].[StateRuleStates] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[StateRuleStates] (
     Id, StateRuleId, StateCode, StateName, CreationTime, IsDeleted
 )
 SELECT 
@@ -158,9 +158,9 @@ SELECT
     srs.StateName,
     COALESCE(srs.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(srs.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_state_rule_states] srs
-WHERE srs.Id NOT IN (SELECT Id FROM [dbo].[StateRuleStates])
-  AND srs.StateRuleId IN (SELECT Id FROM [dbo].[StateRules]);
+FROM [$(ETL_SCHEMA)].[stg_state_rule_states] srs
+WHERE srs.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRuleStates])
+  AND srs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules]);
 
 DECLARE @srsCount INT;
 SELECT @srsCount = @@ROWCOUNT;
@@ -170,8 +170,8 @@ PRINT 'StateRuleStates exported: ' + CAST(@srsCount AS VARCHAR);
 PRINT 'Deleting StateRuleStates for catch-all rules...';
 
 DELETE dbo_srs
-FROM [dbo].[StateRuleStates] dbo_srs
-INNER JOIN [dbo].[StateRules] dbo_sr ON dbo_srs.StateRuleId = dbo_sr.Id
+FROM [$(PRODUCTION_SCHEMA)].[StateRuleStates] dbo_srs
+INNER JOIN [$(PRODUCTION_SCHEMA)].[StateRules] dbo_sr ON dbo_srs.StateRuleId = dbo_sr.Id
 WHERE dbo_sr.[Type] = 1  -- Catch-all
   AND dbo_sr.ShortName = 'ALL'
   AND dbo_srs.IsDeleted = 0;
@@ -183,7 +183,7 @@ GO
 
 PRINT 'Exporting missing HierarchySplits...';
 
-INSERT INTO [dbo].[HierarchySplits] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchySplits] (
     Id, StateRuleId, ProductId, ProductCode, ProductName, SortOrder,
     CreationTime, IsDeleted
 )
@@ -196,9 +196,9 @@ SELECT
     COALESCE(hs.SortOrder, 0) AS SortOrder,
     COALESCE(hs.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(hs.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_hierarchy_splits] hs
-WHERE hs.Id NOT IN (SELECT Id FROM [dbo].[HierarchySplits])
-  AND hs.StateRuleId IN (SELECT Id FROM [dbo].[StateRules]);
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
+WHERE hs.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchySplits])
+  AND hs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules]);
 
 DECLARE @hsCount INT;
 SELECT @hsCount = @@ROWCOUNT;
@@ -207,7 +207,7 @@ GO
 
 PRINT 'Exporting missing SplitDistributions...';
 
-INSERT INTO [dbo].[SplitDistributions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[SplitDistributions] (
     Id, HierarchySplitId, HierarchyParticipantId, ParticipantEntityId,
     Percentage, ScheduleId, ScheduleName, CreationTime, IsDeleted
 )
@@ -221,10 +221,10 @@ SELECT
     sd.ScheduleName,
     COALESCE(sd.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sd.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_split_distributions] sd
-WHERE sd.Id NOT IN (SELECT Id FROM [dbo].[SplitDistributions])
-  AND sd.HierarchySplitId IN (SELECT Id FROM [dbo].[HierarchySplits])
-  AND sd.HierarchyParticipantId IN (SELECT Id FROM [dbo].[HierarchyParticipants]);
+FROM [$(ETL_SCHEMA)].[stg_split_distributions] sd
+WHERE sd.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[SplitDistributions])
+  AND sd.HierarchySplitId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchySplits])
+  AND sd.HierarchyParticipantId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants]);
 
 DECLARE @sdCount INT;
 SELECT @sdCount = @@ROWCOUNT;

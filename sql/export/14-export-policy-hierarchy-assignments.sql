@@ -33,11 +33,11 @@ PRINT 'Step 1: Exporting PolicyHierarchyAssignments (aggregated by unique key)..
         SUM(SplitPercent) AS SplitPercent,
         TRY_CAST(WritingBrokerId AS BIGINT) AS WritingBrokerId,
         MAX(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS IsNonConforming
-    FROM [etl].[stg_policy_hierarchy_assignments]
+    FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments]
     WHERE HierarchyId IS NOT NULL
     GROUP BY PolicyId, HierarchyId, WritingBrokerId
 )
-INSERT INTO [dbo].[PolicyHierarchyAssignments] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] (
     Id,
     PolicyId,
     CertificateId,
@@ -59,16 +59,16 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM AggregatedAssignments aa
-WHERE aa.Id NOT IN (SELECT Id FROM [dbo].[PolicyHierarchyAssignments])
+WHERE aa.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments])
   -- HierarchyId must exist in production
-  AND aa.HierarchyId IN (SELECT Id FROM [dbo].[Hierarchies])
+  AND aa.HierarchyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies])
   -- PolicyId must exist in production Policies table
-  AND aa.PolicyId IN (SELECT Id FROM [dbo].[Policies])
+  AND aa.PolicyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
   -- WritingBrokerId must exist in production Brokers table
-  AND aa.WritingBrokerId IN (SELECT Id FROM [dbo].[Brokers])
+  AND aa.WritingBrokerId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers])
   -- Avoid the unique constraint violation
   AND NOT EXISTS (
-      SELECT 1 FROM [dbo].[PolicyHierarchyAssignments] existing
+      SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] existing
       WHERE existing.PolicyId = aa.PolicyId
         AND existing.HierarchyId = aa.HierarchyId
         AND existing.WritingBrokerId = aa.WritingBrokerId
@@ -78,12 +78,12 @@ DECLARE @pha_count INT = @@ROWCOUNT;
 PRINT 'PolicyHierarchyAssignments exported: ' + CAST(@pha_count AS VARCHAR);
 
 -- Report staging counts
-DECLARE @staging_total INT = (SELECT COUNT(*) FROM [etl].[stg_policy_hierarchy_assignments]);
+DECLARE @staging_total INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments]);
 PRINT 'Staging total: ' + CAST(@staging_total AS VARCHAR);
 
 -- Report skipped records due to NULL HierarchyId
 DECLARE @skipped_null_hierarchy INT = (
-    SELECT COUNT(*) FROM [etl].[stg_policy_hierarchy_assignments] pha
+    SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
     WHERE pha.HierarchyId IS NULL
 );
 IF @skipped_null_hierarchy > 0
@@ -91,26 +91,26 @@ IF @skipped_null_hierarchy > 0
 
 -- Report skipped records due to missing Hierarchy
 DECLARE @skipped_hierarchy INT = (
-    SELECT COUNT(*) FROM [etl].[stg_policy_hierarchy_assignments] pha
+    SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
     WHERE pha.HierarchyId IS NOT NULL
-      AND pha.HierarchyId NOT IN (SELECT Id FROM [dbo].[Hierarchies])
+      AND pha.HierarchyId NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies])
 );
 IF @skipped_hierarchy > 0
     PRINT 'WARNING: ' + CAST(@skipped_hierarchy AS VARCHAR) + ' assignments skipped (HierarchyId not in production)';
 
 -- Report skipped records due to missing Policy
 DECLARE @skipped_policy INT = (
-    SELECT COUNT(*) FROM [etl].[stg_policy_hierarchy_assignments] pha
-    WHERE pha.PolicyId NOT IN (SELECT Id FROM [dbo].[Policies])
+    SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+    WHERE pha.PolicyId NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
 );
 IF @skipped_policy > 0
     PRINT 'WARNING: ' + CAST(@skipped_policy AS VARCHAR) + ' assignments skipped (PolicyId not in production)';
 
 -- Report skipped records due to missing Broker
 DECLARE @skipped_broker INT = (
-    SELECT COUNT(*) FROM [etl].[stg_policy_hierarchy_assignments] pha
-    WHERE TRY_CAST(pha.WritingBrokerId AS BIGINT) NOT IN (SELECT Id FROM [dbo].[Brokers])
-      AND pha.PolicyId IN (SELECT Id FROM [dbo].[Policies])
+    SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+    WHERE TRY_CAST(pha.WritingBrokerId AS BIGINT) NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers])
+      AND pha.PolicyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
       AND pha.HierarchyId IS NOT NULL
 );
 IF @skipped_broker > 0
@@ -125,12 +125,12 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 SELECT 'Production PolicyHierarchyAssignments' AS tbl, COUNT(*) AS cnt 
-FROM [dbo].[PolicyHierarchyAssignments];
+FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments];
 
 SELECT 'By IsNonConforming' AS metric,
     SUM(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS nonconforming,
     SUM(CASE WHEN IsNonConforming = 0 THEN 1 ELSE 0 END) AS conforming
-FROM [dbo].[PolicyHierarchyAssignments];
+FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments];
 
 PRINT '';
 PRINT '============================================================';

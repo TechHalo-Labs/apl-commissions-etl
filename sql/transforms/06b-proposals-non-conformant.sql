@@ -18,7 +18,7 @@ PRINT '';
 -- =============================================================================
 PRINT 'Step 1: Identifying non-conformant keys...';
 
-DROP TABLE IF EXISTS [etl].[non_conformant_keys];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[non_conformant_keys];
 
 SELECT 
     GroupId,
@@ -27,8 +27,8 @@ SELECT
     PlanCode,
     COUNT(DISTINCT ConfigJson) AS DistinctConfigs,
     COUNT(*) AS CertCount
-INTO [etl].[non_conformant_keys]
-FROM [etl].[cert_split_configs_remainder]
+INTO [$(ETL_SCHEMA)].[non_conformant_keys]
+FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder]
 GROUP BY GroupId, EffectiveDate, ProductCode, PlanCode
 HAVING COUNT(DISTINCT ConfigJson) > 1;
 
@@ -41,12 +41,12 @@ PRINT 'Non-conformant keys found: ' + CAST(@nc_keys AS VARCHAR);
 PRINT '';
 PRINT 'Step 2: Extracting non-conformant certificates...';
 
-DROP TABLE IF EXISTS [etl].[non_conformant_certs];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[non_conformant_certs];
 
 SELECT csc.*
-INTO [etl].[non_conformant_certs]
-FROM [etl].[cert_split_configs_remainder] csc
-INNER JOIN [etl].[non_conformant_keys] nck
+INTO [$(ETL_SCHEMA)].[non_conformant_certs]
+FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder] csc
+INNER JOIN [$(ETL_SCHEMA)].[non_conformant_keys] nck
     ON csc.GroupId = nck.GroupId
     AND csc.EffectiveDate = nck.EffectiveDate
     AND csc.ProductCode = nck.ProductCode
@@ -64,10 +64,10 @@ PRINT 'Non-conformant certificates: ' + CAST(@nc_certs AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Creating PolicyHierarchyAssignment records...';
 
-TRUNCATE TABLE [etl].[stg_policy_hierarchy_assignments];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments];
 
 -- One record per certificate (get writing broker from first split, level 1)
-INSERT INTO [etl].[stg_policy_hierarchy_assignments] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] (
     Id,
     PolicyId,
     CertificateId,
@@ -94,13 +94,13 @@ SELECT
     NULL AS SourceTraceabilityReportId,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[non_conformant_certs] ncc
+FROM [$(ETL_SCHEMA)].[non_conformant_certs] ncc
 WHERE JSON_VALUE(ncc.ConfigJson, '$[0].brokerId') IS NOT NULL
   AND LTRIM(RTRIM(JSON_VALUE(ncc.ConfigJson, '$[0].brokerId'))) <> ''
   AND TRY_CAST(REPLACE(JSON_VALUE(ncc.ConfigJson, '$[0].brokerId'), 'P', '') AS BIGINT) IS NOT NULL;
 
 DECLARE @pha_created INT = @@ROWCOUNT;
-DECLARE @pha_skipped INT = (SELECT COUNT(*) FROM [etl].[non_conformant_certs]) - @pha_created;
+DECLARE @pha_skipped INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[non_conformant_certs]) - @pha_created;
 PRINT 'PolicyHierarchyAssignment records created: ' + CAST(@pha_created AS VARCHAR);
 IF @pha_skipped > 0
     PRINT '  ⚠️  Skipped ' + CAST(@pha_skipped AS VARCHAR) + ' certificates with NULL/invalid brokerId';
@@ -113,9 +113,9 @@ IF @pha_skipped > 0
 PRINT '';
 PRINT 'Step 4: Creating PolicyHierarchyParticipants...';
 
-TRUNCATE TABLE [etl].[stg_policy_hierarchy_participants];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants];
 
-INSERT INTO [etl].[stg_policy_hierarchy_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants] (
     Id,
     PolicyHierarchyAssignmentId,
     BrokerId,
@@ -142,7 +142,7 @@ SELECT
     NULL AS PaidBrokerId,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[non_conformant_certs] ncc
+FROM [$(ETL_SCHEMA)].[non_conformant_certs] ncc
 CROSS APPLY OPENJSON(ncc.ConfigJson)
 WITH (
     splitSeq NVARCHAR(10) '$.splitSeq',
@@ -151,7 +151,7 @@ WITH (
     [percent] NVARCHAR(20) '$.percent',
     schedule NVARCHAR(50) '$.schedule'
 ) p
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(p.brokerId, 'P', '') AS BIGINT)
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(p.brokerId, 'P', '') AS BIGINT)
 WHERE p.brokerId IS NOT NULL 
   AND LTRIM(RTRIM(p.brokerId)) <> ''
   AND TRY_CAST(REPLACE(p.brokerId, 'P', '') AS BIGINT) IS NOT NULL;
@@ -165,13 +165,13 @@ PRINT 'PolicyHierarchyParticipants created: ' + CAST(@php_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 5: Creating conformant remainder table...';
 
-DROP TABLE IF EXISTS [etl].[cert_split_configs_conformant];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[cert_split_configs_conformant];
 
 SELECT csc.*
-INTO [etl].[cert_split_configs_conformant]
-FROM [etl].[cert_split_configs_remainder] csc
+INTO [$(ETL_SCHEMA)].[cert_split_configs_conformant]
+FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder] csc
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[non_conformant_keys] nck
+    SELECT 1 FROM [$(ETL_SCHEMA)].[non_conformant_keys] nck
     WHERE csc.GroupId = nck.GroupId
       AND csc.EffectiveDate = nck.EffectiveDate
       AND csc.ProductCode = nck.ProductCode
@@ -181,13 +181,13 @@ WHERE NOT EXISTS (
 DECLARE @conformant_certs INT = @@ROWCOUNT;
 PRINT 'Conformant certificates remaining: ' + CAST(@conformant_certs AS VARCHAR);
 
-DECLARE @conformant_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [etl].[cert_split_configs_conformant]);
+DECLARE @conformant_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [$(ETL_SCHEMA)].[cert_split_configs_conformant]);
 PRINT 'Conformant groups remaining: ' + CAST(@conformant_groups AS VARCHAR);
 
 DECLARE @conformant_keys INT = (
     SELECT COUNT(*) FROM (
         SELECT DISTINCT GroupId, EffectiveDate, ProductCode, PlanCode 
-        FROM [etl].[cert_split_configs_conformant]
+        FROM [$(ETL_SCHEMA)].[cert_split_configs_conformant]
     ) k
 );
 PRINT 'Conformant keys remaining: ' + CAST(@conformant_keys AS VARCHAR);
@@ -202,8 +202,8 @@ PRINT '============================================================';
 PRINT '';
 PRINT 'INPUT (from Step 1 remainder):';
 
-DECLARE @input_certs INT = (SELECT COUNT(*) FROM [etl].[cert_split_configs_remainder]);
-DECLARE @input_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [etl].[cert_split_configs_remainder]);
+DECLARE @input_certs INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder]);
+DECLARE @input_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder]);
 PRINT '  Certificates: ' + CAST(@input_certs AS VARCHAR);
 PRINT '  Groups: ' + CAST(@input_groups AS VARCHAR);
 PRINT '';

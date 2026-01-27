@@ -5,7 +5,7 @@
 
 PRINT 'Exporting missing Policies to dbo.Policies...';
 
-INSERT INTO [dbo].[Policies] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Policies] (
     Id, PolicyNumber, CertificateNumber, OldPolicyNumber, PolicyType, [Status],
     StatusDate, BrokerId, ContractId, GroupId, CarrierName, CarrierId,
     ProductCode, ProductName, PlanCode, PlanName, MasterCategory, Category,
@@ -56,16 +56,16 @@ SELECT
     sp.ProposalAssignmentSource,
     COALESCE(sp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_policies] sp
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Policies])
-  AND sp.GroupId IN (SELECT Id FROM [etl].[stg_included_groups]);  -- 🔧 Only policies for included groups
+FROM [$(ETL_SCHEMA)].[stg_policies] sp
+WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
+  AND sp.GroupId IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);  -- 🔧 Only policies for included groups
 
 DECLARE @policyCount INT;
 SELECT @policyCount = @@ROWCOUNT;
 PRINT 'Policies exported: ' + CAST(@policyCount AS VARCHAR);
 
 DECLARE @totalPolicies INT;
-SELECT @totalPolicies = COUNT(*) FROM [dbo].[Policies];
+SELECT @totalPolicies = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Policies];
 PRINT 'Total policies in dbo: ' + CAST(@totalPolicies AS VARCHAR);
 GO
 

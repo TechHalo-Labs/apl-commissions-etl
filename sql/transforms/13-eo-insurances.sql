@@ -8,10 +8,10 @@ SET NOCOUNT ON;
 PRINT 'Transforming BrokerEO Insurances...';
 
 -- Truncate staging table
-TRUNCATE TABLE [etl].[stg_broker_eo_insurances];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_broker_eo_insurances];
 
 -- Insert transformed E&O data
-INSERT INTO [etl].[stg_broker_eo_insurances] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_eo_insurances] (
     Id, BrokerId, PolicyNumber, Carrier,
     CoverageAmount, MinimumRequired, DeductibleAmount, ClaimMaxAmount,
     AnnualMaxAmount, PolicyMaxAmount, LiabilityLimit,
@@ -49,7 +49,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [new_data].[BrokerEO] neo
-INNER JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = neo.PartyUniqueId
+INNER JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = neo.PartyUniqueId
 WHERE neo.PartyUniqueId IS NOT NULL
   AND neo.PartyUniqueId != ''
   AND neo.PartyUniqueId != 'NULL';
@@ -59,14 +59,14 @@ SELECT @eoCount = @@ROWCOUNT;
 PRINT 'E&O insurances transformed: ' + CAST(@eoCount AS VARCHAR);
 
 DECLARE @totalEO INT;
-SELECT @totalEO = COUNT(*) FROM [etl].[stg_broker_eo_insurances];
+SELECT @totalEO = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_broker_eo_insurances];
 PRINT 'Total E&O insurances in staging: ' + CAST(@totalEO AS VARCHAR);
 
 -- Report on E&O records without matching broker
 DECLARE @orphanEO INT;
 SELECT @orphanEO = COUNT(*)
 FROM [new_data].[BrokerEO] neo
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = neo.PartyUniqueId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = neo.PartyUniqueId
 WHERE b.Id IS NULL
   AND neo.PartyUniqueId IS NOT NULL
   AND neo.PartyUniqueId != ''

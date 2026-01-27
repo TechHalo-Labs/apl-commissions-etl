@@ -9,7 +9,7 @@ SET ANSI_NULLS ON;
 
 PRINT 'Exporting Groups to dbo.EmployerGroups...';
 
-INSERT INTO [dbo].[EmployerGroups] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[EmployerGroups] (
     Id, GroupNumber, GroupName, StateAbbreviation, SitusState, GroupSize,
     TaxId, PrimaryBrokerId, IsPublicSector, IsNonConformant, NonConformantDescription,
     NextProposalNumber, CreationTime, IsDeleted
@@ -29,12 +29,12 @@ SELECT
     1 AS NextProposalNumber,
     COALESCE(sg.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sg.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_groups] sg
-WHERE sg.Id NOT IN (SELECT Id FROM [dbo].[EmployerGroups])
-  AND sg.Id IN (SELECT Id FROM [etl].[stg_included_groups]);
+FROM [$(ETL_SCHEMA)].[stg_groups] sg
+WHERE sg.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups])
+  AND sg.Id IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);
 
 DECLARE @excluded_cnt INT;
-SELECT @excluded_cnt = COUNT(*) FROM [etl].[stg_excluded_groups];
+SELECT @excluded_cnt = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_excluded_groups];
 PRINT 'Note: Excluded ' + CAST(@excluded_cnt AS VARCHAR) + ' groups (7-series)';
 
 DECLARE @groupCount INT;
@@ -43,7 +43,7 @@ PRINT 'Groups exported: ' + CAST(@groupCount AS VARCHAR);
 GO
 
 DECLARE @totalGroups INT;
-SELECT @totalGroups = COUNT(*) FROM [dbo].[EmployerGroups];
+SELECT @totalGroups = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups];
 PRINT 'Total groups in dbo: ' + CAST(@totalGroups AS VARCHAR);
 GO
 

@@ -8,10 +8,10 @@ SET NOCOUNT ON;
 PRINT 'Transforming BrokerLicenses...';
 
 -- Truncate staging table
-TRUNCATE TABLE [etl].[stg_broker_licenses];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_broker_licenses];
 
 -- Insert transformed license data
-INSERT INTO [etl].[stg_broker_licenses] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_licenses] (
     Id, BrokerId, [State], LicenseNumber, LicenseCode, [Type], [Status],
     EffectiveDate, ExpirationDate, IsResidentLicense, ApplicableCounty,
     CreationTime, IsDeleted
@@ -48,7 +48,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [new_data].[BrokerLicenses] nl
-INNER JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = nl.PartyUniqueId
+INNER JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = nl.PartyUniqueId
 WHERE nl.PartyUniqueId IS NOT NULL
   AND nl.PartyUniqueId != ''
   AND nl.PartyUniqueId != 'NULL'
@@ -61,14 +61,14 @@ SELECT @licCount = @@ROWCOUNT;
 PRINT 'Licenses transformed: ' + CAST(@licCount AS VARCHAR);
 
 DECLARE @totalLicenses INT;
-SELECT @totalLicenses = COUNT(*) FROM [etl].[stg_broker_licenses];
+SELECT @totalLicenses = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_broker_licenses];
 PRINT 'Total licenses in staging: ' + CAST(@totalLicenses AS VARCHAR);
 
 -- Report on licenses without matching broker
 DECLARE @orphanLicenses INT;
 SELECT @orphanLicenses = COUNT(*)
 FROM [new_data].[BrokerLicenses] nl
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = nl.PartyUniqueId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = nl.PartyUniqueId
 WHERE b.Id IS NULL
   AND nl.PartyUniqueId IS NOT NULL
   AND nl.PartyUniqueId != ''

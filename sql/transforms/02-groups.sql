@@ -29,7 +29,7 @@ SELECT
     LTRIM(RTRIM(GroupNum)) AS GroupNumber,
     MAX(CASE WHEN LTRIM(RTRIM(GroupName)) <> '' THEN LTRIM(RTRIM(GroupName)) ELSE NULL END) AS Name,
     MAX(CASE WHEN LTRIM(RTRIM(StateAbbreviation)) <> '' THEN LTRIM(RTRIM(StateAbbreviation)) ELSE NULL END) AS [State]
-FROM [etl].[raw_perf_groups]
+FROM [$(ETL_SCHEMA)].[raw_perf_groups]
 WHERE LTRIM(RTRIM(GroupNum)) <> ''
 GROUP BY LTRIM(RTRIM(GroupNum));
 
@@ -46,7 +46,7 @@ SELECT
     MAX(CASE WHEN LTRIM(RTRIM(p.GroupName)) <> '' AND LTRIM(RTRIM(p.GroupName)) <> 'NULL' 
              THEN LTRIM(RTRIM(p.GroupName)) ELSE NULL END) AS Name,
     MAX(CASE WHEN LTRIM(RTRIM(p.StateIssued)) <> '' THEN LTRIM(RTRIM(p.StateIssued)) ELSE NULL END) AS [State]
-FROM [etl].[raw_premiums] p
+FROM [$(ETL_SCHEMA)].[raw_premiums] p
 WHERE LTRIM(RTRIM(p.GroupNumber)) <> ''
   AND NOT EXISTS (SELECT 1 FROM #tmp_group_names gn WHERE gn.GroupNumber = LTRIM(RTRIM(p.GroupNumber)))
 GROUP BY LTRIM(RTRIM(p.GroupNumber));
@@ -64,7 +64,7 @@ PRINT 'Step 3: Getting unique groups from input_certificate_info...';
 DROP TABLE IF EXISTS #tmp_all_groups;
 SELECT DISTINCT LTRIM(RTRIM(GroupId)) AS GroupNumber
 INTO #tmp_all_groups
-FROM [etl].[input_certificate_info]
+FROM [$(ETL_SCHEMA)].[input_certificate_info]
 WHERE LTRIM(RTRIM(GroupId)) <> '';
 
 PRINT 'Unique groups from certificates: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -75,7 +75,7 @@ PRINT 'Unique groups from certificates: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Populating stg_groups...';
 
-TRUNCATE TABLE [etl].[stg_groups];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_groups];
 
 -- Get certificate states as fallback
 DROP TABLE IF EXISTS #cert_states;
@@ -83,7 +83,7 @@ SELECT
     LTRIM(RTRIM(ci.GroupId)) AS GroupNumber, 
     MAX(CASE WHEN LTRIM(RTRIM(ci.CertIssuedState)) <> '' THEN LTRIM(RTRIM(ci.CertIssuedState)) ELSE NULL END) AS [State]
 INTO #cert_states
-FROM [etl].[input_certificate_info] ci
+FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
 WHERE LTRIM(RTRIM(ci.CertIssuedState)) <> ''
 GROUP BY LTRIM(RTRIM(ci.GroupId));
 
@@ -93,11 +93,11 @@ SELECT
     LTRIM(RTRIM(GroupNumber)) AS GroupNumber, 
     MAX(CASE WHEN LTRIM(RTRIM(StateIssued)) <> '' THEN LTRIM(RTRIM(StateIssued)) ELSE NULL END) AS [State]
 INTO #premium_states
-FROM [etl].[raw_premiums]
+FROM [$(ETL_SCHEMA)].[raw_premiums]
 WHERE LTRIM(RTRIM(StateIssued)) <> ''
 GROUP BY LTRIM(RTRIM(GroupNumber));
 
-INSERT INTO [etl].[stg_groups] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_groups] (
     Id, Name, [Description], Code, [State], IsActive, [Status], [Type], CreationTime, IsDeleted
 )
 SELECT
@@ -135,9 +135,9 @@ PRINT 'Groups staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 5: Adding G00000 (Direct-to-Consumer) sentinel...';
 
-IF NOT EXISTS (SELECT 1 FROM [etl].[stg_groups] WHERE Id = 'G00000')
+IF NOT EXISTS (SELECT 1 FROM [$(ETL_SCHEMA)].[stg_groups] WHERE Id = 'G00000')
 BEGIN
-    INSERT INTO [etl].[stg_groups] (
+    INSERT INTO [$(ETL_SCHEMA)].[stg_groups] (
         Id, Name, [Description], Code, [State], IsActive, [Status], [Type], CreationTime, IsDeleted
     )
     VALUES (
@@ -167,18 +167,18 @@ PRINT '============================================================';
 PRINT 'VERIFICATION';
 PRINT '============================================================';
 
-SELECT 'Total groups staged' AS metric, COUNT(*) AS cnt FROM [etl].[stg_groups];
+SELECT 'Total groups staged' AS metric, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_groups];
 
 SELECT 
     'Name coverage' AS metric,
     SUM(CASE WHEN Name IS NULL OR Name = '' OR Name LIKE 'Group %' THEN 1 ELSE 0 END) AS generated_names,
     SUM(CASE WHEN Name IS NOT NULL AND Name <> '' AND Name NOT LIKE 'Group %' THEN 1 ELSE 0 END) AS real_names
-FROM [etl].[stg_groups];
+FROM [$(ETL_SCHEMA)].[stg_groups];
 
 SELECT 'State coverage' AS metric,
     SUM(CASE WHEN [State] IS NOT NULL AND [State] <> '' THEN 1 ELSE 0 END) AS has_state,
     SUM(CASE WHEN [State] IS NULL OR [State] = '' THEN 1 ELSE 0 END) AS no_state
-FROM [etl].[stg_groups];
+FROM [$(ETL_SCHEMA)].[stg_groups];
 
 -- Cleanup temp tables
 DROP TABLE IF EXISTS #tmp_group_names;

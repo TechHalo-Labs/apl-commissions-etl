@@ -7,15 +7,15 @@ PRINT '=== Starting Plans Export ===';
 
 -- Check before counts
 DECLARE @before_count INT;
-SELECT @before_count = COUNT(*) FROM [dbo].[Plans];
+SELECT @before_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Plans];
 PRINT 'Plans before export: ' + CAST(@before_count AS VARCHAR);
 
 DECLARE @staging_count INT;
-SELECT @staging_count = COUNT(*) FROM [etl].[stg_plans];
+SELECT @staging_count = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_plans];
 PRINT 'Plans in staging: ' + CAST(@staging_count AS VARCHAR);
 
 -- Export plans that exist in staging and have a valid ProductId in Products
-INSERT INTO [dbo].[Plans] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Plans] (
     Id, ProductId, PlanCode, Name, [Description], [Status],
     CreationTime, IsDeleted
 )
@@ -28,23 +28,23 @@ SELECT
     COALESCE(sp.[Status], 1) AS [Status],  -- 1 = Active
     COALESCE(sp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_plans] sp
-INNER JOIN [dbo].[Products] p ON p.Id = sp.ProductId  -- Must have valid product
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Plans]);    -- Skip existing
+FROM [$(ETL_SCHEMA)].[stg_plans] sp
+INNER JOIN [$(PRODUCTION_SCHEMA)].[Products] p ON p.Id = sp.ProductId  -- Must have valid product
+WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Plans]);    -- Skip existing
 
 DECLARE @exported INT = @@ROWCOUNT;
 PRINT 'Plans exported: ' + CAST(@exported AS VARCHAR);
 
 -- Check after counts
 DECLARE @after_count INT;
-SELECT @after_count = COUNT(*) FROM [dbo].[Plans];
+SELECT @after_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Plans];
 PRINT 'Plans after export: ' + CAST(@after_count AS VARCHAR);
 
 -- Report any staging plans that couldn't be exported due to missing product
 DECLARE @orphan_count INT;
 SELECT @orphan_count = COUNT(*)
-FROM [etl].[stg_plans] sp
-LEFT JOIN [dbo].[Products] p ON p.Id = sp.ProductId
+FROM [$(ETL_SCHEMA)].[stg_plans] sp
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Products] p ON p.Id = sp.ProductId
 WHERE p.Id IS NULL;
 
 IF @orphan_count > 0
@@ -56,8 +56,8 @@ BEGIN
         sp.Id,
         sp.ProductId AS MissingProductId,
         sp.PlanCode
-    FROM [etl].[stg_plans] sp
-    LEFT JOIN [dbo].[Products] p ON p.Id = sp.ProductId
+    FROM [$(ETL_SCHEMA)].[stg_plans] sp
+    LEFT JOIN [$(PRODUCTION_SCHEMA)].[Products] p ON p.Id = sp.ProductId
     WHERE p.Id IS NULL;
 END
 

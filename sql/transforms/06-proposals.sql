@@ -44,7 +44,7 @@ WITH unique_splits AS (
         MAX(TRY_CAST(ci.CertEffectiveDate AS DATE)) AS MaxEffDate,
         MAX(ci.CertIssuedState) AS SitusState,
         MAX(LTRIM(RTRIM(ci.CommissionsSchedule))) AS ScheduleCode
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.SplitBrokerSeq = 1  -- Only get writing broker level records
       AND LTRIM(RTRIM(ci.WritingBrokerID)) <> ''
       AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
@@ -89,7 +89,7 @@ SELECT
     -- Get the TRUE minimum effective date from ALL certificates in the group
     COALESCE(
         (SELECT MIN(TRY_CAST(ci.CertEffectiveDate AS DATE))
-         FROM [etl].[input_certificate_info] ci
+         FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
          WHERE CONCAT('G', LTRIM(RTRIM(ci.GroupId))) = gp.GroupId
            AND LTRIM(RTRIM(ci.GroupId)) <> ''
            AND ci.CertEffectiveDate IS NOT NULL
@@ -124,9 +124,9 @@ PRINT 'Group proposals: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Populating stg_proposals...';
 
-TRUNCATE TABLE [etl].[stg_proposals];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposals];
 
-INSERT INTO [etl].[stg_proposals] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
@@ -149,7 +149,7 @@ SELECT
     (SELECT TOP 1 
         CASE 
             WHEN EXISTS (
-                SELECT 1 FROM [etl].[stg_brokers] b 
+                SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b 
                 WHERE b.ExternalPartyId = sc.WritingBrokerUniquePartyId
             )
             THEN sc.WritingBrokerUniquePartyId
@@ -159,7 +159,7 @@ SELECT
      WHERE sc.GroupId = gp.GroupId 
      ORDER BY sc.SplitPercent DESC) AS BrokerUniquePartyId,
     (SELECT TOP 1 b.Name FROM #group_split_configs sc 
-     LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
+     LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
      WHERE sc.GroupId = gp.GroupId ORDER BY sc.SplitPercent DESC) AS BrokerName,
     gp.GroupId,
     g.Name AS GroupName,
@@ -179,7 +179,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #group_proposals gp
-LEFT JOIN [etl].[stg_groups] g ON g.Id = gp.GroupId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = gp.GroupId
 WHERE gp.GroupId IS NOT NULL AND gp.GroupId <> 'G';
 
 DECLARE @proposal_count INT = @@ROWCOUNT;
@@ -196,8 +196,8 @@ SET sp.BrokerName = COALESCE(
     NULLIF(LTRIM(RTRIM(b.Name)), ''),
     CONCAT('Broker ', sp.BrokerUniquePartyId)
 )
-FROM [etl].[stg_proposals] sp
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
 WHERE sp.BrokerUniquePartyId IS NOT NULL
     AND (
         sp.BrokerName IS NULL 
@@ -216,9 +216,9 @@ PRINT 'BrokerName updated for ' + CAST(@broker_name_updated AS VARCHAR) + ' prop
 PRINT '';
 PRINT 'Step 4: Populating stg_split_configs...';
 
-TRUNCATE TABLE [etl].[stg_split_configs];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_split_configs];
 
-INSERT INTO [etl].[stg_split_configs] (SplitConfigHash, TotalSplitPercent, ParticipantCount, ConfigJson)
+INSERT INTO [$(ETL_SCHEMA)].[stg_split_configs] (SplitConfigHash, TotalSplitPercent, ParticipantCount, ConfigJson)
 SELECT
     CONCAT('SC-', gp.GroupId) AS SplitConfigHash,
     CASE WHEN gp.TotalSplitPercent > 999.99 THEN 999.99 ELSE gp.TotalSplitPercent END AS TotalSplitPercent,
@@ -235,9 +235,9 @@ PRINT 'Split configs created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 5: Populating stg_premium_split_versions...';
 
-TRUNCATE TABLE [etl].[stg_premium_split_versions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_versions];
 
-INSERT INTO [etl].[stg_premium_split_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -256,7 +256,7 @@ SELECT
     0 AS [Source],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_proposals] p
+FROM [$(ETL_SCHEMA)].[stg_proposals] p
 INNER JOIN #group_proposals gp ON gp.GroupId = p.GroupId;
 
 PRINT 'Premium split versions created: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -268,7 +268,7 @@ PRINT 'Premium split versions created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 6: Populating stg_premium_split_participants (combined)...';
 
-TRUNCATE TABLE [etl].[stg_premium_split_participants];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_participants];
 
 -- First, pick ONE hierarchy per (Group, Broker) combination
 -- Note: stg_hierarchies still uses BrokerId, so we'll join by BrokerId for now
@@ -281,10 +281,10 @@ SELECT
     MIN(h.Id) AS HierarchyId,  -- Pick first hierarchy if multiple exist
     MIN(h.Name) AS HierarchyName
 INTO #broker_hierarchies
-FROM [etl].[stg_hierarchies] h
+FROM [$(ETL_SCHEMA)].[stg_hierarchies] h
 GROUP BY h.GroupId, h.BrokerId;
 
-INSERT INTO [etl].[stg_premium_split_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, EffectiveFrom, CreationTime, IsDeleted
 )
@@ -296,7 +296,7 @@ SELECT
     -- NEW: Populate BrokerUniquePartyId (only if broker exists)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b 
             WHERE b.ExternalPartyId = sc.WritingBrokerUniquePartyId
         )
         THEN sc.WritingBrokerUniquePartyId
@@ -313,9 +313,9 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #group_split_configs sc
-INNER JOIN [etl].[stg_proposals] p ON p.GroupId = sc.GroupId
-INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = p.Id
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.GroupId = sc.GroupId
+INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_versions] psv ON psv.ProposalId = p.Id
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = sc.WritingBrokerUniquePartyId
 LEFT JOIN #broker_hierarchies bh 
     ON bh.GroupId = sc.GroupId
     AND bh.BrokerId = sc.WritingBrokerId;  -- Join by BrokerId (hierarchies still use BrokerId)
@@ -331,9 +331,9 @@ PRINT 'Premium split participants created: ' + CAST(@participant_count AS VARCHA
 PRINT '';
 PRINT 'Step 7: Populating stg_proposal_key_mapping...';
 
-TRUNCATE TABLE [etl].[stg_proposal_key_mapping];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposal_key_mapping];
 
-INSERT INTO [etl].[stg_proposal_key_mapping] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_key_mapping] (
     GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
 )
 SELECT DISTINCT
@@ -343,8 +343,8 @@ SELECT DISTINCT
     COALESCE(LTRIM(RTRIM(ci.PlanCode)), '*') AS PlanCode,
     p.Id AS ProposalId,
     p.SplitConfigHash
-FROM [etl].[input_certificate_info] ci
-INNER JOIN [etl].[stg_proposals] p ON p.GroupId = CONCAT('G', LTRIM(RTRIM(ci.GroupId)))
+FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.GroupId = CONCAT('G', LTRIM(RTRIM(ci.GroupId)))
 WHERE LTRIM(RTRIM(ci.GroupId)) <> ''
   AND ci.Product IS NOT NULL 
   AND LTRIM(RTRIM(ci.Product)) <> ''
@@ -359,9 +359,9 @@ PRINT 'Key mappings created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 8: Populating stg_proposal_products...';
 
-TRUNCATE TABLE [etl].[stg_proposal_products];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposal_products];
 
-INSERT INTO [etl].[stg_proposal_products] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_products] (
     Id, ProposalId, ProductCode, ProductName, CreationTime, IsDeleted
 )
 SELECT
@@ -376,13 +376,13 @@ FROM (
         CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
         LTRIM(RTRIM(ci.Product)) AS ProductCode,
         MAX(LTRIM(RTRIM(ci.ProductCategory))) AS ProductCategory
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.SplitBrokerSeq = 1
       AND LTRIM(RTRIM(ci.Product)) <> ''
       AND LTRIM(RTRIM(ci.GroupId)) <> ''
     GROUP BY LTRIM(RTRIM(ci.GroupId)), LTRIM(RTRIM(ci.Product))
 ) pp
-INNER JOIN [etl].[stg_proposals] p ON p.GroupId = pp.GroupId;
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.GroupId = pp.GroupId;
 
 PRINT 'Proposal products created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
@@ -394,12 +394,12 @@ PRINT '============================================================';
 PRINT 'VERIFICATION';
 PRINT '============================================================';
 
-SELECT 'Proposals' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposals];
-SELECT 'Split Configs' AS entity, COUNT(*) AS cnt FROM [etl].[stg_split_configs];
-SELECT 'Premium Split Versions' AS entity, COUNT(*) AS cnt FROM [etl].[stg_premium_split_versions];
-SELECT 'Premium Split Participants' AS entity, COUNT(*) AS cnt FROM [etl].[stg_premium_split_participants];
-SELECT 'Key Mappings' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposal_key_mapping];
-SELECT 'Proposal Products' AS entity, COUNT(*) AS cnt FROM [etl].[stg_proposal_products];
+SELECT 'Proposals' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_proposals];
+SELECT 'Split Configs' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_split_configs];
+SELECT 'Premium Split Versions' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_premium_split_versions];
+SELECT 'Premium Split Participants' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_premium_split_participants];
+SELECT 'Key Mappings' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping];
+SELECT 'Proposal Products' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_proposal_products];
 
 -- Show sample of combined split participants (groups with multiple brokers)
 PRINT '';
@@ -411,11 +411,11 @@ SELECT TOP 20
     psp.BrokerName,
     psp.SplitPercent,
     psp.Sequence
-FROM [etl].[stg_premium_split_versions] psv
-INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] psv
+INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
 WHERE psv.Id IN (
     SELECT TOP 5 VersionId 
-    FROM [etl].[stg_premium_split_participants] 
+    FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] 
     GROUP BY VersionId 
     HAVING COUNT(*) > 1
     ORDER BY COUNT(*) DESC

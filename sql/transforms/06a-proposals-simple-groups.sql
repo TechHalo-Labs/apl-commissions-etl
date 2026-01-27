@@ -17,7 +17,7 @@ PRINT '';
 -- =============================================================================
 PRINT 'Step 1: Building cert_split_configs table...';
 
-DROP TABLE IF EXISTS [etl].[cert_split_configs];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[cert_split_configs];
 
 WITH SplitDetails AS (
     SELECT 
@@ -31,7 +31,7 @@ WITH SplitDetails AS (
         SplitBrokerId,
         CertSplitPercent,
         CommissionsSchedule
-    FROM [etl].[input_certificate_info]
+    FROM [$(ETL_SCHEMA)].[input_certificate_info]
     WHERE GroupId IS NOT NULL 
       AND LTRIM(RTRIM(GroupId)) <> ''
       AND CertStatus IN ('A', 'Active')
@@ -61,14 +61,14 @@ CertConfigs AS (
     GROUP BY GroupId, EffectiveDate, ProductCode, PlanCode, CertificateId
 )
 SELECT *
-INTO [etl].[cert_split_configs]
+INTO [$(ETL_SCHEMA)].[cert_split_configs]
 FROM CertConfigs;
 
 DECLARE @total_certs INT = @@ROWCOUNT;
 PRINT 'Total active certificates: ' + CAST(@total_certs AS VARCHAR);
 
 -- Add index for performance
-CREATE NONCLUSTERED INDEX IX_cert_split_configs_GroupId ON [etl].[cert_split_configs] (GroupId);
+CREATE NONCLUSTERED INDEX IX_cert_split_configs_GroupId ON [$(ETL_SCHEMA)].[cert_split_configs] (GroupId);
 
 -- =============================================================================
 -- Step 2: Identify single-config groups
@@ -76,7 +76,7 @@ CREATE NONCLUSTERED INDEX IX_cert_split_configs_GroupId ON [etl].[cert_split_con
 PRINT '';
 PRINT 'Step 2: Identifying single-config groups...';
 
-DROP TABLE IF EXISTS [etl].[simple_groups];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[simple_groups];
 
 -- Extract first broker from JSON config for each group
 SELECT 
@@ -86,8 +86,8 @@ SELECT
     MAX(csc.EffectiveDate) AS MaxEffDate,
     MAX(csc.ConfigJson) AS ConfigJson,
     MAX(JSON_VALUE(csc.ConfigJson, '$[0].brokerId')) AS WritingBrokerId
-INTO [etl].[simple_groups]
-FROM [etl].[cert_split_configs] csc
+INTO [$(ETL_SCHEMA)].[simple_groups]
+FROM [$(ETL_SCHEMA)].[cert_split_configs] csc
 GROUP BY csc.GroupId
 HAVING COUNT(DISTINCT csc.ConfigJson) = 1;
 
@@ -95,7 +95,7 @@ DECLARE @simple_groups INT = @@ROWCOUNT;
 PRINT 'Single-config groups: ' + CAST(@simple_groups AS VARCHAR);
 
 -- Get cert count for simple groups
-DECLARE @simple_certs INT = (SELECT SUM(CertCount) FROM [etl].[simple_groups]);
+DECLARE @simple_certs INT = (SELECT SUM(CertCount) FROM [$(ETL_SCHEMA)].[simple_groups]);
 PRINT 'Certificates in simple groups: ' + CAST(@simple_certs AS VARCHAR);
 
 -- =============================================================================
@@ -105,9 +105,9 @@ PRINT '';
 PRINT 'Step 3: Creating proposals for simple groups...';
 
 -- Clear existing proposals (will rebuild)
-TRUNCATE TABLE [etl].[stg_proposals];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposals];
 
-INSERT INTO [etl].[stg_proposals] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
@@ -127,7 +127,7 @@ SELECT
     -- NEW: Use BrokerUniquePartyId (strip 'P' prefix, get numeric string)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b2 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b2 
             WHERE b2.ExternalPartyId = REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '')
         )
         THEN REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '')
@@ -148,9 +148,9 @@ SELECT
     0 AS EnablePlanCodeFiltering,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[simple_groups] sg
-LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', sg.GroupId)
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '');
+FROM [$(ETL_SCHEMA)].[simple_groups] sg
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = CONCAT('G', sg.GroupId)
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(sg.WritingBrokerId, 'P', ''), ' ', '');
 
 DECLARE @proposals_created INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
@@ -161,9 +161,9 @@ PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Creating key mapping for simple group certificates...';
 
-TRUNCATE TABLE [etl].[stg_proposal_key_mapping];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposal_key_mapping];
 
-INSERT INTO [etl].[stg_proposal_key_mapping] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_key_mapping] (
     GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
 )
 SELECT DISTINCT
@@ -173,9 +173,9 @@ SELECT DISTINCT
     csc.PlanCode,
     CONCAT('P-G', csc.GroupId, '-1') AS ProposalId,
     p.SplitConfigHash
-FROM [etl].[cert_split_configs] csc
-INNER JOIN [etl].[simple_groups] sg ON sg.GroupId = csc.GroupId
-INNER JOIN [etl].[stg_proposals] p ON p.Id = CONCAT('P-G', csc.GroupId, '-1');
+FROM [$(ETL_SCHEMA)].[cert_split_configs] csc
+INNER JOIN [$(ETL_SCHEMA)].[simple_groups] sg ON sg.GroupId = csc.GroupId
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.Id = CONCAT('P-G', csc.GroupId, '-1');
 
 DECLARE @mappings_created INT = @@ROWCOUNT;
 PRINT 'Key mappings created: ' + CAST(@mappings_created AS VARCHAR);
@@ -188,10 +188,10 @@ PRINT '';
 PRINT 'Step 5: Creating PremiumSplitVersions for simple groups...';
 
 -- Clear existing split versions (will be rebuilt for all proposal types)
-TRUNCATE TABLE [etl].[stg_premium_split_versions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_versions];
 
 -- Calculate TotalSplitPercent from ConfigJson (sum of level=1 participants)
-INSERT INTO [etl].[stg_premium_split_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -215,8 +215,8 @@ SELECT
     0 AS [Source],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[simple_groups] sg
-LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', sg.GroupId);
+FROM [$(ETL_SCHEMA)].[simple_groups] sg
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = CONCAT('G', sg.GroupId);
 
 DECLARE @split_versions_created INT = @@ROWCOUNT;
 PRINT 'Split versions created: ' + CAST(@split_versions_created AS VARCHAR);
@@ -229,10 +229,10 @@ PRINT '';
 PRINT 'Step 6: Creating PremiumSplitParticipants for simple groups...';
 
 -- Clear existing split participants (will be rebuilt for all proposal types)
-TRUNCATE TABLE [etl].[stg_premium_split_participants];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_participants];
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
-INSERT INTO [etl].[stg_premium_split_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
@@ -245,7 +245,7 @@ SELECT
     -- NEW: Use BrokerUniquePartyId (only if broker exists)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b2 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b2 
             WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
         )
         THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
@@ -262,7 +262,7 @@ SELECT
     sg.MinEffDate AS EffectiveFrom,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[simple_groups] sg
+FROM [$(ETL_SCHEMA)].[simple_groups] sg
 CROSS APPLY OPENJSON(sg.ConfigJson)
     WITH (
         splitSeq INT '$.splitSeq',
@@ -271,7 +271,7 @@ CROSS APPLY OPENJSON(sg.ConfigJson)
         [percent] DECIMAL(5,2) '$.percent',
         schedule NVARCHAR(100) '$.schedule'
     ) j
-LEFT JOIN [etl].[stg_brokers] b 
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b 
     ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1;  -- Only writing broker level (split participants)
 
@@ -284,20 +284,20 @@ PRINT 'Split participants created: ' + CAST(@split_participants_created AS VARCH
 PRINT '';
 PRINT 'Step 7: Creating remainder table (complex groups)...';
 
-DROP TABLE IF EXISTS [etl].[cert_split_configs_remainder];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[cert_split_configs_remainder];
 
 SELECT csc.*
-INTO [etl].[cert_split_configs_remainder]
-FROM [etl].[cert_split_configs] csc
+INTO [$(ETL_SCHEMA)].[cert_split_configs_remainder]
+FROM [$(ETL_SCHEMA)].[cert_split_configs] csc
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[simple_groups] sg WHERE sg.GroupId = csc.GroupId
+    SELECT 1 FROM [$(ETL_SCHEMA)].[simple_groups] sg WHERE sg.GroupId = csc.GroupId
 );
 
 DECLARE @remainder_certs INT = @@ROWCOUNT;
 PRINT 'Certificates remaining to process: ' + CAST(@remainder_certs AS VARCHAR);
 
 -- Get unique group count in remainder
-DECLARE @remainder_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [etl].[cert_split_configs_remainder]);
+DECLARE @remainder_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder]);
 PRINT 'Groups remaining to process: ' + CAST(@remainder_groups AS VARCHAR);
 
 -- =============================================================================

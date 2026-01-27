@@ -42,7 +42,7 @@ SELECT
         ORDER BY GroupId, SplitConfigHash, DateRangeFrom, ProductCodes, PlanCodes
     ) AS SortOrder
 INTO #proposals_sorted
-FROM [etl].[stg_proposals]
+FROM [$(ETL_SCHEMA)].[stg_proposals]
 WHERE Notes = 'Granular';
 
 DECLARE @granular_count INT = @@ROWCOUNT;
@@ -120,16 +120,16 @@ PRINT '';
 PRINT 'Step 4: Creating consolidated proposals...';
 
 -- First, delete the granular proposals (we'll replace them with consolidated ones)
-DELETE FROM [etl].[stg_proposals] WHERE Notes = 'Granular';
+DELETE FROM [$(ETL_SCHEMA)].[stg_proposals] WHERE Notes = 'Granular';
 
 DECLARE @deleted INT = @@ROWCOUNT;
 PRINT 'Deleted granular proposals: ' + CAST(@deleted AS VARCHAR);
 
 -- Delete key mappings for granular proposals (they reference deleted proposals)
 DELETE pkm
-FROM [etl].[stg_proposal_key_mapping] pkm
+FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping] pkm
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_proposals] p WHERE p.Id = pkm.ProposalId
+    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_proposals] p WHERE p.Id = pkm.ProposalId
 );
 
 DECLARE @mappings_deleted INT = @@ROWCOUNT;
@@ -141,12 +141,12 @@ SELECT
     GroupId,
     MAX(TRY_CAST(SUBSTRING(Id, CHARINDEX('-', Id, 4) + 1, 10) AS INT)) AS MaxNum
 INTO #max_proposal_num
-FROM [etl].[stg_proposals]
+FROM [$(ETL_SCHEMA)].[stg_proposals]
 WHERE Id LIKE 'P-G%'
 GROUP BY GroupId;
 
 -- Insert consolidated proposals
-INSERT INTO [etl].[stg_proposals] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
@@ -188,7 +188,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #consolidation_groups cg
-LEFT JOIN [etl].[stg_groups] g ON g.Id = cg.GroupId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = cg.GroupId
 LEFT JOIN #group_products gp ON gp.GroupId = cg.GroupId AND gp.SplitConfigHash = cg.SplitConfigHash
 LEFT JOIN #group_plans gpl ON gpl.GroupId = cg.GroupId AND gpl.SplitConfigHash = cg.SplitConfigHash;
 
@@ -203,7 +203,7 @@ PRINT 'Step 5: Creating key mappings for consolidated proposals...';
 
 -- Map keys to consolidated proposals based on Group and Config
 -- Use ROW_NUMBER to pick just one proposal per key when multiple match
-INSERT INTO [etl].[stg_proposal_key_mapping] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_key_mapping] (
     GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
 )
 SELECT GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
@@ -219,13 +219,13 @@ FROM (
             PARTITION BY CONCAT('G', csc.GroupId), YEAR(csc.EffectiveDate), csc.ProductCode, csc.PlanCode
             ORDER BY p.Id
         ) AS rn
-    FROM [etl].[cert_split_configs_remainder3] csc
-    INNER JOIN [etl].[stg_proposals] p 
+    FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder3] csc
+    INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p 
         ON p.GroupId = CONCAT('G', csc.GroupId)
         AND p.SplitConfigHash = CONVERT(NVARCHAR(64), HASHBYTES('SHA2_256', csc.ConfigJson), 2)
         AND p.Notes = 'Consolidated'
     WHERE NOT EXISTS (
-        SELECT 1 FROM [etl].[stg_proposal_key_mapping] pkm
+        SELECT 1 FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping] pkm
         WHERE pkm.GroupId = CONCAT('G', csc.GroupId)
           AND pkm.EffectiveYear = YEAR(csc.EffectiveDate)
           AND pkm.ProductCode = csc.ProductCode
@@ -254,8 +254,8 @@ ELSE
   PRINT 'REDUCTION: N/A (no granular proposals to consolidate)';
 PRINT '';
 
-DECLARE @total_proposals INT = (SELECT COUNT(*) FROM [etl].[stg_proposals]);
-DECLARE @total_mappings INT = (SELECT COUNT(*) FROM [etl].[stg_proposal_key_mapping]);
+DECLARE @total_proposals INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_proposals]);
+DECLARE @total_mappings INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping]);
 PRINT 'FINAL TOTALS:';
 PRINT '  Total proposals: ' + CAST(@total_proposals AS VARCHAR);
 PRINT '  Total key mappings: ' + CAST(@total_mappings AS VARCHAR);
@@ -264,7 +264,7 @@ PRINT '';
 -- Breakdown by type
 PRINT 'PROPOSALS BY TYPE:';
 SELECT Notes, COUNT(*) as cnt
-FROM [etl].[stg_proposals]
+FROM [$(ETL_SCHEMA)].[stg_proposals]
 GROUP BY Notes
 ORDER BY cnt DESC;
 
@@ -277,9 +277,9 @@ GO
 PRINT '';
 PRINT 'Step 6: Populating stg_proposal_products...';
 
-TRUNCATE TABLE [etl].[stg_proposal_products];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposal_products];
 
-INSERT INTO [etl].[stg_proposal_products] (Id, ProposalId, ProductCode, ProductName, CreationTime, IsDeleted)
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_products] (Id, ProposalId, ProductCode, ProductName, CreationTime, IsDeleted)
 SELECT
     ROW_NUMBER() OVER (ORDER BY p.Id, pp.ProductCode) AS Id,
     p.Id AS ProposalId,
@@ -292,14 +292,14 @@ FROM (
         CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
         LTRIM(RTRIM(ci.Product)) AS ProductCode,
         MAX(LTRIM(RTRIM(ci.ProductCategory))) AS ProductCategory
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.SplitBrokerSeq = 1
       AND LTRIM(RTRIM(ci.Product)) <> ''
       AND LTRIM(RTRIM(ci.GroupId)) <> ''
       AND ci.RecStatus = 'A'  -- Only active split configurations
     GROUP BY LTRIM(RTRIM(ci.GroupId)), LTRIM(RTRIM(ci.Product))
 ) pp
-INNER JOIN [etl].[stg_proposals] p ON p.GroupId = pp.GroupId;
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.GroupId = pp.GroupId;
 
 DECLARE @pp_count INT = @@ROWCOUNT;
 PRINT 'Proposal products staged: ' + CAST(@pp_count AS VARCHAR);
@@ -324,13 +324,13 @@ SELECT DISTINCT
     p.EffectiveDateTo,
     csc.ConfigJson
 INTO #consolidated_configs
-FROM [etl].[stg_proposals] p
-INNER JOIN [etl].[cert_split_configs_remainder3] csc 
+FROM [$(ETL_SCHEMA)].[stg_proposals] p
+INNER JOIN [$(ETL_SCHEMA)].[cert_split_configs_remainder3] csc 
     ON CONCAT('G', csc.GroupId) = p.GroupId
     AND CONVERT(NVARCHAR(64), HASHBYTES('SHA2_256', csc.ConfigJson), 2) = p.SplitConfigHash
 WHERE p.Notes = 'Consolidated';
 
-INSERT INTO [etl].[stg_premium_split_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -355,10 +355,10 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #consolidated_configs cc
-INNER JOIN [etl].[stg_proposals] p ON p.Id = cc.ProposalId
-LEFT JOIN [etl].[stg_groups] g ON g.Id = cc.GroupId
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.Id = cc.ProposalId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = cc.GroupId
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_premium_split_versions] psv 
+    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] psv 
     WHERE psv.ProposalId = cc.ProposalId
 );
 
@@ -373,9 +373,9 @@ PRINT '';
 PRINT 'Step 8: Creating PremiumSplitParticipants for consolidated proposals...';
 
 -- Get max ID from existing participants
-DECLARE @max_psp_id INT = (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) FROM [etl].[stg_premium_split_participants]);
+DECLARE @max_psp_id INT = (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) FROM [$(ETL_SCHEMA)].[stg_premium_split_participants]);
 
-INSERT INTO [etl].[stg_premium_split_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
@@ -388,7 +388,7 @@ SELECT
     -- NEW: Use BrokerUniquePartyId (only if broker exists)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b2 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b2 
             WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
         )
         THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
@@ -413,12 +413,12 @@ CROSS APPLY OPENJSON(cc.ConfigJson)
         brokerId NVARCHAR(50) '$.brokerId',
         [percent] DECIMAL(5,2) '$.percent'
     ) j
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1
   AND j.brokerId IS NOT NULL
   AND TRY_CAST(REPLACE(j.brokerId, 'P', '') AS BIGINT) IS NOT NULL
   AND NOT EXISTS (
-      SELECT 1 FROM [etl].[stg_premium_split_participants] psp
+      SELECT 1 FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] psp
       WHERE psp.VersionId = CONCAT('PSV-', cc.ProposalId)
         AND psp.Sequence = j.splitSeq
   );
@@ -434,8 +434,8 @@ PRINT 'CONSOLIDATION COMPLETED';
 PRINT '============================================================';
 
 -- Final split counts
-DECLARE @total_split_versions INT = (SELECT COUNT(*) FROM [etl].[stg_premium_split_versions]);
-DECLARE @total_split_participants INT = (SELECT COUNT(*) FROM [etl].[stg_premium_split_participants]);
+DECLARE @total_split_versions INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_premium_split_versions]);
+DECLARE @total_split_participants INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_premium_split_participants]);
 PRINT '';
 PRINT 'FINAL SPLIT TOTALS:';
 PRINT '  Total split versions: ' + CAST(@total_split_versions AS VARCHAR);

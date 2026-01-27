@@ -6,7 +6,7 @@
 
 PRINT 'Exporting missing Products to dbo.Products...';
 
-INSERT INTO [dbo].[Products] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Products] (
     Id, ProductCode, ProductName, MasterCategory, Category,
     OffGroupLetterDescription, CommissionType, DefaultCommissionTable,
     IsActive, IsArchived, SeriesType, SpecialOffer, [Description],
@@ -28,21 +28,21 @@ SELECT
     sp.[Description],
     COALESCE(sp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_products] sp
-WHERE sp.Id NOT IN (SELECT Id FROM [dbo].[Products]);
+FROM [$(ETL_SCHEMA)].[stg_products] sp
+WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Products]);
 
 DECLARE @productCount INT;
 SELECT @productCount = @@ROWCOUNT;
 PRINT 'Products exported: ' + CAST(@productCount AS VARCHAR);
 
 DECLARE @totalProducts INT;
-SELECT @totalProducts = COUNT(*) FROM [dbo].[Products];
+SELECT @totalProducts = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Products];
 PRINT 'Total products in dbo: ' + CAST(@totalProducts AS VARCHAR);
 GO
 
 PRINT 'Exporting missing ProductCodes to dbo.ProductCodes...';
 
-INSERT INTO [dbo].[ProductCodes] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ProductCodes] (
     Id, ProductId, Code, [Description], AllowedStates, [Status],
     GroupsCount, SchedulesCount, CreationTime, IsDeleted
 )
@@ -57,15 +57,15 @@ SELECT
     COALESCE(spc.SchedulesCount, 0) AS SchedulesCount,
     COALESCE(spc.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(spc.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_product_codes] spc
-WHERE CAST(spc.Id AS NVARCHAR(100)) NOT IN (SELECT Id FROM [dbo].[ProductCodes]);
+FROM [$(ETL_SCHEMA)].[stg_product_codes] spc
+WHERE CAST(spc.Id AS NVARCHAR(100)) NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[ProductCodes]);
 
 DECLARE @productCodeCount INT;
 SELECT @productCodeCount = @@ROWCOUNT;
 PRINT 'ProductCodes exported: ' + CAST(@productCodeCount AS VARCHAR);
 
 DECLARE @totalProductCodes INT;
-SELECT @totalProductCodes = COUNT(*) FROM [dbo].[ProductCodes];
+SELECT @totalProductCodes = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[ProductCodes];
 PRINT 'Total product codes in dbo: ' + CAST(@totalProductCodes AS VARCHAR);
 GO
 

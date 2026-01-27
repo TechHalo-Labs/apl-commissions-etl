@@ -1,954 +1,419 @@
 /**
- * SQL Server ETL Pipeline Orchestrator
- * =====================================
- * Runs the complete ETL pipeline for commission calculation
+ * Production-Ready ETL Pipeline Orchestrator
+ * ==========================================
+ * 
+ * Features:
+ * - State persistence (tracks progress in database)
+ * - Resume capability (continue from failed step)
+ * - Schema flexibility (configure via appsettings.json)
+ * - Progress reporting (real-time step/phase tracking)
+ * - Debug mode (limit records for testing)
+ * - Comprehensive error handling
  * 
  * Usage:
  *   npx tsx scripts/run-pipeline.ts [options]
  * 
  * Options:
- *   --restore-backup   Restore raw data from raw_data schema backup (instead of CSV)
- *   --from-new-data    Read raw data from new_data schema (instead of CSV or raw_data)
- *   --skip-schema      Skip schema setup (preserves existing raw/staging tables)
- *   --skip-ingest      Skip CSV data ingestion (use with --restore-backup or --from-new-data)
- *   --skip-transform   Skip transform phase
- *   --skip-calc        Skip commission calculation phase
- *   --skip-export      Skip export to production phase
- *   --skip-grace-period-fix Skip grace period date fix (Bug #36)
- * 
- * Recommended usage for full pipeline with backup data:
- *   npx tsx scripts/run-pipeline.ts --restore-backup --skip-calc
- * 
- * Pipeline Stages:
- * ----------------
- * STEP 1: Schema Setup
- *   - Creates/truncates etl schema tables (raw, input, staging, calc)
- * 
- * STEP 2: Data Ingestion
- *   - Either: Restore from raw_data schema backup (--restore-backup)
- *   - Or: Ingest from CSV files
- *   - Populates input tables from raw data
- * 
- * STEP 3: Transforms (18 scripts)
- *   Phase 1: Reference tables (00-references.sql)
- *   Phase 2: Core entities (01-brokers, 02-groups, 03-products, 04-schedules)
- *   Phase 3: Tiered proposal creation
- *     - 06a: Simple groups (single config) → Create proposals
- *     - 06b: Non-conformant (multi-config per key) → PolicyHierarchyAssignments
- *     - 06c: Plan-differentiated proposals
- *     - 06d: Year-differentiated proposals
- *     - 06e: Granular proposals for remainder
- *     - 06f: Consolidate proposals (merge by config hash)
- *   Phase 4: Hierarchies (07-hierarchies, 08-hierarchy-splits)
- *   Phase 5: Policies and transactions (09-policies, 10-premium-transactions)
- *   Phase 6: Policy hierarchy assignments (11-policy-hierarchy-assignments)
- *   Phase 7: Additional entities (11-fees, 12-broker-banking-infos)
- * 
- * STEP 4: Commission Calculation (optional, usually skipped for ETL-only)
- * 
- * STEP 5: Export to Production (18 scripts in dependency order)
- *   - Brokers, Groups, Products, Plans
- *   - Schedules, Schedule Rates, Special Rates
- *   - Proposals, Hierarchies, Hierarchy Splits
- *   - Policies, Premium Splits, Premium Transactions
- *   - Policy Hierarchy Assignments (for non-conformant policies)
- *   - Commission Assignments (pass-through logic)
- *   - Broker Licenses, EO Insurance, Banking Info
- * 
- * STEP 6: Post-Export Data Fixes
- *   - Fix grace period dates (Bug #36): Corrects far-future expiration dates
- *     in BrokerLicenses, BrokerAppointments, and BrokerEOInsurances
+ *   --resume              Resume from last failed run
+ *   --resume-from <id>    Resume from specific run ID
+ *   --debug               Enable debug mode with record limits
+ *   --skip-schema         Skip schema setup
+ *   --skip-ingest         Skip data ingestion
+ *   --skip-transform      Skip transforms
+ *   --skip-export         Skip export to production
+ *   --transforms-only     Run transforms only (skip ingest and export)
+ *   --export-only         Run export only (skip ingest and transforms)
  */
 
 import * as sql from 'mssql';
-import * as fs from 'fs';
 import * as path from 'path';
-import { parse } from 'csv-parse';
+import { loadConfig, getSqlConfig, validateConfig, printConfig, ETLConfig } from './lib/config-loader';
+import { ETLStateManager } from './lib/state-manager';
+import { ProgressReporter } from './lib/progress-reporter';
+import { executeSQLScript } from './lib/sql-executor';
+import { formatError, canResumeAfterError } from './lib/error-handler';
+
+// =============================================================================
+// Parse Command Line Arguments
+// =============================================================================
+
+const args = process.argv.slice(2);
+const flags = {
+  resume: args.includes('--resume'),
+  resumeFrom: args.includes('--resume-from') ? args[args.indexOf('--resume-from') + 1] : null,
+  debug: args.includes('--debug'),
+  skipSchema: args.includes('--skip-schema'),
+  skipIngest: args.includes('--skip-ingest'),
+  skipTransform: args.includes('--skip-transform'),
+  skipExport: args.includes('--skip-export'),
+  transformsOnly: args.includes('--transforms-only'),
+  exportOnly: args.includes('--export-only'),
+};
+
+// Apply composite flags
+if (flags.transformsOnly) {
+  flags.skipIngest = true;
+  flags.skipExport = true;
+}
+
+if (flags.exportOnly) {
+  flags.skipIngest = true;
+  flags.skipTransform = true;
+}
 
 // =============================================================================
 // Configuration
 // =============================================================================
 
-/**
- * Parse a SQL Server connection string into mssql config
- * Format: Server=...;Database=...;User Id=...;Password=...;TrustServerCertificate=...;Encrypt=...;
- */
-function parseConnectionString(connStr: string): Partial<sql.config> {
-  const parts: Record<string, string> = {};
-  connStr.split(';').forEach(part => {
-    const [key, ...valueParts] = part.split('=');
-    if (key && valueParts.length > 0) {
-      parts[key.trim().toLowerCase()] = valueParts.join('=').trim();
-    }
-  });
-  
-  return {
-    server: parts['server'] || parts['data source'],
-    database: parts['database'] || parts['initial catalog'],
-    user: parts['user id'] || parts['uid'] || parts['user'],
-    password: parts['password'] || parts['pwd'],
-    options: {
-      encrypt: parts['encrypt']?.toLowerCase() !== 'false',
-      trustServerCertificate: parts['trustservercertificate']?.toLowerCase() === 'true',
+const configOverrides: Partial<ETLConfig> = {
+  resume: {
+    enabled: flags.resume || !!flags.resumeFrom,
+    resumeFromRunId: flags.resumeFrom
+  }
+};
+
+if (flags.debug) {
+  configOverrides.debugMode = {
+    enabled: true,
+    maxRecords: {
+      brokers: 100,
+      groups: 50,
+      policies: 1000,
+      premiums: 5000,
+      hierarchies: 100,
+      proposals: 50
     }
   };
 }
 
-/**
- * Get SQL Server configuration from environment
- * REQUIRES: $SQLSERVER connection string OR individual env vars
- * NO DEFAULTS - Will exit with error if not configured
- */
-function getSqlConfig(): sql.config {
-  const connStr = process.env.SQLSERVER;
-  
-  if (connStr) {
-    const parsed = parseConnectionString(connStr);
-    if (!parsed.server || !parsed.database || !parsed.user || !parsed.password) {
-      console.error('❌ Invalid $SQLSERVER connection string. Expected format:');
-      console.error('   Server=<host>;Database=<db>;User Id=<user>;Password=<pwd>;TrustServerCertificate=True;Encrypt=True;');
-      process.exit(1);
-    }
-    return {
-      server: parsed.server,
-      database: parsed.database,
-      user: parsed.user,
-      password: parsed.password,
-      options: {
-        encrypt: parsed.options?.encrypt ?? true,
-        trustServerCertificate: parsed.options?.trustServerCertificate ?? true,
-      },
-      requestTimeout: 300000,
-      connectionTimeout: 30000,
-    };
-  }
-  
-  // Fall back to individual environment variables
-  const server = process.env.SQLSERVER_HOST;
-  const database = process.env.SQLSERVER_DATABASE;
-  const user = process.env.SQLSERVER_USER;
-  const password = process.env.SQLSERVER_PASSWORD;
-  
-  if (!server || !database || !user || !password) {
-    console.error('');
-    console.error('❌ SQL Server connection not configured!');
-    console.error('');
-    console.error('Please set one of the following:');
-    console.error('');
-    console.error('Option 1: Single connection string (recommended)');
-    console.error('  export SQLSERVER="Server=<host>;Database=<db>;User Id=<user>;Password=<pwd>;TrustServerCertificate=True;Encrypt=True;"');
-    console.error('');
-    console.error('Option 2: Individual environment variables');
-    console.error('  export SQLSERVER_HOST=<host>');
-    console.error('  export SQLSERVER_DATABASE=<db>');
-    console.error('  export SQLSERVER_USER=<user>');
-    console.error('  export SQLSERVER_PASSWORD=<pwd>');
-    console.error('');
-    process.exit(1);
-  }
-  
-  return {
-    server,
-    database,
-    user,
-    password,
-    options: {
-      encrypt: true,
-      trustServerCertificate: true,
-    },
-    requestTimeout: 300000,
-    connectionTimeout: 30000,
-  };
+const config = loadConfig(configOverrides);
+
+// Validate configuration
+const validation = validateConfig(config);
+if (!validation.valid) {
+  console.error('\n❌ Configuration validation failed:');
+  validation.errors.forEach(err => console.error(`   - ${err}`));
+  console.error('\nPlease check appsettings.json or set environment variables.\n');
+  process.exit(1);
 }
 
-const config: sql.config = {
-  ...getSqlConfig(),
-  requestTimeout: 300000, // 5 minutes
-  connectionTimeout: 30000,
-  pool: {
-    max: 10,
-    min: 0,
-    idleTimeoutMillis: 30000,
-  },
-};
-
-const CSV_DATA_PATH = process.env.CSV_DATA_PATH || path.join(__dirname, '../../v4-etl/data');
-
-// CSV file mapping to raw tables
-// File names must match actual CSV files in rawdata directory
-const csvFiles = {
-  'raw_premiums': 'premiums.csv',
-  'raw_commissions_detail': [
-    'CommissionsDetail_20251101_20251115.csv',
-    'CommissionsDetail_20251116_20251130.csv', 
-    'CommissionsDetail_20251201_20251215.csv',
-    'CommissionsDetail_20251216_20251231.csv',
-  ],
-  'raw_certificate_info': 'CertificateInfo.csv',
-  'raw_individual_brokers': 'IndividualRosterExtract_20260107.csv',
-  'raw_org_brokers': 'OrganizationRosterExtract_20260107.csv',
-  'raw_licenses': 'BrokerLicenseExtract_20260107.csv',
-  'raw_eo_insurance': 'BrokerEO_20260107.csv',
-  'raw_schedule_rates': 'perf.csv',
-  'raw_fees': 'Fees_20260107.csv',
-  'raw_perf_groups': 'perf-group.csv',
-};
-
-// SQL files in execution order
-const sqlFiles = {
-  schema: 'sql/00-schema-setup.sql',
-  rawTables: 'sql/01-raw-tables.sql',
-  inputTables: 'sql/02-input-tables.sql',
-  stagingTables: 'sql/03-staging-tables.sql',
-  calcTables: 'sql/calc/00-calc-tables.sql',
-  transforms: [
-    // Phase 1: Reference tables
-    'sql/transforms/00-references.sql',
-    
-    // Phase 2: Core entities
-    'sql/transforms/01-brokers.sql',
-    'sql/transforms/02-groups.sql',
-    'sql/transforms/03-products.sql',
-    'sql/transforms/04-schedules.sql',
-    
-    // Phase 3: Tiered proposal creation (replaces old 06-proposals.sql)
-    'sql/transforms/06a-proposals-simple-groups.sql',      // Step 1: Simple groups (1 config)
-    'sql/transforms/06b-proposals-non-conformant.sql',     // Step 2: Non-conformant -> PolicyHierarchyAssignments
-    'sql/transforms/06c-proposals-plan-differentiated.sql', // Step 3: Plan-differentiated proposals
-    'sql/transforms/06d-proposals-year-differentiated.sql', // Step 4: Year-differentiated proposals
-    'sql/transforms/06e-proposals-granular.sql',           // Step 5: Granular proposals for remainder
-    'sql/transforms/06f-consolidate-proposals.sql',        // Step 6: Consolidate proposals
-    'sql/transforms/06g-normalize-proposal-date-ranges.sql', // Step 7: Normalize effective date ranges
-    
-    // Phase 3.5: Post-proposal updates (populate BrokerName from Brokers)
-    'sql/transforms/06z-update-proposal-broker-names.sql',  // Step 7.5: Update BrokerName from stg_brokers
-    
-    // Phase 4: Hierarchies and splits
-    'sql/transforms/07-hierarchies.sql',
-    'sql/transforms/08-hierarchy-splits.sql',
-    
-    // Phase 5: Policies and transactions
-    'sql/transforms/09-policies.sql',
-    'sql/transforms/10-premium-transactions.sql',
-    
-    // Phase 6: Policy hierarchy assignments (for non-conformant policies)
-    'sql/transforms/11-policy-hierarchy-assignments.sql',
-    
-    // Phase 7: Additional entities
-    'sql/transforms/11-fees.sql',
-    'sql/transforms/12-broker-banking-infos.sql',
-  ],
-  calculation: 'sql/calc/run-calculation.sql',
-  exports: [
-    // Export in dependency order:
-    // 1. Independent entities first
-    'sql/export/02-export-brokers.sql',
-    'sql/export/05-export-groups.sql',
-    'sql/export/06-export-products.sql',
-    'sql/export/06a-export-plans.sql',
-    'sql/export/01-export-schedules.sql',
-    // 2. Entities that depend on brokers/groups
-    'sql/export/07-export-proposals.sql',
-    'sql/export/08-export-hierarchies.sql',
-    // 3. Entities that depend on proposals/hierarchies
-    'sql/export/09-export-policies.sql',
-    'sql/export/11-export-splits.sql',
-    // 4. Entities that depend on policies
-    // 'sql/export/10-export-premium-transactions.sql',  // Disabled - PremiumTransactions managed separately
-    'sql/export/14-export-policy-hierarchy-assignments.sql',
-    // 5. Fee schedules (depends on groups and proposals)
-    'sql/export/15-export-fee-schedules.sql',
-    // 6. Additional broker-related entities
-    'sql/export/12-export-assignments.sql',
-    'sql/export/13-export-licenses.sql',
-    'sql/export/16-export-broker-banking-infos.sql',
-    // 7. Rate extensions (depend on ScheduleRates and HierarchyParticipants)
-    'sql/export/17-export-special-schedule-rates.sql',      // Heaped year rates
-    'sql/export/18-export-schedule-rate-tiers.sql',         // Group-size tiered rates
-    'sql/export/19-export-hierarchy-product-rates.sql',     // Product-specific participant rates
-    // 8. Calculated results (commented out in files)
-    'sql/export/03-export-gl-entries.sql',
-    'sql/export/04-export-traceability.sql',
-  ],
-};
+// Print configuration (masked)
+if (!flags.resume && !flags.resumeFrom) {
+  printConfig(config);
+}
 
 // =============================================================================
-// Utility Functions
+// SQL Script Paths
 // =============================================================================
 
-function log(message: string, level: 'info' | 'error' | 'success' = 'info'): void {
-  const timestamp = new Date().toISOString();
-  const prefix = {
-    info: '  ',
-    error: '❌',
-    success: '✅',
-  }[level];
-  console.log(`[${timestamp}] ${prefix} ${message}`);
-}
+const scriptsDir = path.join(__dirname, '../sql');
 
-async function executeSqlFile(pool: sql.ConnectionPool, filePath: string): Promise<void> {
-  const fullPath = path.join(__dirname, '..', filePath);
-  
-  if (!fs.existsSync(fullPath)) {
-    log(`SQL file not found: ${fullPath}`, 'error');
-    throw new Error(`SQL file not found: ${fullPath}`);
-  }
-  
-  const sqlContent = fs.readFileSync(fullPath, 'utf-8');
-  
-  // Split by GO statements (SQL Server batch separator)
-  const batches = sqlContent
-    .split(/^\s*GO\s*$/gim)
-    .filter(batch => batch.trim().length > 0);
-  
-  log(`Executing ${filePath} (${batches.length} batches)...`);
-  
-  for (let i = 0; i < batches.length; i++) {
-    try {
-      await pool.request().batch(batches[i]);
-    } catch (err: any) {
-      log(`Error in batch ${i + 1}: ${err.message}`, 'error');
-      throw err;
-    }
-  }
-  
-  log(`${filePath} completed`, 'success');
-}
+const schemaScripts = [
+  path.join(scriptsDir, '00a-state-management-tables.sql'),
+  path.join(scriptsDir, '00-schema-setup.sql'),
+  path.join(scriptsDir, '01-raw-tables.sql'),
+  path.join(scriptsDir, '02-input-tables.sql'),
+  path.join(scriptsDir, '03-staging-tables.sql'),
+];
 
-async function bulkInsertCsv(
-  pool: sql.ConnectionPool, 
-  tableName: string, 
-  csvPath: string
-): Promise<number> {
-  if (!fs.existsSync(csvPath)) {
-    log(`CSV file not found: ${csvPath}`, 'error');
-    return 0;
-  }
+const transformScripts = [
+  path.join(scriptsDir, 'transforms/00-references.sql'),
+  path.join(scriptsDir, 'transforms/01-brokers.sql'),
+  path.join(scriptsDir, 'transforms/02-groups.sql'),
+  path.join(scriptsDir, 'transforms/03-products.sql'),
+  path.join(scriptsDir, 'transforms/04-schedules.sql'),
+  path.join(scriptsDir, 'transforms/06a-proposals-simple-groups.sql'),
+  path.join(scriptsDir, 'transforms/06b-proposals-non-conformant.sql'),
+  path.join(scriptsDir, 'transforms/06c-proposals-plan-differentiated.sql'),
+  path.join(scriptsDir, 'transforms/06d-proposals-year-differentiated.sql'),
+  path.join(scriptsDir, 'transforms/06e-proposals-granular.sql'),
+  path.join(scriptsDir, 'transforms/06f-consolidate-proposals.sql'),
+  path.join(scriptsDir, 'transforms/06g-normalize-proposal-date-ranges.sql'),
+  path.join(scriptsDir, 'transforms/06z-update-proposal-broker-names.sql'),
+  path.join(scriptsDir, 'transforms/07-hierarchies.sql'),
+  path.join(scriptsDir, 'transforms/08-hierarchy-splits.sql'),
+  path.join(scriptsDir, 'transforms/09-policies.sql'),
+  path.join(scriptsDir, 'transforms/10-premium-transactions.sql'),
+  path.join(scriptsDir, 'transforms/11-policy-hierarchy-assignments.sql'),
+];
+
+const exportScripts = [
+  path.join(scriptsDir, 'export/02-export-brokers.sql'),
+  path.join(scriptsDir, 'export/05-export-groups.sql'),
+  path.join(scriptsDir, 'export/06-export-products.sql'),
+  path.join(scriptsDir, 'export/06a-export-plans.sql'),
+  path.join(scriptsDir, 'export/01-export-schedules.sql'),
+  path.join(scriptsDir, 'export/07-export-proposals.sql'),
+  path.join(scriptsDir, 'export/08-export-hierarchies.sql'),
+  path.join(scriptsDir, 'export/11-export-splits.sql'),
+  path.join(scriptsDir, 'export/09-export-policies.sql'),
+  path.join(scriptsDir, 'export/10-export-premium-transactions.sql'),
+  path.join(scriptsDir, 'export/14-export-policy-hierarchy-assignments.sql'),
+  path.join(scriptsDir, 'export/12-export-assignments.sql'),
+  path.join(scriptsDir, 'export/13-export-licenses.sql'),
+  path.join(scriptsDir, 'export/15-export-fee-schedules.sql'),
+  path.join(scriptsDir, 'export/16-export-broker-banking-infos.sql'),
+  path.join(scriptsDir, 'export/17-export-special-schedule-rates.sql'),
+  path.join(scriptsDir, 'export/18-export-schedule-rate-tiers.sql'),
+  path.join(scriptsDir, 'export/19-export-hierarchy-product-rates.sql'),
+];
+
+// =============================================================================
+// Main Pipeline
+// =============================================================================
+
+async function main() {
+  const sqlConfig = getSqlConfig(config);
+  const pool = await sql.connect(sqlConfig);
   
-  return new Promise((resolve, reject) => {
-    const records: any[] = [];
+  const stateManager = new ETLStateManager(pool);
+  const progress = new ProgressReporter();
+  
+  try {
+    // Determine run type
+    const runType = flags.transformsOnly ? 'transform-only' 
+                  : flags.exportOnly ? 'export-only' 
+                  : 'full';
     
-    fs.createReadStream(csvPath)
-      .pipe(parse({ columns: true, skip_empty_lines: true, relax_column_count: true }))
-      .on('data', (record) => records.push(record))
-      .on('end', async () => {
-        if (records.length === 0) {
-          log(`No records in ${csvPath}`, 'info');
-          resolve(0);
-          return;
-        }
+    // Calculate total steps
+    let totalSteps = 0;
+    if (!flags.skipSchema) totalSteps += schemaScripts.length;
+    if (!flags.skipTransform) totalSteps += transformScripts.length;
+    if (!flags.skipExport) totalSteps += exportScripts.length;
+    
+    // Check for resume
+    if (config.resume.enabled) {
+      const lastRun = await stateManager.getLastRun();
+      
+      if (!lastRun || lastRun.status !== 'failed') {
+        console.error('❌ No failed run found to resume');
+        process.exit(1);
+      }
+      
+      const canResume = await stateManager.canResume(lastRun.runId);
+      if (!canResume) {
+        console.error('❌ Last run cannot be resumed');
+        process.exit(1);
+      }
+      
+      const incompleteSteps = await stateManager.getIncompleteSteps(lastRun.runId);
+      
+      progress.logResume(lastRun.runName, incompleteSteps[0].stepNumber, totalSteps);
+      
+      stateManager.setCurrentRunId(lastRun.runId);
+      
+      // Resume execution from incomplete steps
+      await resumeExecution(pool, stateManager, progress, config, incompleteSteps);
+      
+      await stateManager.completeRun();
+      progress.logRunComplete(totalSteps, 0);
+      
+      return;
+    }
+    
+    // Start new run
+    const runName = `ETL-${runType}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    await stateManager.startRun(runName, runType, totalSteps, config);
+    
+    progress.logRunStart(runName, runType, totalSteps);
+    
+    let currentStep = 0;
+    const startTime = Date.now();
+    
+    // Phase 1: Schema Setup
+    if (!flags.skipSchema) {
+      progress.logPhase('Schema Setup', 1, 5);
+      
+      for (const scriptPath of schemaScripts) {
+        currentStep++;
+        const scriptName = path.basename(scriptPath);
+        const stepStartTime = Date.now();
         
-        // Get column names from first record
-        const columns = Object.keys(records[0]);
+        progress.logStep(scriptName, currentStep, totalSteps);
         
-        // Insert in batches of 1000
-        const batchSize = 1000;
-        let inserted = 0;
+        const stepId = await stateManager.startStep(
+          currentStep,
+          scriptPath,
+          scriptName,
+          'Schema Setup'
+        );
         
         try {
-          for (let i = 0; i < records.length; i += batchSize) {
-            const batch = records.slice(i, i + batchSize);
-            
-            // Build bulk insert using table value constructor
-            const values = batch.map(record => {
-              const vals = columns.map(col => {
-                const val = record[col];
-                if (val === null || val === undefined || val === '') {
-                  return 'NULL';
-                }
-                // Escape single quotes and wrap in quotes
-                return `N'${String(val).replace(/'/g, "''")}'`;
-              });
-              return `(${vals.join(', ')})`;
-            }).join(',\n');
-            
-            const insertSql = `
-              INSERT INTO [etl].[${tableName}] (${columns.map(c => `[${c}]`).join(', ')})
-              VALUES ${values}
-            `;
-            
-            await pool.request().batch(insertSql);
-            inserted += batch.length;
-            
-            if (i % 10000 === 0 && i > 0) {
-              log(`  ${tableName}: ${inserted.toLocaleString()} rows inserted...`);
-            }
-          }
+          const result = await executeSQLScript({
+            config,
+            pool,
+            scriptPath,
+            stepId,
+            debugMode: config.debugMode.enabled
+          });
           
-          resolve(inserted);
-        } catch (err: any) {
-          log(`Error inserting into ${tableName}: ${err.message}`, 'error');
-          reject(err);
+          await stateManager.completeStep(stepId, result.recordsAffected);
+          await stateManager.updateProgress('Schema Setup', scriptName, scriptPath, currentStep);
+          
+          const duration = (Date.now() - stepStartTime) / 1000;
+          progress.logStepComplete(scriptName, duration, result.recordsAffected);
+          
+        } catch (error) {
+          await stateManager.failStep(stepId, error as Error);
+          throw error;
         }
-      })
-      .on('error', reject);
-  });
-}
-
-// =============================================================================
-// Pipeline Steps
-// =============================================================================
-
-async function setupSchema(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 1: Schema Setup');
-  log('='.repeat(60));
-  
-  await executeSqlFile(pool, sqlFiles.schema);
-  await executeSqlFile(pool, sqlFiles.rawTables);
-  await executeSqlFile(pool, sqlFiles.inputTables);
-  await executeSqlFile(pool, sqlFiles.stagingTables);
-  await executeSqlFile(pool, sqlFiles.calcTables);
-}
-
-async function restoreFromBackup(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 2: Restore Raw Data from Backup (raw_data schema)');
-  log('='.repeat(60));
-  
-  // Table mapping from raw_data schema to etl schema
-  const backupTables = [
-    'raw_certificate_info',
-    'raw_commissions_detail',
-    'raw_individual_brokers',
-    'raw_org_brokers',
-    'raw_licenses',
-    'raw_eo_insurance',
-    'raw_schedule_rates',
-    'raw_perf_groups',
-    'raw_premiums',
-  ];
-  
-  for (const table of backupTables) {
-    log(`Restoring ${table}...`);
-    
-    // Check if backup table exists and has data
-    const checkResult = await pool.request().query(`
-      SELECT COUNT(*) as cnt FROM [raw_data].[${table}]
-    `);
-    const rowCount = checkResult.recordset[0].cnt;
-    
-    if (rowCount === 0) {
-      log(`  ${table}: No data in backup, skipping`);
-      continue;
+      }
+      
+      const phaseTime = (Date.now() - startTime) / 1000;
+      progress.logPhaseComplete('Schema Setup', phaseTime);
     }
     
-    // Truncate target table
-    await pool.request().query(`TRUNCATE TABLE [etl].[${table}]`);
+    // Phase 2: Transforms
+    if (!flags.skipTransform) {
+      const phaseStartTime = Date.now();
+      progress.logPhase('Data Transforms', 2, 5);
+      
+      for (const scriptPath of transformScripts) {
+        currentStep++;
+        const scriptName = path.basename(scriptPath);
+        const stepStartTime = Date.now();
+        
+        progress.logStep(scriptName, currentStep, totalSteps);
+        
+        const stepId = await stateManager.startStep(
+          currentStep,
+          scriptPath,
+          scriptName,
+          'Transforms'
+        );
+        
+        try {
+          const result = await executeSQLScript({
+            config,
+            pool,
+            scriptPath,
+            stepId,
+            debugMode: config.debugMode.enabled
+          });
+          
+          await stateManager.completeStep(stepId, result.recordsAffected);
+          await stateManager.updateProgress('Transforms', scriptName, scriptPath, currentStep);
+          
+          const duration = (Date.now() - stepStartTime) / 1000;
+          progress.logStepComplete(scriptName, duration, result.recordsAffected);
+          
+        } catch (error) {
+          await stateManager.failStep(stepId, error as Error);
+          throw error;
+        }
+      }
+      
+      const phaseTime = (Date.now() - phaseStartTime) / 1000;
+      progress.logPhaseComplete('Data Transforms', phaseTime);
+    }
     
-    // Copy data from backup
-    const result = await pool.request().query(`
-      INSERT INTO [etl].[${table}]
-      SELECT * FROM [raw_data].[${table}]
-    `);
+    // Phase 3: Export
+    if (!flags.skipExport) {
+      const phaseStartTime = Date.now();
+      progress.logPhase('Export to Production', 3, 5);
+      
+      for (const scriptPath of exportScripts) {
+        currentStep++;
+        const scriptName = path.basename(scriptPath);
+        const stepStartTime = Date.now();
+        
+        progress.logStep(scriptName, currentStep, totalSteps);
+        
+        const stepId = await stateManager.startStep(
+          currentStep,
+          scriptPath,
+          scriptName,
+          'Export'
+        );
+        
+        try {
+          const result = await executeSQLScript({
+            config,
+            pool,
+            scriptPath,
+            stepId,
+            debugMode: config.debugMode.enabled
+          });
+          
+          await stateManager.completeStep(stepId, result.recordsAffected);
+          await stateManager.updateProgress('Export', scriptName, scriptPath, currentStep);
+          
+          const duration = (Date.now() - stepStartTime) / 1000;
+          progress.logStepComplete(scriptName, duration, result.recordsAffected);
+          
+        } catch (error) {
+          await stateManager.failStep(stepId, error as Error);
+          throw error;
+        }
+      }
+      
+      const phaseTime = (Date.now() - phaseStartTime) / 1000;
+      progress.logPhaseComplete('Export to Production', phaseTime);
+    }
     
-    const rowsInserted = result.rowsAffected?.[0] ?? rowCount;
-    log(`  ${table}: ${rowsInserted.toLocaleString()} rows restored`, 'success');
+    // Complete run
+    await stateManager.completeRun();
+    
+    const totalDuration = (Date.now() - startTime) / 1000;
+    progress.logRunComplete(totalSteps, totalDuration);
+    
+  } catch (error) {
+    const err = error as Error;
+    console.error(formatError(err));
+    
+    const canResume = canResumeAfterError(err);
+    await stateManager.failRun(err, canResume);
+    progress.logRunFailure(err, canResume);
+    
+    process.exit(1);
+  } finally {
+    await pool.close();
   }
-  
-  // Now populate input tables from raw tables
-  log('');
-  log('Populating input tables from raw data...');
-  
-  // Helper to get row count from result
-  const getRowCount = (result: sql.IResult<any>) => result.rowsAffected?.[0] ?? 0;
-  
-  // input_certificate_info - filter for Active certificates and Active records only
-  await pool.request().query(`TRUNCATE TABLE [etl].[input_certificate_info]`);
-  const certResult = await pool.request().query(`
-    INSERT INTO [etl].[input_certificate_info]
-    SELECT * FROM [etl].[raw_certificate_info]
-    WHERE LTRIM(RTRIM(CertStatus)) = 'A'  -- Active certificates only (exclude Lapsed 'L' and Pending 'P')
-      AND LTRIM(RTRIM(RecStatus)) = 'A'   -- Active split configurations only (exclude historical/deleted)
-  `);
-  log(`  input_certificate_info: ${getRowCount(certResult).toLocaleString()} rows (Active only)`, 'success');
-  
-  // input_commission_details - need to handle type conversion from nvarchar
-  await pool.request().query(`TRUNCATE TABLE [etl].[input_commission_details]`);
-  const commResult = await pool.request().query(`
-    INSERT INTO [etl].[input_commission_details] (
-      Company, CertificateId, CertEffectiveDate, SplitBrokerId, PmtPostedDate,
-      PaidToDate, PaidAmount, TransActionType, InvoiceNumber, CertInForceMonths,
-      CommissionRate, RealCommissionRate, PaidBrokerId, TransactionId
-    )
-    SELECT 
-      Company, 
-      TRY_CAST(CertificateId AS BIGINT) AS CertificateId, 
-      TRY_CAST(CertEffectiveDate AS DATE) AS CertEffectiveDate, 
-      SplitBrokerId, 
-      TRY_CAST(PmtPostedDate AS DATE) AS PmtPostedDate,
-      TRY_CAST(PaidToDate AS DATE) AS PaidToDate, 
-      TRY_CAST(PaidAmount AS DECIMAL(18,2)) AS PaidAmount, 
-      TransActionType, 
-      InvoiceNumber, 
-      TRY_CAST(CertInForceMonths AS INT) AS CertInForceMonths,
-      TRY_CAST(CommissionRate AS DECIMAL(18,4)) AS CommissionRate, 
-      TRY_CAST(RealCommissionRate AS DECIMAL(18,4)) AS RealCommissionRate, 
-      PaidBrokerId, 
-      TransactionId
-    FROM [etl].[raw_commissions_detail]
-  `);
-  log(`  input_commission_details: ${getRowCount(commResult).toLocaleString()} rows`, 'success');
-  
-  // Note: Other input tables (input_individual_brokers, input_org_brokers, etc.)
-  // are no longer created by 02-input-tables.sql. The transforms use raw_* tables directly.
-  log('  (Transforms will use raw_* tables for brokers, licenses, schedules, etc.)');
-  log('Input table population complete', 'success');
-  
-  log('Input tables populated', 'success');
 }
 
 /**
- * Copy table with automatic column mapping (handles schema mismatches)
+ * Resume execution from incomplete steps
  */
-async function copyTableWithMapping(
+async function resumeExecution(
   pool: sql.ConnectionPool,
-  sourceSchema: string,
-  sourceTable: string,
-  targetSchema: string,
-  targetTable: string,
-  displayName: string
-): Promise<number> {
-  try {
-    // Check if target already has data
-    const targetCountResult = await pool.request().query(`SELECT COUNT(*) as cnt FROM [${targetSchema}].[${targetTable}]`);
-    const targetRowCount = targetCountResult.recordset[0].cnt;
+  stateManager: ETLStateManager,
+  progress: ProgressReporter,
+  config: ETLConfig,
+  incompleteSteps: any[]
+) {
+  for (const step of incompleteSteps) {
+    const stepStartTime = Date.now();
     
-    if (targetRowCount > 0) {
-      log(`  ⏭️  ${displayName}: Already has ${targetRowCount.toLocaleString()} rows, skipping`, 'info');
-      return targetRowCount;
-    }
+    progress.logStep(step.scriptName, step.stepNumber, incompleteSteps.length);
     
-    // Check row count in source
-    const countResult = await pool.request().query(`SELECT COUNT(*) as cnt FROM [${sourceSchema}].[${sourceTable}]`);
-    const rowCount = countResult.recordset[0].cnt;
+    const stepId = await stateManager.startStep(
+      step.stepNumber,
+      step.scriptPath,
+      step.scriptName,
+      step.phase
+    );
     
-    log(`  Copying ${displayName}: Found ${rowCount.toLocaleString()} rows in source`);
-    
-    if (rowCount === 0) {
-      log(`  ⚠️  Warning: [${sourceSchema}].[${sourceTable}] is empty, skipping`, 'warn');
-      return 0;
-    }
-    
-    // Get column schemas
-    const sourceColsResult = await pool.request().query(`
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = '${sourceSchema}' AND TABLE_NAME = '${sourceTable}'
-      ORDER BY ORDINAL_POSITION
-    `);
-    const targetColsResult = await pool.request().query(`
-      SELECT COLUMN_NAME
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = '${targetSchema}' AND TABLE_NAME = '${targetTable}'
-      ORDER BY ORDINAL_POSITION
-    `);
-    
-    const sourceColumns = sourceColsResult.recordset.map((r: any) => r.COLUMN_NAME);
-    const targetColumns = targetColsResult.recordset.map((r: any) => r.COLUMN_NAME);
-    
-    // Build explicit SELECT for columns that exist in source, NULL for missing
-    const missingCols: string[] = [];
-    const selectList = targetColumns.map(targetCol => {
-      if (sourceColumns.includes(targetCol)) {
-        return `[${targetCol}]`;
-      } else {
-        missingCols.push(targetCol);
-        return `NULL AS [${targetCol}]`;
-      }
-    }).join(',\n      ');
-    
-    if (missingCols.length > 0) {
-      log(`    ⚠️  ${missingCols.length} columns missing in source: ${missingCols.slice(0, 3).join(', ')}${missingCols.length > 3 ? '...' : ''}`, 'warn');
-    }
-    
-    // Truncate and copy
-    await pool.request().query(`TRUNCATE TABLE [${targetSchema}].[${targetTable}]`);
-    const insertResult = await pool.request().query(`
-      INSERT INTO [${targetSchema}].[${targetTable}]
-      SELECT ${selectList}
-      FROM [${sourceSchema}].[${sourceTable}]
-    `);
-    
-    const rowsCopied = insertResult.rowsAffected?.[0] ?? 0;
-    
-    if (rowsCopied === 0 && rowCount > 0) {
-      log(`  ❌ ERROR: 0 rows copied despite ${rowCount.toLocaleString()} rows in source!`, 'error');
-      log(`    This may indicate a schema mismatch or data type incompatibility`, 'error');
-    } else {
-      log(`  ✅ ${displayName}: ${rowsCopied.toLocaleString()} rows copied`, 'success');
-    }
-    
-    return rowsCopied;
-  } catch (err: any) {
-    log(`  ❌ Error copying ${displayName}: ${err.message}`, 'error');
-    throw err;
-  }
-}
-
-async function restoreFromNewData(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 2: Restore Raw Data from new_data schema');
-  log('='.repeat(60));
-  
-  // Helper to get row count from result
-  const getRowCount = (result: sql.IResult<any>) => result.rowsAffected?.[0] ?? 0;
-  
-  // Copy all tables using helper function (handles schema mismatches)
-  // These will skip if target already has data (speeds up re-runs)
-  await copyTableWithMapping(pool, 'new_data', 'CertificateInfo', 'etl', 'raw_certificate_info', 'raw_certificate_info');
-  await copyTableWithMapping(pool, 'new_data', 'CommissionsDetail', 'etl', 'raw_commissions_detail', 'raw_commissions_detail');
-  
-  // Individual brokers - explicit mapping (exclude Id and banking columns from new_data)
-  log(`Copying IndividualRoster -> raw_individual_brokers...`);
-  const indCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [new_data].[IndividualRoster]`);
-  const indCount = indCheck.recordset[0].cnt;
-  if (indCount > 0) {
-    const targetIndCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_individual_brokers]`);
-    if (targetIndCheck.recordset[0].cnt === 0) {
-      await pool.request().query(`TRUNCATE TABLE [etl].[raw_individual_brokers]`);
-      const indResult = await pool.request().query(`
-        INSERT INTO [etl].[raw_individual_brokers] (PartyUniqueId, IndividualLastName, IndividualFirstName, HireDate, EmailAddress, CurrentStatus, BrokerType)
-        SELECT PartyUniqueId, IndividualLastName, IndividualFirstName, HireDate, EmailAddress, CurrentStatus, NULL AS BrokerType
-        FROM [new_data].[IndividualRoster]
-        WHERE PartyUniqueId IS NOT NULL AND LTRIM(RTRIM(PartyUniqueId)) <> ''
-      `);
-      log(`  raw_individual_brokers: ${getRowCount(indResult).toLocaleString()} rows copied`, 'success');
-    } else {
-      log(`  ⏭️  raw_individual_brokers: Already has data, skipping`, 'info');
-    }
-  }
-  
-  // Organization brokers - explicit mapping (exclude Id and banking columns)
-  log(`Copying OrganizationRoster -> raw_org_brokers...`);
-  const orgCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [new_data].[OrganizationRoster]`);
-  const orgCount = orgCheck.recordset[0].cnt;
-  if (orgCount > 0) {
-    const targetOrgCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_org_brokers]`);
-    if (targetOrgCheck.recordset[0].cnt === 0) {
-      await pool.request().query(`TRUNCATE TABLE [etl].[raw_org_brokers]`);
-      const orgResult = await pool.request().query(`
-        INSERT INTO [etl].[raw_org_brokers] (PartyUniqueId, OrganizationName, HireDate, EmailAddress, CurrentStatus)
-        SELECT PartyUniqueId, OrganizationName, HireDate, EmailAddress, CurrentStatus
-        FROM [new_data].[OrganizationRoster]
-        WHERE PartyUniqueId IS NOT NULL AND LTRIM(RTRIM(PartyUniqueId)) <> ''
-      `);
-      log(`  raw_org_brokers: ${getRowCount(orgResult).toLocaleString()} rows copied`, 'success');
-    } else {
-      log(`  ⏭️  raw_org_brokers: Already has data, skipping`, 'info');
-    }
-  }
-  
-  await copyTableWithMapping(pool, 'new_data', 'BrokerLicenses', 'etl', 'raw_licenses', 'raw_licenses');
-  await copyTableWithMapping(pool, 'new_data', 'BrokerEO', 'etl', 'raw_eo_insurance', 'raw_eo_insurance');
-  await copyTableWithMapping(pool, 'new_data', 'PerfScheduleModel', 'etl', 'raw_schedule_rates', 'raw_schedule_rates');
-  await copyTableWithMapping(pool, 'new_data', 'PerfGroupModel', 'etl', 'raw_perf_groups', 'raw_perf_groups');
-  
-  log('');
-  log('✅ Raw data tables ready (existing data preserved)');
-  log('   To force re-copy, truncate the etl.raw_* tables first');
-  
-  // Handle premiums separately if it exists in new_data
-  try {
-    await copyTableWithMapping(pool, 'new_data', 'premiums', 'etl', 'raw_premiums', 'raw_premiums');
-  } catch (err: any) {
-    log(`  premiums: Table not found in new_data, skipping`, 'info');
-  }
-  
-  // Now populate input tables from raw tables
-  log('');
-  log('Populating input tables from raw data...');
-  
-  // input_certificate_info - Check if already populated
-  const inputCertCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[input_certificate_info]`);
-  const inputCertCount = inputCertCheck.recordset[0].cnt;
-  
-  if (inputCertCount > 0) {
-    log(`  ⏭️  input_certificate_info: Already has ${inputCertCount.toLocaleString()} rows, skipping`, 'info');
-  } else {
-    // Filter for Active certificates and Active records only
-    // Handle NOT NULL columns: CertificateId, CertSplitSeq, SplitBrokerSeq need default 0
-    await pool.request().query(`TRUNCATE TABLE [etl].[input_certificate_info]`);
-    const certInputResult = await pool.request().query(`
-      INSERT INTO [etl].[input_certificate_info]
-      SELECT 
-        Company, ProductMasterCategory, ProductCategory, GroupId, Product, PlanCode,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertificateId, ''))) IN ('', 'NULL') THEN 0 ELSE CertificateId END AS BIGINT) AS CertificateId,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertEffectiveDate, ''))) IN ('', 'NULL') THEN NULL ELSE CertEffectiveDate END AS DATE) AS CertEffectiveDate,
-        CertIssuedState, CertStatus,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertPremium, ''))) IN ('', 'NULL') THEN NULL ELSE CertPremium END AS DECIMAL(18,4)) AS CertPremium,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertSplitSeq, ''))) IN ('', 'NULL') THEN 0 ELSE CertSplitSeq END AS INT) AS CertSplitSeq,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertSplitPercent, ''))) IN ('', 'NULL') THEN NULL ELSE CertSplitPercent END AS DECIMAL(18,4)) AS CertSplitPercent,
-        CustomerId, RecStatus, HierDriver, HierVersion, CommissionsSchedule, CommissionType,
-        WritingBrokerID, SplitBrokerId,
-        TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(SplitBrokerSeq, ''))) IN ('', 'NULL') THEN 0 ELSE SplitBrokerSeq END AS INT) AS SplitBrokerSeq,
-        ReassignedType, PaidBrokerId
-      FROM [etl].[raw_certificate_info]
-      WHERE LTRIM(RTRIM(CertStatus)) = 'A'  -- Active certificates only (exclude Lapsed 'L' and Pending 'P')
-        AND LTRIM(RTRIM(RecStatus)) = 'A'   -- Active split configurations only (exclude historical/deleted)
-    `);
-    log(`  input_certificate_info: ${getRowCount(certInputResult).toLocaleString()} rows (Active only)`, 'success');
-  }
-  
-  // input_commission_details - Check if already populated
-  const inputCommCheck = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[input_commission_details]`);
-  const inputCommCount = inputCommCheck.recordset[0].cnt;
-  
-  if (inputCommCount > 0) {
-    log(`  ⏭️  input_commission_details: Already has ${inputCommCount.toLocaleString()} rows, skipping`, 'info');
-  } else {
-    const rawCommCount = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[raw_commissions_detail]`);
-    const rawCommRows = rawCommCount.recordset[0].cnt;
-    log(`  raw_commissions_detail has ${rawCommRows.toLocaleString()} rows`);
-    
-    if (rawCommRows === 0) {
-      log(`  Skipping input_commission_details population (no raw data)`, 'warn');
-    } else {
-      // Handle literal 'NULL' strings by converting them to actual NULL before casting
-      // Skip simple insert, go straight to explicit column mapping
-      await pool.request().query(`TRUNCATE TABLE [etl].[input_commission_details]`);
-      
-      log(`  Populating with explicit column mapping and type conversion...`);
-      const commInputResult = await pool.request().query(`
-        INSERT INTO [etl].[input_commission_details] (
-          Company, CertificateId, CertEffectiveDate, SplitBrokerId, PmtPostedDate,
-          PaidToDate, PaidAmount, TransActionType, InvoiceNumber, CertInForceMonths,
-          CommissionRate, RealCommissionRate, PaidBrokerId, TransactionId
-        )
-        SELECT 
-          Company, 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertificateId, ''))) IN ('', 'NULL') THEN NULL ELSE CertificateId END AS BIGINT), 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertEffectiveDate, ''))) IN ('', 'NULL') THEN NULL ELSE CertEffectiveDate END AS DATE), 
-          CASE WHEN LTRIM(RTRIM(ISNULL(SplitBrokerId, ''))) IN ('', 'NULL') THEN NULL ELSE SplitBrokerId END, 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PmtPostedDate, ''))) IN ('', 'NULL') THEN NULL ELSE PmtPostedDate END AS DATE),
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PaidToDate, ''))) IN ('', 'NULL') THEN NULL ELSE PaidToDate END AS DATE), 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(PaidAmount, ''))) IN ('', 'NULL') THEN NULL ELSE PaidAmount END AS DECIMAL(18,2)), 
-          CASE WHEN LTRIM(RTRIM(ISNULL(TransActionType, ''))) IN ('', 'NULL') THEN NULL ELSE TransActionType END, 
-          CASE WHEN LTRIM(RTRIM(ISNULL(InvoiceNumber, ''))) IN ('', 'NULL') THEN NULL ELSE InvoiceNumber END, 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CertInForceMonths, ''))) IN ('', 'NULL') THEN NULL ELSE CertInForceMonths END AS INT),
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(CommissionRate, ''))) IN ('', 'NULL') THEN NULL ELSE CommissionRate END AS DECIMAL(18,4)), 
-          TRY_CAST(CASE WHEN LTRIM(RTRIM(ISNULL(RealCommissionRate, ''))) IN ('', 'NULL') THEN NULL ELSE RealCommissionRate END AS DECIMAL(18,4)), 
-          CASE WHEN LTRIM(RTRIM(ISNULL(PaidBrokerId, ''))) IN ('', 'NULL') THEN NULL ELSE PaidBrokerId END, 
-          CASE WHEN LTRIM(RTRIM(ISNULL(TransactionId, ''))) IN ('', 'NULL') THEN NULL ELSE TransactionId END
-        FROM [etl].[raw_commissions_detail]
-      `);
-      log(`  input_commission_details: ${getRowCount(commInputResult).toLocaleString()} rows`, 'success');
-    }  // Close rawCommRows check
-  }  // Close inputCommCount check
-  
-  // Note: Other input tables (input_individual_brokers, input_org_brokers, etc.)
-  // are no longer created by 02-input-tables.sql. The transforms use raw_* tables directly.
-  log('  (Transforms will use raw_* tables for brokers, licenses, schedules, etc.)');
-  log('');
-  log('✅ Input tables ready (existing data preserved)');
-}
-
-async function ingestCsvData(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 2: CSV Data Ingestion');
-  log('='.repeat(60));
-  
-  for (const [table, files] of Object.entries(csvFiles)) {
-    const fileList = Array.isArray(files) ? files : [files];
-    let totalRows = 0;
-    
-    for (const file of fileList) {
-      const csvPath = path.join(CSV_DATA_PATH, file);
-      if (fs.existsSync(csvPath)) {
-        log(`Loading ${file} into ${table}...`);
-        const rows = await bulkInsertCsv(pool, table, csvPath);
-        totalRows += rows;
-        log(`  ${file}: ${rows.toLocaleString()} rows`, 'success');
-      }
-    }
-    
-    if (totalRows > 0) {
-      log(`Total ${table}: ${totalRows.toLocaleString()} rows`, 'success');
-    }
-  }
-  
-  // Process input tables
-  await executeSqlFile(pool, sqlFiles.inputTables);
-}
-
-async function runTransforms(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 3: Data Transforms');
-  log('='.repeat(60));
-  
-  for (const transformFile of sqlFiles.transforms) {
-    await executeSqlFile(pool, transformFile);
-  }
-}
-
-async function runCalculation(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 4: Commission Calculation');
-  log('='.repeat(60));
-  
-  await executeSqlFile(pool, sqlFiles.calculation);
-}
-
-async function exportResults(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('STEP 5: Export to Production');
-  log('='.repeat(60));
-  
-  for (const exportFile of sqlFiles.exports) {
     try {
-      await executeSqlFile(pool, exportFile);
-    } catch (err: any) {
-      // Log but continue with other exports if one fails
-      log(`Warning: ${exportFile} failed: ${err.message}`, 'error');
-    }
-  }
-}
-
-async function fixGracePeriodDates(pool: sql.ConnectionPool): Promise<void> {
-  log('');
-  log('='.repeat(60));
-  log('POST-EXPORT: Fix Grace Period Dates (Bug #36)');
-  log('='.repeat(60));
-  
-  try {
-    // Import and execute the fix script
-    const { spawn } = require('child_process');
-    const scriptPath = path.resolve(__dirname, 'fix-grace-period-dates.ts');
-    
-    log(`Executing grace period date fix script...`);
-    
-    return new Promise((resolve, reject) => {
-      const child = spawn('npx', ['tsx', scriptPath], {
-        stdio: 'inherit',
-        shell: true,
-        cwd: path.resolve(__dirname, '..'),
+      const result = await executeSQLScript({
+        config,
+        pool,
+        scriptPath: step.scriptPath,
+        stepId,
+        debugMode: config.debugMode.enabled
       });
       
-      child.on('close', (code: number) => {
-        if (code === 0) {
-          log('Grace period date fix completed', 'success');
-          resolve();
-        } else {
-          log(`Grace period date fix failed with code ${code}`, 'error');
-          reject(new Error(`Grace period fix script exited with code ${code}`));
-        }
-      });
+      await stateManager.completeStep(stepId, result.recordsAffected);
+      await stateManager.updateProgress(step.phase, step.scriptName, step.scriptPath, step.stepNumber);
       
-      child.on('error', (err: Error) => {
-        log(`Error running grace period fix script: ${err.message}`, 'error');
-        reject(err);
-      });
-    });
-  } catch (err: any) {
-    log(`Grace period date fix failed: ${err.message}`, 'error');
-    throw err;
-  }
-}
-
-// =============================================================================
-// Main Entry Point
-// =============================================================================
-
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
-  const skipSchema = args.includes('--skip-schema');
-  const skipIngest = args.includes('--skip-ingest');
-  const restoreBackup = args.includes('--restore-backup');
-  const fromNewData = args.includes('--from-new-data');
-  const skipTransform = args.includes('--skip-transform');
-  const skipCalc = args.includes('--skip-calc');
-  const skipExport = args.includes('--skip-export');
-  const skipGracePeriodFix = args.includes('--skip-grace-period-fix');
-  
-  log('');
-  log('='.repeat(60));
-  log('SQL Server ETL Pipeline');
-  log('='.repeat(60));
-  log(`Server: ${config.server}`);
-  log(`Database: ${config.database}`);
-  if (fromNewData) {
-    log('Data Source: new_data schema');
-  } else if (restoreBackup) {
-    log('Data Source: raw_data schema backup');
-  } else {
-    log(`Data Source: CSV files from ${CSV_DATA_PATH}`);
-  }
-  log('');
-  
-  let pool: sql.ConnectionPool | null = null;
-  
-  try {
-    // Connect to SQL Server
-    log('Connecting to SQL Server...');
-    pool = await sql.connect(config);
-    log('Connected', 'success');
-    
-    // Run pipeline steps
-    if (!skipSchema) {
-      await setupSchema(pool);
-    } else {
-      log('Skipping schema setup (--skip-schema)');
-    }
-    
-    // Data ingestion: either from new_data, backup, or CSV
-    if (fromNewData) {
-      await restoreFromNewData(pool);
-    } else if (restoreBackup) {
-      await restoreFromBackup(pool);
-    } else if (!skipIngest) {
-      await ingestCsvData(pool);
-    } else {
-      log('Skipping data ingestion (--skip-ingest)');
-    }
-    
-    if (!skipTransform) {
-      await runTransforms(pool);
-    } else {
-      log('Skipping transforms (--skip-transform)');
-    }
-    
-    if (!skipCalc) {
-      await runCalculation(pool);
-    } else {
-      log('Skipping calculation (--skip-calc)');
-    }
-    
-    if (!skipExport) {
-      await exportResults(pool);
-    } else {
-      log('Skipping export (--skip-export)');
-    }
-    
-    // Post-export data fixes (Bug #36)
-    if (!skipGracePeriodFix) {
-      await fixGracePeriodDates(pool);
-    } else {
-      log('Skipping grace period date fix (--skip-grace-period-fix)');
-    }
-    
-    log('');
-    log('='.repeat(60));
-    log('PIPELINE COMPLETED SUCCESSFULLY', 'success');
-    log('='.repeat(60));
-    
-  } catch (err: any) {
-    log(`Pipeline failed: ${err.message}`, 'error');
-    console.error(err);
-    process.exit(1);
-  } finally {
-    if (pool) {
-      await pool.close();
-      log('Connection closed');
+      const duration = (Date.now() - stepStartTime) / 1000;
+      progress.logStepComplete(step.scriptName, duration, result.recordsAffected);
+      
+    } catch (error) {
+      await stateManager.failStep(stepId, error as Error);
+      throw error;
     }
   }
 }
 
-main();
-
+// Run pipeline
+main().catch(console.error);

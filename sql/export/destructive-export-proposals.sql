@@ -18,10 +18,10 @@ DECLARE @before_products INT;
 DECLARE @before_versions INT;
 DECLARE @before_participants INT;
 
-SELECT @before_proposals = COUNT(*) FROM [dbo].[Proposals];
-SELECT @before_products = COUNT(*) FROM [dbo].[ProposalProducts];
-SELECT @before_versions = COUNT(*) FROM [dbo].[PremiumSplitVersions];
-SELECT @before_participants = COUNT(*) FROM [dbo].[PremiumSplitParticipants];
+SELECT @before_proposals = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Proposals];
+SELECT @before_products = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts];
+SELECT @before_versions = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions];
+SELECT @before_participants = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants];
 
 PRINT 'BEFORE DELETION:';
 PRINT '  Proposals: ' + CAST(@before_proposals AS VARCHAR);
@@ -37,25 +37,25 @@ PRINT 'STEP 1: Deleting existing proposal-related data...';
 PRINT '';
 
 PRINT '  Deleting PremiumSplitParticipants...';
-DELETE FROM [dbo].[PremiumSplitParticipants];
+DELETE FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants];
 DECLARE @deleted_participants INT = @@ROWCOUNT;
 PRINT '    Deleted: ' + CAST(@deleted_participants AS VARCHAR);
 PRINT '';
 
 PRINT '  Deleting PremiumSplitVersions...';
-DELETE FROM [dbo].[PremiumSplitVersions];
+DELETE FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions];
 DECLARE @deleted_versions INT = @@ROWCOUNT;
 PRINT '    Deleted: ' + CAST(@deleted_versions AS VARCHAR);
 PRINT '';
 
 PRINT '  Deleting ProposalProducts...';
-DELETE FROM [dbo].[ProposalProducts];
+DELETE FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts];
 DECLARE @deleted_products INT = @@ROWCOUNT;
 PRINT '    Deleted: ' + CAST(@deleted_products AS VARCHAR);
 PRINT '';
 
 PRINT '  Deleting Proposals...';
-DELETE FROM [dbo].[Proposals];
+DELETE FROM [$(PRODUCTION_SCHEMA)].[Proposals];
 DECLARE @deleted_proposals INT = @@ROWCOUNT;
 PRINT '    Deleted: ' + CAST(@deleted_proposals AS VARCHAR);
 PRINT '';
@@ -73,7 +73,7 @@ PRINT '';
 
 -- Export Proposals
 PRINT 'Exporting Proposals...';
-INSERT INTO [dbo].[Proposals] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState, BrokerUniquePartyId, BrokerName,
     GroupId, GroupName, EffectiveDateFrom, EffectiveDateTo,
@@ -113,13 +113,13 @@ SELECT
     sp.ConstrainingEffectiveDateTo,
     sp.CreationTime,
     sp.IsDeleted
-FROM [etl].[stg_proposals] sp
-LEFT JOIN [dbo].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
 -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
 WHERE NOT EXISTS (
     SELECT 1 
-    FROM [etl].[stg_premium_split_versions] spsv
-    INNER JOIN [etl].[stg_premium_split_participants] spsp ON spsp.VersionId = spsv.Id
+    FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv
+    INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp ON spsp.VersionId = spsv.Id
     WHERE spsv.ProposalId = sp.Id
       AND spsp.HierarchyId IS NULL
   );
@@ -132,7 +132,7 @@ PRINT '';
 PRINT 'Exporting ProposalProducts...';
 
 -- Method 1: From stg_proposal_products
-INSERT INTO [dbo].[ProposalProducts] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ProposalProducts] (
     ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
     ResolvedScheduleName, CreatedAt
 )
@@ -144,14 +144,14 @@ SELECT
     spp.ResolvedScheduleId,
     NULL AS ResolvedScheduleName,
     COALESCE(spp.CreationTime, GETUTCDATE()) AS CreatedAt
-FROM [etl].[stg_proposal_products] spp
-WHERE spp.ProposalId IN (SELECT Id FROM [dbo].[Proposals]);
+FROM [$(ETL_SCHEMA)].[stg_proposal_products] spp
+WHERE spp.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals]);
 
 DECLARE @exported_products1 INT = @@ROWCOUNT;
 PRINT '  Exported ProposalProducts (from stg_proposal_products): ' + CAST(@exported_products1 AS VARCHAR);
 
 -- Method 2: From stg_proposals.ProductCodes JSON
-INSERT INTO [dbo].[ProposalProducts] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ProposalProducts] (
     ProposalId, ProductCode, ProductName, CommissionStructure, ResolvedScheduleId,
     ResolvedScheduleName, CreatedAt
 )
@@ -163,17 +163,17 @@ SELECT DISTINCT
     NULL AS ResolvedScheduleId,
     NULL AS ResolvedScheduleName,
     GETUTCDATE() AS CreatedAt
-FROM [etl].[stg_proposals] sp
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
 CROSS APPLY OPENJSON(sp.ProductCodes) AS pc
-LEFT JOIN [dbo].[Products] pr ON pr.ProductCode = TRIM(pc.[value])
-WHERE sp.Id IN (SELECT Id FROM [dbo].[Proposals])
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Products] pr ON pr.ProductCode = TRIM(pc.[value])
+WHERE sp.Id IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
   AND sp.ProductCodes IS NOT NULL
   AND sp.ProductCodes != '[]'
   AND sp.ProductCodes != ''
   AND sp.ProductCodes != '*'
   AND ISJSON(sp.ProductCodes) = 1
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[ProposalProducts] pp
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ProposalProducts] pp
     WHERE pp.ProposalId = sp.Id
       AND pp.ProductCode = TRIM(pc.[value])
   );
@@ -192,7 +192,7 @@ PRINT '';
 
 -- Export PremiumSplitVersions (with broken version exclusion)
 PRINT 'Exporting PremiumSplitVersions...';
-INSERT INTO [dbo].[PremiumSplitVersions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions] (
     Id, GroupId, GroupName, ProposalId, VersionNumber,
     EffectiveFrom, EffectiveTo, ChangeDescription, TotalSplitPercent,
     [Status], [Source], HubspotDealId, CreationTime, IsDeleted
@@ -226,7 +226,7 @@ SELECT
     spsv.HubspotDealId,
     spsv.CreationTime,
     COALESCE(spsv.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_premium_split_versions] spsv
+FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv
 WHERE TRY_CAST(
         REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
         REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -242,11 +242,11 @@ WHERE TRY_CAST(
   -- EXCLUDE broken split versions: versions that have participants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 
-    FROM [etl].[stg_premium_split_participants] spsp
+    FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
     WHERE spsp.VersionId = spsv.Id
       AND spsp.HierarchyId IS NULL
   )
-  AND spsv.ProposalId IN (SELECT Id FROM [dbo].[Proposals]);  -- Only export versions for exported proposals
+  AND spsv.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals]);  -- Only export versions for exported proposals
 
 DECLARE @exported_versions INT = @@ROWCOUNT;
 PRINT '  Exported PremiumSplitVersions: ' + CAST(@exported_versions AS VARCHAR);
@@ -254,7 +254,7 @@ PRINT '';
 
 -- Export PremiumSplitParticipants (only those with HierarchyId)
 PRINT 'Exporting PremiumSplitParticipants...';
-INSERT INTO [dbo].[PremiumSplitParticipants] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants] (
     Id, VersionId, BrokerUniquePartyId, BrokerName, BrokerNPN, SplitPercent,
     IsWritingAgent, HierarchyId, HierarchyName, TemplateId, TemplateName,
     EffectiveFrom, EffectiveTo, Notes
@@ -274,8 +274,8 @@ SELECT
     spsp.EffectiveFrom,
     spsp.EffectiveTo,
     spsp.Notes
-FROM [etl].[stg_premium_split_participants] spsp
-WHERE spsp.VersionId IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
+FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
+WHERE spsp.VersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions])
   AND spsp.HierarchyId IS NOT NULL;  -- EXCLUDE broken participants: only export participants with HierarchyId
 
 DECLARE @exported_participants INT = @@ROWCOUNT;

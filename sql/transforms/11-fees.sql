@@ -17,9 +17,9 @@ PRINT '';
 -- Step 1: Create stg_fees table with normalized structure
 -- ============================================================================
 IF OBJECT_ID('etl.stg_fees', 'U') IS NOT NULL
-    DROP TABLE [etl].[stg_fees];
+    DROP TABLE [$(ETL_SCHEMA)].[stg_fees];
 
-CREATE TABLE [etl].[stg_fees] (
+CREATE TABLE [$(ETL_SCHEMA)].[stg_fees] (
     Id NVARCHAR(100) NOT NULL PRIMARY KEY,
     GroupNumber NVARCHAR(100),
     GroupId NVARCHAR(100),  -- Will be resolved from Groups
@@ -57,13 +57,13 @@ CREATE TABLE [etl].[stg_fees] (
     IsDeleted BIT DEFAULT 0
 );
 
-PRINT 'Created [etl].[stg_fees]';
+PRINT 'Created [$(ETL_SCHEMA)].[stg_fees]';
 
 -- Create indexes
-CREATE NONCLUSTERED INDEX IX_stg_fees_GroupNumber ON [etl].[stg_fees] (GroupNumber);
-CREATE NONCLUSTERED INDEX IX_stg_fees_GroupId ON [etl].[stg_fees] (GroupId);
-CREATE NONCLUSTERED INDEX IX_stg_fees_FeeTypeCode ON [etl].[stg_fees] (FeeTypeCode);
-CREATE NONCLUSTERED INDEX IX_stg_fees_RecipientBrokerId ON [etl].[stg_fees] (RecipientBrokerId);
+CREATE NONCLUSTERED INDEX IX_stg_fees_GroupNumber ON [$(ETL_SCHEMA)].[stg_fees] (GroupNumber);
+CREATE NONCLUSTERED INDEX IX_stg_fees_GroupId ON [$(ETL_SCHEMA)].[stg_fees] (GroupId);
+CREATE NONCLUSTERED INDEX IX_stg_fees_FeeTypeCode ON [$(ETL_SCHEMA)].[stg_fees] (FeeTypeCode);
+CREATE NONCLUSTERED INDEX IX_stg_fees_RecipientBrokerId ON [$(ETL_SCHEMA)].[stg_fees] (RecipientBrokerId);
 
 GO
 
@@ -73,7 +73,7 @@ GO
 PRINT '';
 PRINT 'Populating stg_fees from raw_fees with canonical mapping...';
 
-INSERT INTO [etl].[stg_fees] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_fees] (
     Id,
     GroupNumber,
     GroupId,
@@ -249,7 +249,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 
-FROM [etl].[raw_fees] r
+FROM [$(ETL_SCHEMA)].[raw_fees] r
 WHERE LTRIM(RTRIM(r.PRDNUM)) <> ''
   AND LTRIM(RTRIM(r.PartyUniqueId)) <> ''
   AND LTRIM(RTRIM(r.FormattedFeeCalcMethod)) <> '';
@@ -267,8 +267,8 @@ PRINT 'Resolving GroupId from stg_groups...';
 
 UPDATE f
 SET f.GroupId = g.Id
-FROM [etl].[stg_fees] f
-INNER JOIN [etl].[stg_groups] g ON g.Code = f.GroupNumber;
+FROM [$(ETL_SCHEMA)].[stg_fees] f
+INNER JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Code = f.GroupNumber;
 
 DECLARE @groupResolveCount INT = @@ROWCOUNT;
 PRINT 'Resolved GroupId for ' + CAST(@groupResolveCount AS VARCHAR) + ' fees';
@@ -278,8 +278,8 @@ PRINT 'Resolving RecipientBrokerName from stg_brokers...';
 
 UPDATE f
 SET f.RecipientBrokerName = b.Name
-FROM [etl].[stg_fees] f
-INNER JOIN [etl].[stg_brokers] b ON b.Id = f.RecipientBrokerId;
+FROM [$(ETL_SCHEMA)].[stg_fees] f
+INNER JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = f.RecipientBrokerId;
 
 DECLARE @brokerResolveCount INT = @@ROWCOUNT;
 PRINT 'Resolved RecipientBrokerName for ' + CAST(@brokerResolveCount AS VARCHAR) + ' fees';
@@ -306,7 +306,7 @@ SELECT
     COUNT(DISTINCT RecipientBrokerId) AS UniqueBrokers,
     AVG(CASE WHEN Amount IS NOT NULL THEN Amount ELSE 0 END) AS AvgAmount,
     AVG(CASE WHEN [Percent] IS NOT NULL THEN [Percent] ELSE 0 END) AS AvgPercent
-FROM [etl].[stg_fees]
+FROM [$(ETL_SCHEMA)].[stg_fees]
 GROUP BY FeeTypeCode, FeeTypeName, Frequency, Basis
 ORDER BY FeeCount DESC;
 
@@ -317,7 +317,7 @@ SELECT
     LegacyCalcMethodDesc,
     FeeTypeCode,
     COUNT(*) AS FeeCount
-FROM [etl].[stg_fees]
+FROM [$(ETL_SCHEMA)].[stg_fees]
 GROUP BY LegacyCalcMethodDesc, FeeTypeCode
 ORDER BY FeeCount DESC;
 
@@ -327,7 +327,7 @@ PRINT '';
 SELECT 
     'Fees with resolved GroupId' AS Metric,
     COUNT(*) AS [Count]
-FROM [etl].[stg_fees]
+FROM [$(ETL_SCHEMA)].[stg_fees]
 WHERE GroupId IS NOT NULL
 
 UNION ALL
@@ -335,7 +335,7 @@ UNION ALL
 SELECT 
     'Fees without GroupId' AS Metric,
     COUNT(*) AS [Count]
-FROM [etl].[stg_fees]
+FROM [$(ETL_SCHEMA)].[stg_fees]
 WHERE GroupId IS NULL
 
 UNION ALL
@@ -343,7 +343,7 @@ UNION ALL
 SELECT 
     'Fees with recipient broker' AS Metric,
     COUNT(*) AS [Count]
-FROM [etl].[stg_fees]
+FROM [$(ETL_SCHEMA)].[stg_fees]
 WHERE RecipientBrokerId IS NOT NULL;
 
 PRINT '';

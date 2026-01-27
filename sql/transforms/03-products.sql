@@ -15,14 +15,14 @@ PRINT '';
 -- Step 1: Truncate staging table
 -- =============================================================================
 PRINT 'Step 1: Truncating stg_products...';
-TRUNCATE TABLE [etl].[stg_products];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_products];
 
 -- =============================================================================
 -- Step 2: Extract unique products from certificates
 -- =============================================================================
 PRINT 'Step 2: Extracting products from input_certificate_info...';
 
-INSERT INTO [etl].[stg_products] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_products] (
     Id, ProductCode, ProductName, MasterCategory, Category, 
     CommissionType, IsActive, [Description], CreationTime, IsDeleted
 )
@@ -41,7 +41,7 @@ SELECT
            COALESCE(NULLIF(MAX(LTRIM(RTRIM(ProductCategory))), ''), 'Unknown'), ')') AS [Description],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[input_certificate_info]
+FROM [$(ETL_SCHEMA)].[input_certificate_info]
 WHERE LTRIM(RTRIM(Product)) <> ''
 GROUP BY LTRIM(RTRIM(Product));  -- Only group by Product to avoid duplicates
 
@@ -54,7 +54,7 @@ PRINT 'Products from certificates: ' + CAST(@cert_products AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Adding products from raw_schedule_rates...';
 
-INSERT INTO [etl].[stg_products] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_products] (
     Id, ProductCode, ProductName, MasterCategory, Category,
     OffGroupLetterDescription, SeriesType, SpecialOffer,
     IsActive, [Description], CreationTime, IsDeleted
@@ -75,10 +75,10 @@ SELECT
     CONCAT('Product: ', LTRIM(RTRIM(sr.ProductCode)), ' (from schedule rates)') AS [Description],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[raw_schedule_rates] sr
+FROM [$(ETL_SCHEMA)].[raw_schedule_rates] sr
 WHERE LTRIM(RTRIM(sr.ProductCode)) <> ''
   AND NOT EXISTS (
-      SELECT 1 FROM [etl].[stg_products] p 
+      SELECT 1 FROM [$(ETL_SCHEMA)].[stg_products] p 
       WHERE p.Id = LTRIM(RTRIM(sr.ProductCode))
   )
 GROUP BY LTRIM(RTRIM(sr.ProductCode));  -- Only group by ProductCode to avoid duplicates
@@ -92,7 +92,7 @@ PRINT 'Products added from schedules: ' + CAST(@sched_products AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Populating stg_product_codes...';
 
-TRUNCATE TABLE [etl].[stg_product_codes];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_product_codes];
 
 -- Product codes from certificates
 -- First get distinct product/category combinations with their states
@@ -102,7 +102,7 @@ TRUNCATE TABLE [etl].[stg_product_codes];
         LTRIM(RTRIM(Product)) AS Product,
         LTRIM(RTRIM(CertIssuedState)) AS CertIssuedState,
         LTRIM(RTRIM(GroupId)) AS GroupId
-    FROM [etl].[input_certificate_info]
+    FROM [$(ETL_SCHEMA)].[input_certificate_info]
     WHERE LTRIM(RTRIM(ProductCategory)) <> ''
       AND LTRIM(RTRIM(Product)) <> ''
 ),
@@ -122,7 +122,7 @@ ProductCodeStates AS (
     FROM ProductCodeData
     WHERE CertIssuedState <> ''
 )
-INSERT INTO [etl].[stg_product_codes] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_product_codes] (
     Id, ProductId, Code, [Description], AllowedStates, [Status], 
     GroupsCount, SchedulesCount, CreationTime, IsDeleted
 )
@@ -147,12 +147,12 @@ DECLARE @cert_codes INT = @@ROWCOUNT;
 PRINT 'Product codes from certificates: ' + CAST(@cert_codes AS VARCHAR);
 
 -- Add product codes from schedule rates not already present
-INSERT INTO [etl].[stg_product_codes] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_product_codes] (
     Id, ProductId, Code, [Description], AllowedStates, [Status], 
     GroupsCount, SchedulesCount, CreationTime, IsDeleted
 )
 SELECT
-    (SELECT ISNULL(MAX(Id), 0) FROM [etl].[stg_product_codes]) + ROW_NUMBER() OVER (ORDER BY sub.Category, sub.ProductCode) AS Id,
+    (SELECT ISNULL(MAX(Id), 0) FROM [$(ETL_SCHEMA)].[stg_product_codes]) + ROW_NUMBER() OVER (ORDER BY sub.Category, sub.ProductCode) AS Id,
     sub.Category AS ProductId,
     sub.ProductCode AS Code,
     COALESCE(sub.OffGroupLetterDesc, CONCAT(sub.Category, ' - ', sub.ProductCode)) AS [Description],
@@ -168,13 +168,13 @@ FROM (
         LTRIM(RTRIM(ProductCode)) AS ProductCode,
         MAX(LTRIM(RTRIM(OffGroupLetterDescription))) AS OffGroupLetterDesc,
         COUNT(DISTINCT ScheduleName) AS ScheduleCount
-    FROM [etl].[raw_schedule_rates]
+    FROM [$(ETL_SCHEMA)].[raw_schedule_rates]
     WHERE LTRIM(RTRIM(Category)) <> ''
       AND LTRIM(RTRIM(ProductCode)) <> ''
     GROUP BY LTRIM(RTRIM(Category)), LTRIM(RTRIM(ProductCode))
 ) sub
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_product_codes] pc 
+    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_product_codes] pc 
     WHERE pc.Code = sub.ProductCode
 );
 
@@ -188,11 +188,11 @@ PRINT 'Product codes added from schedules: ' + CAST(@sched_codes AS VARCHAR);
 PRINT '';
 PRINT 'Step 5: Populating stg_plans...';
 
-TRUNCATE TABLE [etl].[stg_plans];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_plans];
 
 -- Create plans from unique (ProductCode, PlanCode) combinations in certificates
 -- Use GROUP BY on trimmed values to avoid duplicates from whitespace variations
-INSERT INTO [etl].[stg_plans] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_plans] (
     Id, ProductId, PlanCode, Name, [Description], [Status], CreationTime, IsDeleted
 )
 SELECT
@@ -209,7 +209,7 @@ FROM (
     SELECT
         LTRIM(RTRIM(Product)) AS ProductCode,
         LTRIM(RTRIM(PlanCode)) AS PlanCode
-    FROM [etl].[input_certificate_info]
+    FROM [$(ETL_SCHEMA)].[input_certificate_info]
     WHERE LTRIM(RTRIM(Product)) <> ''
       AND LTRIM(RTRIM(PlanCode)) <> ''
       AND LTRIM(RTRIM(PlanCode)) <> 'N/A'
@@ -227,18 +227,18 @@ PRINT '============================================================';
 PRINT 'VERIFICATION';
 PRINT '============================================================';
 
-SELECT 'stg_products' AS entity, COUNT(*) AS cnt FROM [etl].[stg_products]
+SELECT 'stg_products' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_products]
 UNION ALL
-SELECT 'stg_product_codes' AS entity, COUNT(*) AS cnt FROM [etl].[stg_product_codes]
+SELECT 'stg_product_codes' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_product_codes]
 UNION ALL
-SELECT 'stg_plans' AS entity, COUNT(*) AS cnt FROM [etl].[stg_plans];
+SELECT 'stg_plans' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_plans];
 
 PRINT '';
 PRINT 'Products by category (top 10):';
 SELECT TOP 10 
        Category, 
        COUNT(*) AS product_count 
-FROM [etl].[stg_products]
+FROM [$(ETL_SCHEMA)].[stg_products]
 GROUP BY Category
 ORDER BY product_count DESC;
 
@@ -247,7 +247,7 @@ PRINT 'Plans by product (top 10):';
 SELECT TOP 10 
        ProductId, 
        COUNT(*) AS plan_count 
-FROM [etl].[stg_plans]
+FROM [$(ETL_SCHEMA)].[stg_plans]
 GROUP BY ProductId
 ORDER BY plan_count DESC;
 

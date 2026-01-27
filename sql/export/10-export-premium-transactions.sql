@@ -12,7 +12,7 @@ PRINT 'Exporting missing PremiumTransactions to dbo.PremiumTransactions...';
 -- PremiumTransactions has IDENTITY on Id
 -- Insert using natural key match (certificateId + transactionDate + premiumAmount)
 
-INSERT INTO [dbo].[PremiumTransactions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumTransactions] (
     certificateId, transactionDate, premiumAmount, 
     billingPeriodStart, billingPeriodEnd, paymentStatus, sourceSystem,
     CreatedDate, isDryRun, sourcePolicyId, sourceTagIds,
@@ -32,10 +32,10 @@ SELECT
     NULL AS sourceTagIds,
     COALESCE(spt.CreatedDate, GETUTCDATE()) AS CreationTime,
     COALESCE(spt.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_premium_transactions] spt
+FROM [$(ETL_SCHEMA)].[stg_premium_transactions] spt
 WHERE spt.CertificateId IS NOT NULL
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[PremiumTransactions] pt
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[PremiumTransactions] pt
     WHERE pt.certificateId = spt.CertificateId
       AND pt.transactionDate = spt.TransactionDate
       AND pt.premiumAmount = spt.PremiumAmount
@@ -45,7 +45,7 @@ DECLARE @txCount INT = @@ROWCOUNT;
 PRINT 'PremiumTransactions exported: ' + CAST(@txCount AS VARCHAR);
 
 DECLARE @totalTx INT;
-SELECT @totalTx = COUNT(*) FROM [dbo].[PremiumTransactions];
+SELECT @totalTx = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[PremiumTransactions];
 PRINT 'Total transactions in dbo: ' + CAST(@totalTx AS VARCHAR);
 GO
 

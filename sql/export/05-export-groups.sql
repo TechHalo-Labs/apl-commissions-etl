@@ -7,7 +7,7 @@
 PRINT 'Exporting missing Groups to dbo.EmployerGroups...';
 
 -- 🔧 Apply filtered groups exclusion
-INSERT INTO [dbo].[EmployerGroups] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[EmployerGroups] (
     Id, GroupNumber, GroupName, StateAbbreviation, SitusState, GroupSize,
     TaxId, IsPublicSector, IsNonConformant, NonConformantDescription,
     PercentConformant, ConformantPolicies, NonConformantPolicies, TotalPoliciesAnalyzed,
@@ -31,9 +31,9 @@ SELECT
     1 AS NextProposalNumber,  -- Default
     sg.CreationTime,
     COALESCE(sg.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_groups] sg
-WHERE sg.Id NOT IN (SELECT Id FROM [dbo].[EmployerGroups])
-  AND sg.Id IN (SELECT Id FROM [etl].[stg_included_groups]);  -- 🔧 Only included groups
+FROM [$(ETL_SCHEMA)].[stg_groups] sg
+WHERE sg.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups])
+  AND sg.Id IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);  -- 🔧 Only included groups
 
 DECLARE @groupCount INT;
 SELECT @groupCount = @@ROWCOUNT;
@@ -45,10 +45,10 @@ PRINT 'Updating GroupSize from distinct CustomerId counts (lives)...';
 
 UPDATE g
 SET g.GroupSize = COALESCE(pc.LivesCount, 0)
-FROM [dbo].[EmployerGroups] g
+FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups] g
 LEFT JOIN (
     SELECT GroupId, COUNT(DISTINCT CustomerId) AS LivesCount 
-    FROM [dbo].[Policies] 
+    FROM [$(PRODUCTION_SCHEMA)].[Policies] 
     WHERE CustomerId IS NOT NULL AND CustomerId <> ''
     GROUP BY GroupId
 ) pc ON pc.GroupId = g.Id;
@@ -58,7 +58,7 @@ PRINT 'GroupSize updated for ' + CAST(@updatedCount AS VARCHAR) + ' groups based
 GO
 
 DECLARE @totalGroups INT;
-SELECT @totalGroups = COUNT(*) FROM [dbo].[EmployerGroups];
+SELECT @totalGroups = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups];
 PRINT 'Total groups in dbo: ' + CAST(@totalGroups AS VARCHAR);
 GO
 
@@ -71,9 +71,9 @@ PRINT 'Flagging non-conformant groups from ETL analysis...';
 UPDATE g
 SET g.IsNonConformant = 1,
     g.LastModificationTime = GETUTCDATE()
-FROM [dbo].[EmployerGroups] g
+FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups] g
 WHERE EXISTS (
-    SELECT 1 FROM [etl].[non_conformant_keys] nck
+    SELECT 1 FROM [$(ETL_SCHEMA)].[non_conformant_keys] nck
     WHERE CONCAT('G', nck.GroupId) = g.Id
 )
 AND (g.IsNonConformant IS NULL OR g.IsNonConformant = 0);  -- Only update if not already flagged

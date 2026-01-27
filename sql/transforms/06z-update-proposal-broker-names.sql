@@ -19,8 +19,8 @@ SET sp.BrokerName = COALESCE(
     NULLIF(LTRIM(RTRIM(b.Name)), ''),
     CONCAT('Broker ', sp.BrokerId)
 )
-FROM [etl].[stg_proposals] sp
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = sp.BrokerId
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = sp.BrokerId
 WHERE sp.BrokerId IS NOT NULL
     AND (
         sp.BrokerName IS NULL 
@@ -36,7 +36,7 @@ PRINT 'BrokerName updated for ' + CAST(@updated_count AS VARCHAR) + ' proposals'
 -- Report proposals still missing broker names
 DECLARE @missing_count INT;
 SELECT @missing_count = COUNT(*)
-FROM [etl].[stg_proposals]
+FROM [$(ETL_SCHEMA)].[stg_proposals]
 WHERE BrokerId IS NOT NULL
     AND (BrokerName IS NULL OR LTRIM(RTRIM(BrokerName)) = '' OR BrokerName = CONCAT('Broker ', BrokerId));
 

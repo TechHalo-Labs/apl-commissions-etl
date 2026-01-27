@@ -18,17 +18,17 @@ PRINT '';
 -- ============================================================================
 -- Step 1: Drop all existing tables for idempotent re-runs
 -- ============================================================================
-DROP TABLE IF EXISTS [etl].[input_commission_details];
-DROP TABLE IF EXISTS [etl].[input_certificate_info];
-DROP TABLE IF EXISTS [etl].[prep_commission_details];
-DROP TABLE IF EXISTS [etl].[prep_certificate_info];
-DROP TABLE IF EXISTS [etl].[nonconformant_commission_details];
-DROP TABLE IF EXISTS [etl].[nonconformant_certificate_info];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[input_commission_details];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[input_certificate_info];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[prep_commission_details];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[prep_certificate_info];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[nonconformant_commission_details];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[nonconformant_certificate_info];
 
 -- ============================================================================
 -- Step 2: Create prep_certificate_info (type-cast staging)
 -- ============================================================================
-CREATE TABLE [etl].[prep_certificate_info] (
+CREATE TABLE [$(ETL_SCHEMA)].[prep_certificate_info] (
     Company NVARCHAR(100),
     ProductMasterCategory NVARCHAR(100),
     ProductCategory NVARCHAR(100),
@@ -54,15 +54,15 @@ CREATE TABLE [etl].[prep_certificate_info] (
     ReassignedType NVARCHAR(100),
     PaidBrokerId NVARCHAR(50)
 );
-PRINT 'Created [etl].[prep_certificate_info]';
+PRINT 'Created [$(ETL_SCHEMA)].[prep_certificate_info]';
 
 CREATE NONCLUSTERED INDEX IX_prep_cert_CertificateId 
-ON [etl].[prep_certificate_info] (CertificateId);
+ON [$(ETL_SCHEMA)].[prep_certificate_info] (CertificateId);
 
 -- ============================================================================
 -- Step 3: Create prep_commission_details (type-cast staging)
 -- ============================================================================
-CREATE TABLE [etl].[prep_commission_details] (
+CREATE TABLE [$(ETL_SCHEMA)].[prep_commission_details] (
     Company NVARCHAR(100),
     CertificateId BIGINT,
     CertEffectiveDate DATE,
@@ -83,15 +83,15 @@ CREATE TABLE [etl].[prep_commission_details] (
     CreditCardType NVARCHAR(100),
     TransactionId NVARCHAR(100)
 );
-PRINT 'Created [etl].[prep_commission_details]';
+PRINT 'Created [$(ETL_SCHEMA)].[prep_commission_details]';
 
 CREATE NONCLUSTERED INDEX IX_prep_cd_CertificateId 
-ON [etl].[prep_commission_details] (CertificateId);
+ON [$(ETL_SCHEMA)].[prep_commission_details] (CertificateId);
 
 -- ============================================================================
 -- Step 4: Create input_certificate_info (conformant records only)
 -- ============================================================================
-CREATE TABLE [etl].[input_certificate_info] (
+CREATE TABLE [$(ETL_SCHEMA)].[input_certificate_info] (
     Company NVARCHAR(100),
     ProductMasterCategory NVARCHAR(100),
     ProductCategory NVARCHAR(100),
@@ -117,18 +117,18 @@ CREATE TABLE [etl].[input_certificate_info] (
     ReassignedType NVARCHAR(100),
     PaidBrokerId NVARCHAR(50)
 );
-PRINT 'Created [etl].[input_certificate_info]';
+PRINT 'Created [$(ETL_SCHEMA)].[input_certificate_info]';
 
 CREATE NONCLUSTERED INDEX IX_input_cert_CertificateId 
-ON [etl].[input_certificate_info] (CertificateId, CertSplitSeq, SplitBrokerSeq);
+ON [$(ETL_SCHEMA)].[input_certificate_info] (CertificateId, CertSplitSeq, SplitBrokerSeq);
 
 CREATE NONCLUSTERED INDEX IX_input_cert_GroupId 
-ON [etl].[input_certificate_info] (GroupId);
+ON [$(ETL_SCHEMA)].[input_certificate_info] (GroupId);
 
 -- ============================================================================
 -- Step 5: Create input_commission_details (conformant records only)
 -- ============================================================================
-CREATE TABLE [etl].[input_commission_details] (
+CREATE TABLE [$(ETL_SCHEMA)].[input_commission_details] (
     Company NVARCHAR(100),
     CertificateId BIGINT NOT NULL,
     CertEffectiveDate DATE NOT NULL,
@@ -149,18 +149,18 @@ CREATE TABLE [etl].[input_commission_details] (
     CreditCardType NVARCHAR(100),
     TransactionId NVARCHAR(100)
 );
-PRINT 'Created [etl].[input_commission_details]';
+PRINT 'Created [$(ETL_SCHEMA)].[input_commission_details]';
 
 CREATE NONCLUSTERED INDEX IX_input_cd_CertificateId 
-ON [etl].[input_commission_details] (CertificateId, SplitBrokerId);
+ON [$(ETL_SCHEMA)].[input_commission_details] (CertificateId, SplitBrokerId);
 
 CREATE NONCLUSTERED INDEX IX_input_cd_PmtPostedDate 
-ON [etl].[input_commission_details] (PmtPostedDate);
+ON [$(ETL_SCHEMA)].[input_commission_details] (PmtPostedDate);
 
 -- ============================================================================
 -- Step 6: Create nonconformant_certificate_info (quarantined records)
 -- ============================================================================
-CREATE TABLE [etl].[nonconformant_certificate_info] (
+CREATE TABLE [$(ETL_SCHEMA)].[nonconformant_certificate_info] (
     Company NVARCHAR(100),
     ProductMasterCategory NVARCHAR(100),
     ProductCategory NVARCHAR(100),
@@ -189,15 +189,15 @@ CREATE TABLE [etl].[nonconformant_certificate_info] (
     nonconformant_code NVARCHAR(10),
     nonconformant_description NVARCHAR(2000)
 );
-PRINT 'Created [etl].[nonconformant_certificate_info]';
+PRINT 'Created [$(ETL_SCHEMA)].[nonconformant_certificate_info]';
 
 CREATE NONCLUSTERED INDEX IX_nonconf_cert_code 
-ON [etl].[nonconformant_certificate_info] (nonconformant_code);
+ON [$(ETL_SCHEMA)].[nonconformant_certificate_info] (nonconformant_code);
 
 -- ============================================================================
 -- Step 7: Create nonconformant_commission_details (quarantined records)
 -- ============================================================================
-CREATE TABLE [etl].[nonconformant_commission_details] (
+CREATE TABLE [$(ETL_SCHEMA)].[nonconformant_commission_details] (
     Company NVARCHAR(100),
     CertificateId BIGINT,
     CertEffectiveDate DATE,
@@ -221,10 +221,10 @@ CREATE TABLE [etl].[nonconformant_commission_details] (
     nonconformant_code NVARCHAR(10),
     nonconformant_description NVARCHAR(2000)
 );
-PRINT 'Created [etl].[nonconformant_commission_details]';
+PRINT 'Created [$(ETL_SCHEMA)].[nonconformant_commission_details]';
 
 CREATE NONCLUSTERED INDEX IX_nonconf_cd_code 
-ON [etl].[nonconformant_commission_details] (nonconformant_code);
+ON [$(ETL_SCHEMA)].[nonconformant_commission_details] (nonconformant_code);
 
 GO
 
@@ -234,7 +234,7 @@ GO
 PRINT '';
 PRINT 'Populating prep_certificate_info...';
 
-INSERT INTO [etl].[prep_certificate_info]
+INSERT INTO [$(ETL_SCHEMA)].[prep_certificate_info]
 SELECT
     LTRIM(RTRIM(r.Company)) AS Company,
     LTRIM(RTRIM(r.ProductMasterCategory)) AS ProductMasterCategory,
@@ -260,7 +260,7 @@ SELECT
     TRY_CAST(NULLIF(LTRIM(RTRIM(r.SplitBrokerSeq)), '') AS INT) AS SplitBrokerSeq,
     LTRIM(RTRIM(r.ReassignedType)) AS ReassignedType,
     LTRIM(RTRIM(r.PaidBrokerId)) AS PaidBrokerId
-FROM [etl].[raw_certificate_info] r
+FROM [$(ETL_SCHEMA)].[raw_certificate_info] r
 WHERE LTRIM(RTRIM(r.CertificateId)) <> ''
   AND LTRIM(RTRIM(r.CertEffectiveDate)) <> ''
   AND LTRIM(RTRIM(r.RecStatus)) = 'A'
@@ -276,7 +276,7 @@ GO
 PRINT '';
 PRINT 'Populating prep_commission_details...';
 
-INSERT INTO [etl].[prep_commission_details]
+INSERT INTO [$(ETL_SCHEMA)].[prep_commission_details]
 SELECT
     LTRIM(RTRIM(r.Company)) AS Company,
     TRY_CAST(NULLIF(LTRIM(RTRIM(r.CertificateId)), '') AS BIGINT) AS CertificateId,
@@ -297,8 +297,8 @@ SELECT
     TRY_CAST(NULLIF(LTRIM(RTRIM(ci.HierVersion)), '') AS INT) AS CommissionsLevel,
     LTRIM(RTRIM(r.CreaditCardType)) AS CreditCardType,
     LTRIM(RTRIM(r.TransactionId)) AS TransactionId
-FROM [etl].[raw_commissions_detail] r
-LEFT JOIN [etl].[raw_certificate_info] ci 
+FROM [$(ETL_SCHEMA)].[raw_commissions_detail] r
+LEFT JOIN [$(ETL_SCHEMA)].[raw_certificate_info] ci 
     ON LTRIM(RTRIM(r.CertificateId)) = LTRIM(RTRIM(ci.CertificateId))
     AND LTRIM(RTRIM(r.SplitBrokerId)) = LTRIM(RTRIM(ci.SplitBrokerId))
 WHERE LTRIM(RTRIM(r.CertificateId)) <> ''
@@ -316,14 +316,14 @@ GO
 PRINT '';
 PRINT 'Populating input_certificate_info (conformant records)...';
 
-INSERT INTO [etl].[input_certificate_info]
+INSERT INTO [$(ETL_SCHEMA)].[input_certificate_info]
 SELECT 
     Company, ProductMasterCategory, ProductCategory, GroupId, Product, PlanCode,
     CertificateId, CertEffectiveDate, CertIssuedState, CertStatus, CertPremium,
     CertSplitSeq, CertSplitPercent, CustomerId, RecStatus, HierDriver, HierVersion,
     CommissionsSchedule, CommissionType, WritingBrokerID, SplitBrokerId,
     SplitBrokerSeq, ReassignedType, PaidBrokerId
-FROM [etl].[prep_certificate_info]
+FROM [$(ETL_SCHEMA)].[prep_certificate_info]
 WHERE CertificateId IS NOT NULL
   AND CertEffectiveDate IS NOT NULL
   AND CertSplitSeq IS NOT NULL
@@ -336,13 +336,13 @@ GO
 PRINT '';
 PRINT 'Populating input_commission_details (conformant records)...';
 
-INSERT INTO [etl].[input_commission_details]
+INSERT INTO [$(ETL_SCHEMA)].[input_commission_details]
 SELECT 
     Company, CertificateId, CertEffectiveDate, SplitBrokerId, PmtPostedDate,
     PaidToDate, PaidAmount, TransActionType, InvoiceNumber, CertInForceMonths,
     CommissionRate, RealCommissionRate, PaidBrokerId, CommissionsType,
     CommissionsSchedule, CommissionsDriver, CommissionsLevel, CreditCardType, TransactionId
-FROM [etl].[prep_commission_details]
+FROM [$(ETL_SCHEMA)].[prep_commission_details]
 WHERE CertificateId IS NOT NULL
   AND PmtPostedDate IS NOT NULL
   AND PaidAmount IS NOT NULL;
@@ -360,12 +360,12 @@ PRINT 'INPUT TABLE POPULATION SUMMARY';
 PRINT '============================================================';
 
 SELECT 'Row Counts' AS Validation,
-       (SELECT COUNT(*) FROM [etl].[raw_commissions_detail]) AS RawCDCount,
-       (SELECT COUNT(*) FROM [etl].[prep_commission_details]) AS PrepCDCount,
-       (SELECT COUNT(*) FROM [etl].[input_commission_details]) AS InputCDCount,
-       (SELECT COUNT(*) FROM [etl].[raw_certificate_info]) AS RawCICount,
-       (SELECT COUNT(*) FROM [etl].[prep_certificate_info]) AS PrepCICount,
-       (SELECT COUNT(*) FROM [etl].[input_certificate_info]) AS InputCICount;
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[raw_commissions_detail]) AS RawCDCount,
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[prep_commission_details]) AS PrepCDCount,
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[input_commission_details]) AS InputCDCount,
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[raw_certificate_info]) AS RawCICount,
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[prep_certificate_info]) AS PrepCICount,
+       (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[input_certificate_info]) AS InputCICount;
 
 PRINT '';
 PRINT '============================================================';

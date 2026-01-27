@@ -31,11 +31,11 @@ END
 -- Step 2: Check current state
 -- =============================================================================
 DECLARE @before_count INT;
-SELECT @before_count = COUNT(*) FROM [dbo].[HierarchyParticipantProductRates];
+SELECT @before_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates];
 PRINT 'HierarchyParticipantProductRates before export: ' + CAST(@before_count AS VARCHAR);
 
 DECLARE @staging_count INT;
-SELECT @staging_count = COUNT(*) FROM [etl].[stg_hierarchy_participant_product_rates];
+SELECT @staging_count = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_hierarchy_participant_product_rates];
 PRINT 'HierarchyParticipantProductRates in staging: ' + CAST(@staging_count AS VARCHAR);
 
 IF @staging_count = 0
@@ -54,9 +54,9 @@ END
 PRINT '';
 PRINT 'Step 3: Exporting hierarchy participant product rates...';
 
-SET IDENTITY_INSERT [dbo].[HierarchyParticipantProductRates] ON;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates] ON;
 
-INSERT INTO [dbo].[HierarchyParticipantProductRates] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates] (
     Id,
     HierarchyParticipantId,
     ProductCode,
@@ -79,14 +79,14 @@ SELECT
     hppr.Notes,
     COALESCE(hppr.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(hppr.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_hierarchy_participant_product_rates] hppr
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_participant_product_rates] hppr
 WHERE 
     -- HierarchyParticipant must exist in production
-    EXISTS (SELECT 1 FROM [dbo].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId)
+    EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId)
     -- Don't create duplicates
-    AND hppr.Id NOT IN (SELECT Id FROM [dbo].[HierarchyParticipantProductRates]);
+    AND hppr.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates]);
 
-SET IDENTITY_INSERT [dbo].[HierarchyParticipantProductRates] OFF;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates] OFF;
 
 DECLARE @exported INT = @@ROWCOUNT;
 PRINT 'New HierarchyParticipantProductRates exported: ' + CAST(@exported AS VARCHAR);
@@ -100,8 +100,8 @@ PRINT 'Step 4: Reporting skipped records...';
 -- Report staging records that couldn't be exported due to missing hierarchy participant
 DECLARE @no_participant_count INT;
 SELECT @no_participant_count = COUNT(*)
-FROM [etl].[stg_hierarchy_participant_product_rates] hppr
-WHERE NOT EXISTS (SELECT 1 FROM [dbo].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId);
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_participant_product_rates] hppr
+WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId);
 
 IF @no_participant_count > 0
 BEGIN
@@ -114,8 +114,8 @@ BEGIN
         hppr.ProductCode,
         hppr.FirstYearRate,
         'HierarchyParticipantId not in dbo.HierarchyParticipants' AS Reason
-    FROM [etl].[stg_hierarchy_participant_product_rates] hppr
-    WHERE NOT EXISTS (SELECT 1 FROM [dbo].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId)
+    FROM [$(ETL_SCHEMA)].[stg_hierarchy_participant_product_rates] hppr
+    WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants] hp WHERE hp.Id = hppr.HierarchyParticipantId)
     ORDER BY hppr.HierarchyParticipantId, hppr.ProductCode;
 END
 
@@ -128,13 +128,13 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 DECLARE @after_count INT;
-SELECT @after_count = COUNT(*) FROM [dbo].[HierarchyParticipantProductRates];
+SELECT @after_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates];
 PRINT 'HierarchyParticipantProductRates after export: ' + CAST(@after_count AS VARCHAR);
 PRINT 'Net new records: ' + CAST(@after_count - @before_count AS VARCHAR);
 
 -- Breakdown by product code
 SELECT 'Production by Product Code' AS Metric, ProductCode, COUNT(*) AS Cnt, AVG(FirstYearRate) AS AvgFYRate
-FROM [dbo].[HierarchyParticipantProductRates]
+FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipantProductRates]
 GROUP BY ProductCode
 ORDER BY Cnt DESC;
 

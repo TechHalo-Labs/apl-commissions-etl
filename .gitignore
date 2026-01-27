@@ -15,6 +15,9 @@ input-data/
 .env.local
 .env.*.local
 
+# Configuration with sensitive data
+appsettings.json
+
 # Logs
 *.log
 npm-debug.log*

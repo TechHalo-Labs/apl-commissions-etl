@@ -15,9 +15,9 @@ PRINT '';
 -- Step 1: Truncate staging tables
 -- =============================================================================
 PRINT 'Step 1: Truncating staging tables...';
-TRUNCATE TABLE [etl].[stg_schedule_rates];
-TRUNCATE TABLE [etl].[stg_schedule_versions];
-TRUNCATE TABLE [etl].[stg_schedules];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedule_rates];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedule_versions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedules];
 
 -- =============================================================================
 -- Step 2: Get active schedules (used in certificate info)
@@ -27,7 +27,7 @@ PRINT 'Step 2: Identifying active schedules from certificates...';
 DROP TABLE IF EXISTS #active_schedules;
 SELECT DISTINCT LTRIM(RTRIM(CommissionsSchedule)) AS ScheduleName
 INTO #active_schedules
-FROM [etl].[input_certificate_info]
+FROM [$(ETL_SCHEMA)].[input_certificate_info]
 WHERE CommissionsSchedule IS NOT NULL 
   AND LTRIM(RTRIM(CommissionsSchedule)) <> '';
 
@@ -39,7 +39,7 @@ PRINT 'Active schedules from certificates: ' + CAST(@@ROWCOUNT AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Creating stg_schedules...';
 
-INSERT INTO [etl].[stg_schedules] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_schedules] (
     Id, ExternalId, Name, [Description], [Status], CommissionType, RateStructure,
     EffectiveDate, EndDate, ProductCodes, ProductCount, CreationTime, IsDeleted
 )
@@ -61,7 +61,7 @@ SELECT
     COUNT(DISTINCT LTRIM(RTRIM(r.ProductCode))) AS ProductCount,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[raw_schedule_rates] r
+FROM [$(ETL_SCHEMA)].[raw_schedule_rates] r
 WHERE LTRIM(RTRIM(r.ScheduleName)) <> ''
   AND EXISTS (SELECT 1 FROM #active_schedules a WHERE a.ScheduleName = LTRIM(RTRIM(r.ScheduleName)))
 GROUP BY LTRIM(RTRIM(r.ScheduleName));
@@ -75,7 +75,7 @@ PRINT 'Schedules created: ' + CAST(@sched_count AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Creating stg_schedule_versions...';
 
-INSERT INTO [etl].[stg_schedule_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_schedule_versions] (
     Id, ScheduleId, VersionNumber, [Status], EffectiveDate, EndDate,
     ChangeReason, ApprovedBy, ApprovedAt, CreationTime, IsDeleted
 )
@@ -91,12 +91,12 @@ SELECT
     GETUTCDATE() AS ApprovedAt,
     CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_schedules];
+FROM [$(ETL_SCHEMA)].[stg_schedules];
 
 PRINT 'Schedule versions created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 -- Update schedules with CurrentVersionId
-UPDATE [etl].[stg_schedules]
+UPDATE [$(ETL_SCHEMA)].[stg_schedules]
 SET CurrentVersionId = Id,
     CurrentVersionNumber = '1.0';
 
@@ -106,7 +106,7 @@ SET CurrentVersionId = Id,
 PRINT '';
 PRINT 'Step 5: Creating stg_schedule_rates...';
 
-INSERT INTO [etl].[stg_schedule_rates] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_schedule_rates] (
     Id, ScheduleVersionId, CoverageType, ProductCode, ProductName, 
     RateValue, FirstYearRate, RenewalRate, RateType, RateTypeString,
     Category, GroupSize, GroupSizeFrom, GroupSizeTo, [Level], [State],
@@ -144,9 +144,9 @@ SELECT
     LTRIM(RTRIM(r.OffGroupLetterDescription)) AS OffGroupLetterDescription,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[raw_schedule_rates] r
-INNER JOIN [etl].[stg_schedules] s ON s.ExternalId = LTRIM(RTRIM(r.ScheduleName))
-INNER JOIN [etl].[stg_schedule_versions] sv ON sv.ScheduleId = s.Id
+FROM [$(ETL_SCHEMA)].[raw_schedule_rates] r
+INNER JOIN [$(ETL_SCHEMA)].[stg_schedules] s ON s.ExternalId = LTRIM(RTRIM(r.ScheduleName))
+INNER JOIN [$(ETL_SCHEMA)].[stg_schedule_versions] sv ON sv.ScheduleId = s.Id
 WHERE LTRIM(RTRIM(r.ProductCode)) <> '';
 
 PRINT 'Schedule rates created: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -168,7 +168,7 @@ SELECT sr.ScheduleVersionId, sr.ProductCode,
        COUNT(DISTINCT sr.[State]) AS StateCount,
        COUNT(DISTINCT CONCAT(sr.[Level], '|', sr.FirstYearRate, '|', sr.RenewalRate)) AS DistinctRates
 INTO #uniform_rate_products
-FROM [etl].[stg_schedule_rates] sr
+FROM [$(ETL_SCHEMA)].[stg_schedule_rates] sr
 WHERE sr.[State] IS NOT NULL AND sr.[State] <> ''
 GROUP BY sr.ScheduleVersionId, sr.ProductCode
 HAVING COUNT(DISTINCT CONCAT(sr.[Level], '|', sr.FirstYearRate, '|', sr.RenewalRate)) = 1
@@ -179,7 +179,7 @@ PRINT 'Products with uniform rates across multiple states: ' + CAST(@uniform_pro
 
 -- Delete the state-specific rows for uniform products
 DELETE sr
-FROM [etl].[stg_schedule_rates] sr
+FROM [$(ETL_SCHEMA)].[stg_schedule_rates] sr
 INNER JOIN #uniform_rate_products urp 
     ON urp.ScheduleVersionId = sr.ScheduleVersionId 
     AND urp.ProductCode = sr.ProductCode
@@ -188,14 +188,14 @@ WHERE sr.[State] IS NOT NULL AND sr.[State] <> '';
 PRINT 'State-specific rate rows deleted: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 -- Insert a single catch-all row for each uniform product
-INSERT INTO [etl].[stg_schedule_rates] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_schedule_rates] (
     Id, ScheduleVersionId, CoverageType, ProductCode, ProductName, 
     RateValue, FirstYearRate, RenewalRate, RateType, RateTypeString,
     Category, GroupSize, GroupSizeFrom, GroupSizeTo, [Level], [State],
     OffGroupLetterDescription, CreationTime, IsDeleted
 )
 SELECT
-    (SELECT ISNULL(MAX(Id), 0) FROM [etl].[stg_schedule_rates]) + ROW_NUMBER() OVER (ORDER BY urp.ScheduleVersionId, urp.ProductCode) AS Id,
+    (SELECT ISNULL(MAX(Id), 0) FROM [$(ETL_SCHEMA)].[stg_schedule_rates]) + ROW_NUMBER() OVER (ORDER BY urp.ScheduleVersionId, urp.ProductCode) AS Id,
     urp.ScheduleVersionId,
     NULL AS CoverageType,
     urp.ProductCode,
@@ -228,9 +228,9 @@ PRINT '============================================================';
 PRINT 'VERIFICATION';
 PRINT '============================================================';
 
-SELECT 'Schedules' AS entity, COUNT(*) AS cnt FROM [etl].[stg_schedules];
-SELECT 'Schedule Versions' AS entity, COUNT(*) AS cnt FROM [etl].[stg_schedule_versions];
-SELECT 'Schedule Rates' AS entity, COUNT(*) AS cnt FROM [etl].[stg_schedule_rates];
+SELECT 'Schedules' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_schedules];
+SELECT 'Schedule Versions' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_schedule_versions];
+SELECT 'Schedule Rates' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_schedule_rates];
 
 -- Rate coverage summary
 -- Heaped: Has Year1/Year2 values (FirstYearRate or RenewalRate > 0)
@@ -239,16 +239,16 @@ SELECT 'Rate coverage by type' AS metric,
        SUM(CASE WHEN FirstYearRate > 0 OR RenewalRate > 0 THEN 1 ELSE 0 END) AS heaped_rates,
        SUM(CASE WHEN FirstYearRate = 0 AND RenewalRate = 0 AND TRY_CAST([Level] AS DECIMAL(18,4)) > 0 THEN 1 ELSE 0 END) AS level_only_rates,
        SUM(CASE WHEN FirstYearRate = 0 AND RenewalRate = 0 AND (TRY_CAST([Level] AS DECIMAL(18,4)) = 0 OR [Level] IS NULL) THEN 1 ELSE 0 END) AS zero_rates
-FROM [etl].[stg_schedule_rates];
+FROM [$(ETL_SCHEMA)].[stg_schedule_rates];
 
 -- Top schedules by rate count
 SELECT TOP 10 
     s.ExternalId AS ScheduleName,
     s.Name,
     COUNT(sr.Id) AS rate_count
-FROM [etl].[stg_schedules] s
-LEFT JOIN [etl].[stg_schedule_versions] sv ON sv.ScheduleId = s.Id
-LEFT JOIN [etl].[stg_schedule_rates] sr ON sr.ScheduleVersionId = sv.Id
+FROM [$(ETL_SCHEMA)].[stg_schedules] s
+LEFT JOIN [$(ETL_SCHEMA)].[stg_schedule_versions] sv ON sv.ScheduleId = s.Id
+LEFT JOIN [$(ETL_SCHEMA)].[stg_schedule_rates] sr ON sr.ScheduleVersionId = sv.Id
 GROUP BY s.Id, s.ExternalId, s.Name
 ORDER BY rate_count DESC;
 

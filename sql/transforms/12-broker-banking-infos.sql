@@ -17,9 +17,9 @@ PRINT '';
 -- =============================================================================
 PRINT 'Step 1: Setting up staging table...';
 
-IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[etl].[stg_broker_banking_infos]') AND type in (N'U'))
+IF NOT EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'[$(ETL_SCHEMA)].[stg_broker_banking_infos]') AND type in (N'U'))
 BEGIN
-    CREATE TABLE [etl].[stg_broker_banking_infos] (
+    CREATE TABLE [$(ETL_SCHEMA)].[stg_broker_banking_infos] (
         Id BIGINT IDENTITY(1,1) NOT NULL,
         BrokerId BIGINT NOT NULL,
         PaymentPreference INT NOT NULL DEFAULT 0,
@@ -39,12 +39,12 @@ BEGIN
         IsDeleted BIT DEFAULT 0,
         CONSTRAINT PK_stg_broker_banking_infos PRIMARY KEY (Id)
     );
-    PRINT 'Created [etl].[stg_broker_banking_infos]';
+    PRINT 'Created [$(ETL_SCHEMA)].[stg_broker_banking_infos]';
 END
 ELSE
 BEGIN
-    TRUNCATE TABLE [etl].[stg_broker_banking_infos];
-    PRINT 'Truncated [etl].[stg_broker_banking_infos]';
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_broker_banking_infos];
+    PRINT 'Truncated [$(ETL_SCHEMA)].[stg_broker_banking_infos]';
 END
 
 -- =============================================================================
@@ -54,7 +54,7 @@ END
 PRINT '';
 PRINT 'Step 2: Extracting banking info from Individual brokers...';
 
-INSERT INTO [etl].[stg_broker_banking_infos] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_banking_infos] (
     BrokerId,
     PaymentPreference,
     BankName,
@@ -129,7 +129,7 @@ PRINT 'Individual broker banking records staged: ' + CAST(@ind_count AS VARCHAR)
 PRINT '';
 PRINT 'Step 3: Extracting banking info from Organization brokers...';
 
-INSERT INTO [etl].[stg_broker_banking_infos] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_banking_infos] (
     BrokerId,
     PaymentPreference,
     BankName,
@@ -187,7 +187,7 @@ WHERE
     AND TRY_CAST(REPLACE(ro.PartyUniqueId, 'P', '') AS BIGINT) IS NOT NULL
     -- Don't duplicate if already inserted from individuals (rare case)
     AND TRY_CAST(REPLACE(ro.PartyUniqueId, 'P', '') AS BIGINT) NOT IN (
-        SELECT BrokerId FROM [etl].[stg_broker_banking_infos]
+        SELECT BrokerId FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos]
     );
 
 DECLARE @org_count INT = @@ROWCOUNT;
@@ -202,10 +202,10 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 SELECT 'Total Broker Banking Infos' AS Metric, COUNT(*) AS Cnt 
-FROM [etl].[stg_broker_banking_infos];
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos];
 
 SELECT 'By Account Type' AS Metric, AccountType, COUNT(*) AS Cnt 
-FROM [etl].[stg_broker_banking_infos]
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos]
 GROUP BY AccountType
 ORDER BY Cnt DESC;
 
@@ -216,7 +216,7 @@ SELECT TOP 5
     BrokerId, PaymentPreference, BankName, RoutingNumber, 
     LEFT(AccountNumber, 4) + '***' AS AccountNumberMasked,
     AccountType, AccountHolderName
-FROM [etl].[stg_broker_banking_infos]
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos]
 WHERE Notes LIKE '%individual%'
 ORDER BY BrokerId;
 
@@ -226,7 +226,7 @@ SELECT TOP 5
     BrokerId, PaymentPreference, BankName, RoutingNumber, 
     LEFT(AccountNumber, 4) + '***' AS AccountNumberMasked,
     AccountType, AccountHolderName
-FROM [etl].[stg_broker_banking_infos]
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos]
 WHERE Notes LIKE '%org%'
 ORDER BY BrokerId;
 
@@ -234,11 +234,11 @@ ORDER BY BrokerId;
 PRINT '';
 PRINT '=== Brokers with Banking Info that exist in production ===';
 SELECT 'Staging banking infos with matching production broker' AS Metric, COUNT(*) AS Cnt
-FROM [etl].[stg_broker_banking_infos] sbi
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
 WHERE EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId);
 
 SELECT 'Staging banking infos WITHOUT matching production broker' AS Metric, COUNT(*) AS Cnt
-FROM [etl].[stg_broker_banking_infos] sbi
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
 WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId);
 
 PRINT '';

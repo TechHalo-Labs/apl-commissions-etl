@@ -12,7 +12,7 @@ PRINT 'Exporting missing PremiumSplitVersions...';
 
 -- Helper function to extract numeric portion from GroupId
 -- E.g., 'GT17624' -> 17624, 'G0006' -> 6, 'GAL0017' -> 17
-INSERT INTO [dbo].[PremiumSplitVersions] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions] (
     Id, GroupId, GroupName, ProposalId, VersionNumber,
     EffectiveFrom, EffectiveTo, ChangeDescription, TotalSplitPercent,
     [Status], [Source], HubspotDealId, CreationTime, IsDeleted
@@ -48,8 +48,8 @@ SELECT
     spsv.HubspotDealId,
     spsv.CreationTime,
     COALESCE(spsv.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_premium_split_versions] spsv
-WHERE spsv.Id NOT IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
+FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv
+WHERE spsv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions])
   -- Extract only numeric characters and ensure it's a valid number
   AND TRY_CAST(
         REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -66,7 +66,7 @@ WHERE spsv.Id NOT IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
   -- EXCLUDE broken split versions: versions that have participants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 
-    FROM [etl].[stg_premium_split_participants] spsp
+    FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
     WHERE spsp.VersionId = spsv.Id
       AND spsp.HierarchyId IS NULL
   );
@@ -82,7 +82,7 @@ PRINT 'Exporting missing PremiumSplitParticipants...';
 -- Sequence, WritingBrokerId, CreationTime, IsDeleted
 -- These columns exist in staging but not in production
 
-INSERT INTO [dbo].[PremiumSplitParticipants] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants] (
     Id, VersionId, BrokerUniquePartyId, BrokerName, BrokerNPN, SplitPercent,
     IsWritingAgent, HierarchyId, HierarchyName, TemplateId, TemplateName,
     EffectiveFrom, EffectiveTo, Notes
@@ -102,9 +102,9 @@ SELECT
     spsp.EffectiveFrom,
     spsp.EffectiveTo,
     spsp.Notes
-FROM [etl].[stg_premium_split_participants] spsp
-WHERE spsp.Id NOT IN (SELECT Id FROM [dbo].[PremiumSplitParticipants])
-  AND spsp.VersionId IN (SELECT Id FROM [dbo].[PremiumSplitVersions])
+FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
+WHERE spsp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants])
+  AND spsp.VersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions])
   AND spsp.BrokerUniquePartyId IS NOT NULL  -- Only export if broker reference is valid
   AND spsp.HierarchyId IS NOT NULL;  -- EXCLUDE broken participants: only export participants with HierarchyId
 

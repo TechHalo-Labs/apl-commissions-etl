@@ -15,22 +15,22 @@ PRINT '';
 -- =============================================================================
 -- Step 1: Build full hierarchy structure per (Group, CertSplitSeq)
 -- =============================================================================
-TRUNCATE TABLE [etl].[work_split_participants];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[work_split_participants];
 
 -- Build list of groups that have proposals (from all proposal sources)
 -- This ensures hierarchies are created for ALL groups with proposals, not just ref_active_groups
 WITH proposal_groups AS (
-    SELECT DISTINCT GroupId FROM [etl].[simple_groups]
+    SELECT DISTINCT GroupId FROM [$(ETL_SCHEMA)].[simple_groups]
     UNION
-    SELECT DISTINCT GroupId FROM [etl].[plan_differentiated_keys]
+    SELECT DISTINCT GroupId FROM [$(ETL_SCHEMA)].[plan_differentiated_keys]
     UNION
-    SELECT DISTINCT GroupId FROM [etl].[year_differentiated_keys]
+    SELECT DISTINCT GroupId FROM [$(ETL_SCHEMA)].[year_differentiated_keys]
     UNION
     -- Include all groups that have proposals in staging (e.g., consolidated proposals, non-conformant)
-    SELECT DISTINCT GroupId FROM [etl].[stg_proposals]
+    SELECT DISTINCT GroupId FROM [$(ETL_SCHEMA)].[stg_proposals]
     WHERE GroupId IS NOT NULL AND GroupId <> ''
 )
-INSERT INTO [etl].[work_split_participants] (GroupId, CertSplitSeq, WritingBrokerId, [Level], BrokerId, ScheduleCode, SplitPercent, MinEffDate)
+INSERT INTO [$(ETL_SCHEMA)].[work_split_participants] (GroupId, CertSplitSeq, WritingBrokerId, [Level], BrokerId, ScheduleCode, SplitPercent, MinEffDate)
 SELECT 
     CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
     ci.CertSplitSeq,
@@ -40,7 +40,7 @@ SELECT
     ci.CommissionsSchedule AS ScheduleCode,
     TRY_CAST(ci.CertSplitPercent AS DECIMAL(18,4)) AS SplitPercent,
     MIN(ci.CertEffectiveDate) AS MinEffDate
-FROM [etl].[input_certificate_info] ci
+FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
 INNER JOIN proposal_groups pg ON pg.GroupId = CONCAT('G', LTRIM(RTRIM(ci.GroupId)))
 WHERE ci.WritingBrokerID IS NOT NULL AND ci.WritingBrokerID <> ''
   AND ci.SplitBrokerId IS NOT NULL AND ci.SplitBrokerId <> ''
@@ -50,7 +50,7 @@ WHERE ci.WritingBrokerID IS NOT NULL AND ci.WritingBrokerID <> ''
 GROUP BY ci.GroupId, ci.CertSplitSeq, ci.WritingBrokerID, ci.SplitBrokerSeq, ci.SplitBrokerId, 
          ci.CommissionsSchedule, ci.CertSplitPercent;
 
-DECLARE @cnt_parts INT = (SELECT COUNT(*) FROM [etl].[work_split_participants]);
+DECLARE @cnt_parts INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[work_split_participants]);
 PRINT 'Split participants extracted: ' + CAST(@cnt_parts AS VARCHAR) + ' rows';
 
 GO
@@ -58,9 +58,9 @@ GO
 -- =============================================================================
 -- Step 2: Create structure signatures
 -- =============================================================================
-TRUNCATE TABLE [etl].[work_split_signatures];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[work_split_signatures];
 
-INSERT INTO [etl].[work_split_signatures] (GroupId, CertSplitSeq, WritingBrokerId, MinEffDate, StructureSignature)
+INSERT INTO [$(ETL_SCHEMA)].[work_split_signatures] (GroupId, CertSplitSeq, WritingBrokerId, MinEffDate, StructureSignature)
 SELECT 
     sp.GroupId,
     sp.CertSplitSeq,
@@ -70,10 +70,10 @@ SELECT
         CAST(CONCAT(sp.[Level], '|', sp.BrokerId, '|', ISNULL(sp.ScheduleCode, '')) AS NVARCHAR(MAX)), 
         ','
     ) WITHIN GROUP (ORDER BY sp.[Level], sp.BrokerId) AS NVARCHAR(MAX)) AS StructureSignature
-FROM [etl].[work_split_participants] sp
+FROM [$(ETL_SCHEMA)].[work_split_participants] sp
 GROUP BY sp.GroupId, sp.CertSplitSeq, sp.WritingBrokerId;
 
-DECLARE @cnt_sigs INT = (SELECT COUNT(*) FROM [etl].[work_split_signatures]);
+DECLARE @cnt_sigs INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[work_split_signatures]);
 PRINT 'Split signatures built: ' + CAST(@cnt_sigs AS VARCHAR) + ' rows';
 
 GO
@@ -81,9 +81,9 @@ GO
 -- =============================================================================
 -- Step 3: Create HierarchyId mapping
 -- =============================================================================
-TRUNCATE TABLE [etl].[work_hierarchy_id_map];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[work_hierarchy_id_map];
 
-INSERT INTO [etl].[work_hierarchy_id_map] (GroupId, WritingBrokerId, StructureSignature, MinEffDate, RepresentativeSplitSeq, HierarchyId)
+INSERT INTO [$(ETL_SCHEMA)].[work_hierarchy_id_map] (GroupId, WritingBrokerId, StructureSignature, MinEffDate, RepresentativeSplitSeq, HierarchyId)
 SELECT
     GroupId,
     WritingBrokerId,
@@ -91,10 +91,10 @@ SELECT
     MIN(MinEffDate) AS MinEffDate,
     MIN(CertSplitSeq) AS RepresentativeSplitSeq,
     CONCAT('H-', GroupId, '-', CAST(ROW_NUMBER() OVER (PARTITION BY GroupId ORDER BY MIN(CertSplitSeq)) AS VARCHAR)) AS HierarchyId
-FROM [etl].[work_split_signatures]
+FROM [$(ETL_SCHEMA)].[work_split_signatures]
 GROUP BY GroupId, WritingBrokerId, StructureSignature;
 
-DECLARE @cnt_idmap INT = (SELECT COUNT(*) FROM [etl].[work_hierarchy_id_map]);
+DECLARE @cnt_idmap INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[work_hierarchy_id_map]);
 PRINT 'Hierarchy ID map: ' + CAST(@cnt_idmap AS VARCHAR) + ' hierarchies';
 
 GO
@@ -102,22 +102,22 @@ GO
 -- =============================================================================
 -- Step 4: Map splitSeq to hierarchy
 -- =============================================================================
-TRUNCATE TABLE [etl].[work_splitseq_to_hierarchy];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[work_splitseq_to_hierarchy];
 
-INSERT INTO [etl].[work_splitseq_to_hierarchy] (GroupId, CertSplitSeq, WritingBrokerId, HierarchyId, MinEffDate)
+INSERT INTO [$(ETL_SCHEMA)].[work_splitseq_to_hierarchy] (GroupId, CertSplitSeq, WritingBrokerId, HierarchyId, MinEffDate)
 SELECT
     ss.GroupId,
     ss.CertSplitSeq,
     ss.WritingBrokerId,
     him.HierarchyId,
     ss.MinEffDate
-FROM [etl].[work_split_signatures] ss
-INNER JOIN [etl].[work_hierarchy_id_map] him 
+FROM [$(ETL_SCHEMA)].[work_split_signatures] ss
+INNER JOIN [$(ETL_SCHEMA)].[work_hierarchy_id_map] him 
     ON him.GroupId = ss.GroupId
     AND him.WritingBrokerId = ss.WritingBrokerId
     AND him.StructureSignature = ss.StructureSignature;
 
-DECLARE @cnt_map INT = (SELECT COUNT(*) FROM [etl].[work_splitseq_to_hierarchy]);
+DECLARE @cnt_map INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[work_splitseq_to_hierarchy]);
 PRINT 'SplitSeq mappings: ' + CAST(@cnt_map AS VARCHAR) + ' rows';
 
 GO
@@ -125,23 +125,23 @@ GO
 -- =============================================================================
 -- Step 5: Build hierarchy data with FirstUplineId
 -- =============================================================================
-TRUNCATE TABLE [etl].[work_hierarchy_data];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[work_hierarchy_data];
 
-INSERT INTO [etl].[work_hierarchy_data] (GroupId, WritingBrokerId, FirstUplineId, MinEffDate, HierarchyId)
+INSERT INTO [$(ETL_SCHEMA)].[work_hierarchy_data] (GroupId, WritingBrokerId, FirstUplineId, MinEffDate, HierarchyId)
 SELECT 
     him.GroupId,
     him.WritingBrokerId,
     (SELECT TOP 1 sp.BrokerId 
-     FROM [etl].[work_split_participants] sp 
+     FROM [$(ETL_SCHEMA)].[work_split_participants] sp 
      WHERE sp.GroupId = him.GroupId 
        AND sp.CertSplitSeq = him.RepresentativeSplitSeq
        AND sp.WritingBrokerId = him.WritingBrokerId
        AND sp.[Level] = 2) AS FirstUplineId,
     him.MinEffDate,
     him.HierarchyId
-FROM [etl].[work_hierarchy_id_map] him;
+FROM [$(ETL_SCHEMA)].[work_hierarchy_id_map] him;
 
-DECLARE @cnt_hdata INT = (SELECT COUNT(*) FROM [etl].[work_hierarchy_data]);
+DECLARE @cnt_hdata INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[work_hierarchy_data]);
 PRINT 'Hierarchy data: ' + CAST(@cnt_hdata AS VARCHAR) + ' rows';
 
 GO
@@ -149,9 +149,9 @@ GO
 -- =============================================================================
 -- Step 6: Populate stg_splitseq_hierarchy_map
 -- =============================================================================
-TRUNCATE TABLE [etl].[stg_splitseq_hierarchy_map];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_splitseq_hierarchy_map];
 
-INSERT INTO [etl].[stg_splitseq_hierarchy_map] (GroupId, CertSplitSeq, WritingBrokerId, HierarchyId, StructureSignature, CreationTime)
+INSERT INTO [$(ETL_SCHEMA)].[stg_splitseq_hierarchy_map] (GroupId, CertSplitSeq, WritingBrokerId, HierarchyId, StructureSignature, CreationTime)
 SELECT
     sth.GroupId,
     sth.CertSplitSeq,
@@ -159,13 +159,13 @@ SELECT
     sth.HierarchyId,
     ss.StructureSignature,
     GETUTCDATE()
-FROM [etl].[work_splitseq_to_hierarchy] sth
-INNER JOIN [etl].[work_split_signatures] ss 
+FROM [$(ETL_SCHEMA)].[work_splitseq_to_hierarchy] sth
+INNER JOIN [$(ETL_SCHEMA)].[work_split_signatures] ss 
     ON ss.GroupId = sth.GroupId 
     AND ss.CertSplitSeq = sth.CertSplitSeq
     AND ss.WritingBrokerId = sth.WritingBrokerId;
 
-DECLARE @cnt_shm INT = (SELECT COUNT(*) FROM [etl].[stg_splitseq_hierarchy_map]);
+DECLARE @cnt_shm INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_splitseq_hierarchy_map]);
 PRINT 'SplitSeq-Hierarchy map staged: ' + CAST(@cnt_shm AS VARCHAR) + ' rows';
 
 GO
@@ -173,11 +173,11 @@ GO
 -- =============================================================================
 -- Step 7: Create Hierarchies
 -- =============================================================================
-TRUNCATE TABLE [etl].[stg_hierarchies];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_hierarchies];
 
 -- Create hierarchies - ONE per (Group, WritingBroker, SplitStructure)
 -- But link to ALL matching proposals based on date ranges
-INSERT INTO [etl].[stg_hierarchies] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchies] (
     Id, Name, [Description], [Type], [Status], ProposalId, ProposalNumber, GroupId, GroupName,
     GroupNumber, BrokerId, BrokerName, BrokerLevel, ContractId, SourceType,
     SitusState, EffectiveDate, CurrentVersionId, CurrentVersionNumber, CreationTime, IsDeleted
@@ -195,7 +195,7 @@ SELECT
     COALESCE(
         -- Match 1: Hierarchy date within proposal date range
         (SELECT TOP 1 p.Id 
-         FROM [etl].[stg_proposals] p 
+         FROM [$(ETL_SCHEMA)].[stg_proposals] p 
          WHERE p.GroupId = hd.GroupId
            AND p.EffectiveDateFrom IS NOT NULL
            AND CAST(hd.MinEffDate AS DATE) >= p.EffectiveDateFrom
@@ -203,7 +203,7 @@ SELECT
          ORDER BY p.EffectiveDateFrom DESC),
         -- Match 2: Open-ended proposal where hierarchy date >= proposal start
         (SELECT TOP 1 p.Id 
-         FROM [etl].[stg_proposals] p 
+         FROM [$(ETL_SCHEMA)].[stg_proposals] p 
          WHERE p.GroupId = hd.GroupId
            AND p.EffectiveDateTo IS NULL
            AND p.EffectiveDateFrom IS NOT NULL
@@ -211,12 +211,12 @@ SELECT
          ORDER BY p.EffectiveDateFrom DESC),
         -- Match 3: Fallback to most recent proposal
         (SELECT TOP 1 p.Id 
-         FROM [etl].[stg_proposals] p 
+         FROM [$(ETL_SCHEMA)].[stg_proposals] p 
          WHERE p.GroupId = hd.GroupId
          ORDER BY p.EffectiveDateFrom DESC)
     ) AS ProposalId,
     (SELECT TOP 1 p.ProposalNumber 
-     FROM [etl].[stg_proposals] p 
+     FROM [$(ETL_SCHEMA)].[stg_proposals] p 
      WHERE p.GroupId = hd.GroupId
      ORDER BY p.EffectiveDateFrom DESC) AS ProposalNumber,
     hd.GroupId AS GroupId,
@@ -233,9 +233,9 @@ SELECT
     1 AS CurrentVersionNumber,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[work_hierarchy_data] hd
-LEFT JOIN [etl].[stg_groups] g ON g.Id = hd.GroupId
-LEFT JOIN [etl].[stg_brokers] b ON b.Id = hd.WritingBrokerId
+FROM [$(ETL_SCHEMA)].[work_hierarchy_data] hd
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = hd.GroupId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = hd.WritingBrokerId
 WHERE hd.WritingBrokerId IS NOT NULL;
 
 PRINT 'Hierarchies staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -245,9 +245,9 @@ GO
 -- =============================================================================
 -- Step 8: Create Hierarchy Versions
 -- =============================================================================
-TRUNCATE TABLE [etl].[stg_hierarchy_versions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_hierarchy_versions];
 
-INSERT INTO [etl].[stg_hierarchy_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchy_versions] (
     Id, HierarchyId, [Version], [Status], EffectiveFrom, EffectiveTo, ChangeReason, CreationTime, IsDeleted
 )
 SELECT
@@ -260,7 +260,7 @@ SELECT
     'Initial migration' AS ChangeReason,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_hierarchies] h;
+FROM [$(ETL_SCHEMA)].[stg_hierarchies] h;
 
 PRINT 'Hierarchy versions staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
@@ -269,7 +269,7 @@ GO
 -- =============================================================================
 -- Step 9: Create Hierarchy Participants
 -- =============================================================================
-TRUNCATE TABLE [etl].[stg_hierarchy_participants];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_hierarchy_participants];
 
 ;WITH deduped_participants AS (
     SELECT 
@@ -282,16 +282,16 @@ TRUNCATE TABLE [etl].[stg_hierarchy_participants];
         sp.SplitPercent,
         sp.ScheduleCode,
         ROW_NUMBER() OVER (PARTITION BY h.Id, sp.BrokerId, sp.[Level] ORDER BY sp.MinEffDate DESC) AS rn
-    FROM [etl].[stg_hierarchies] h
-    INNER JOIN [etl].[work_hierarchy_id_map] him ON him.HierarchyId = h.Id
-    INNER JOIN [etl].[work_split_participants] sp 
+    FROM [$(ETL_SCHEMA)].[stg_hierarchies] h
+    INNER JOIN [$(ETL_SCHEMA)].[work_hierarchy_id_map] him ON him.HierarchyId = h.Id
+    INNER JOIN [$(ETL_SCHEMA)].[work_split_participants] sp 
         ON sp.GroupId = h.GroupId
         AND sp.CertSplitSeq = him.RepresentativeSplitSeq
         AND sp.WritingBrokerId = him.WritingBrokerId
-    LEFT JOIN [etl].[stg_brokers] b ON b.Id = sp.BrokerId
+    LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = sp.BrokerId
     WHERE sp.BrokerId IS NOT NULL
 )
-INSERT INTO [etl].[stg_hierarchy_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchy_participants] (
     Id, HierarchyVersionId, EntityId, EntityName, [Level], SortOrder, SplitPercent,
     ScheduleCode, ScheduleId, CommissionRate, PaidBrokerId, CreationTime, IsDeleted
 )
@@ -306,8 +306,8 @@ PRINT 'Hierarchy participants staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Link ScheduleId
 UPDATE hp
 SET hp.ScheduleId = s.Id
-FROM [etl].[stg_hierarchy_participants] hp
-INNER JOIN [etl].[stg_schedules] s ON s.ExternalId = hp.ScheduleCode
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_participants] hp
+INNER JOIN [$(ETL_SCHEMA)].[stg_schedules] s ON s.ExternalId = hp.ScheduleCode
 WHERE hp.ScheduleCode IS NOT NULL AND hp.ScheduleCode <> '';
 
 PRINT 'ScheduleId linked: ' + CAST(@@ROWCOUNT AS VARCHAR) + ' participants';
@@ -324,12 +324,12 @@ UPDATE psp
 SET 
     psp.HierarchyId = shm.HierarchyId,
     psp.HierarchyName = h.Name
-FROM [etl].[stg_premium_split_participants] psp
-INNER JOIN [etl].[stg_splitseq_hierarchy_map] shm 
+FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] psp
+INNER JOIN [$(ETL_SCHEMA)].[stg_splitseq_hierarchy_map] shm 
     ON shm.GroupId = psp.GroupId
     AND shm.CertSplitSeq = psp.Sequence
     AND shm.WritingBrokerId = psp.WritingBrokerId
-LEFT JOIN [etl].[stg_hierarchies] h ON h.Id = shm.HierarchyId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h ON h.Id = shm.HierarchyId
 WHERE psp.HierarchyId IS NULL;
 
 PRINT 'Split participants linked: ' + CAST(@@ROWCOUNT AS VARCHAR);

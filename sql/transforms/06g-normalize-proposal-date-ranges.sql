@@ -37,13 +37,13 @@ WITH ProposalSequences AS (
             PARTITION BY GroupId 
             ORDER BY EffectiveDateFrom ASC, CreationTime ASC
         ) AS NextProposalStartDate
-    FROM [etl].[stg_proposals]
+    FROM [$(ETL_SCHEMA)].[stg_proposals]
     WHERE GroupId IS NOT NULL
         AND EffectiveDateFrom IS NOT NULL
         -- Only process groups that have multiple proposals with different EffectiveDateFrom values
         AND GroupId IN (
             SELECT GroupId
-            FROM [etl].[stg_proposals]
+            FROM [$(ETL_SCHEMA)].[stg_proposals]
             WHERE GroupId IS NOT NULL
                 AND EffectiveDateFrom IS NOT NULL
             GROUP BY GroupId
@@ -53,7 +53,7 @@ WITH ProposalSequences AS (
 UPDATE sp
 SET 
     EffectiveDateTo = DATEADD(DAY, -1, ps.NextProposalStartDate)
-FROM [etl].[stg_proposals] sp
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
 INNER JOIN ProposalSequences ps ON sp.Id = ps.Id
 WHERE ps.NextProposalStartDate IS NOT NULL  -- Only if there's a next proposal
     AND ps.NextProposalStartDate > ps.EffectiveDateFrom  -- Ensure next proposal starts after current one
@@ -87,12 +87,12 @@ WITH ProposalSequences AS (
             PARTITION BY GroupId 
             ORDER BY EffectiveDateFrom ASC, CreationTime ASC
         ) AS PreviousProposalEndDate
-    FROM [etl].[stg_proposals]
+    FROM [$(ETL_SCHEMA)].[stg_proposals]
     WHERE GroupId IS NOT NULL
         AND EffectiveDateFrom IS NOT NULL
         AND GroupId IN (
             SELECT GroupId
-            FROM [etl].[stg_proposals]
+            FROM [$(ETL_SCHEMA)].[stg_proposals]
             WHERE GroupId IS NOT NULL
                 AND EffectiveDateFrom IS NOT NULL
             GROUP BY GroupId

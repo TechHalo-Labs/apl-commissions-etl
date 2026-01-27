@@ -26,7 +26,7 @@ PRINT '=== Exporting BrokerLicenses ===';
 -- BrokerLicenses has IDENTITY on Id
 -- Use COALESCE for LicenseNumber to handle NULLs (use BrokerId-State as fallback)
 -- GracePeriodDate set to 2099-01-01 (far future for compliance purposes)
-INSERT INTO [dbo].[BrokerLicenses] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerLicenses] (
     BrokerId, [State], LicenseNumber, [Type], [Status],
     EffectiveDate, ExpirationDate, GracePeriodDate, IsResidentLicense,
     CreationTime, IsDeleted
@@ -43,11 +43,11 @@ SELECT
     COALESCE(sbl.IsResidentLicense, 0) AS IsResidentLicense,
     COALESCE(sbl.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sbl.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_broker_licenses] sbl
-WHERE sbl.BrokerId IN (SELECT Id FROM [dbo].[Brokers])
+FROM [$(ETL_SCHEMA)].[stg_broker_licenses] sbl
+WHERE sbl.BrokerId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers])
   AND sbl.[State] IS NOT NULL
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[BrokerLicenses] bl
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[BrokerLicenses] bl
     WHERE bl.BrokerId = sbl.BrokerId
       AND bl.LicenseNumber = COALESCE(sbl.LicenseNumber, CONCAT('LIC-', sbl.BrokerId, '-', sbl.[State]))
       AND bl.[State] = sbl.[State]
@@ -80,7 +80,7 @@ INSERT INTO #StateNames VALUES
 -- Create appointments for each unique (BrokerId, State) from licenses
 -- Uses the earliest effective date and latest expiration for each state
 -- GracePeriodDate set to 2099-01-01 (far future for compliance purposes)
-INSERT INTO [dbo].[BrokerAppointments] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerAppointments] (
     BrokerId, StateCode, StateName, LicenseCode, LicenseCodeLabel,
     EffectiveDate, ExpirationDate, GracePeriodDate, OriginalEffectiveDate, TerminationDate,
     [Status], StatusReason, NiprStatus, IsCommissionEligible,
@@ -112,11 +112,11 @@ SELECT
     END AS IsCommissionEligible,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [dbo].[BrokerLicenses] lic
+FROM [$(PRODUCTION_SCHEMA)].[BrokerLicenses] lic
 LEFT JOIN #StateNames sn ON sn.StateCode = lic.[State]
 WHERE lic.IsDeleted = 0
   AND NOT EXISTS (
-    SELECT 1 FROM [dbo].[BrokerAppointments] appt
+    SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[BrokerAppointments] appt
     WHERE appt.BrokerId = lic.BrokerId
       AND appt.StateCode = lic.[State]
 )
@@ -127,7 +127,7 @@ SELECT @apptCount = @@ROWCOUNT;
 PRINT 'BrokerAppointments created from licenses: ' + CAST(@apptCount AS VARCHAR);
 
 DECLARE @totalAppts INT;
-SELECT @totalAppts = COUNT(*) FROM [dbo].[BrokerAppointments];
+SELECT @totalAppts = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerAppointments];
 PRINT 'Total appointments in dbo: ' + CAST(@totalAppts AS VARCHAR);
 
 DROP TABLE #StateNames;
@@ -143,7 +143,7 @@ PRINT 'Exporting missing BrokerEOInsurances...';
 -- BrokerEOInsurances has a UNIQUE constraint on BrokerId (one EO per broker)
 -- Only insert for brokers that don't already have an EO record
 -- GracePeriodDate set to 2099-01-01 (far future for compliance purposes)
-INSERT INTO [dbo].[BrokerEOInsurances] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerEOInsurances] (
     BrokerId, PolicyNumber, Carrier, CoverageAmount, MinimumRequired,
     DeductibleAmount, ClaimMaxAmount, AnnualMaxAmount, PolicyMaxAmount, LiabilityLimit,
     EffectiveDate, ExpirationDate, GracePeriodDate, [Status], CreationTime, IsDeleted
@@ -165,23 +165,23 @@ SELECT
     COALESCE(sbeo.[Status], 0) AS [Status],
     COALESCE(sbeo.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sbeo.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_broker_eo_insurances] sbeo
-WHERE sbeo.BrokerId IN (SELECT Id FROM [dbo].[Brokers])
-  AND sbeo.BrokerId NOT IN (SELECT BrokerId FROM [dbo].[BrokerEOInsurances]);
+FROM [$(ETL_SCHEMA)].[stg_broker_eo_insurances] sbeo
+WHERE sbeo.BrokerId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers])
+  AND sbeo.BrokerId NOT IN (SELECT BrokerId FROM [$(PRODUCTION_SCHEMA)].[BrokerEOInsurances]);
 
 DECLARE @eoCount INT;
 SELECT @eoCount = @@ROWCOUNT;
 PRINT 'BrokerEOInsurances exported: ' + CAST(@eoCount AS VARCHAR);
 
 DECLARE @totalEO INT;
-SELECT @totalEO = COUNT(*) FROM [dbo].[BrokerEOInsurances];
+SELECT @totalEO = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerEOInsurances];
 PRINT 'Total EO insurances in dbo: ' + CAST(@totalEO AS VARCHAR);
 GO
 
 PRINT '=== Updating existing records to set ExpirationDate to 2099-01-01 ===';
 
 -- Update all existing BrokerLicenses to have ExpirationDate = 2099-01-01 (grace period)
-UPDATE [dbo].[BrokerLicenses]
+UPDATE [$(PRODUCTION_SCHEMA)].[BrokerLicenses]
 SET ExpirationDate = '2099-01-01',
     GracePeriodDate = '2099-01-01',
     LastModificationTime = GETUTCDATE()
@@ -193,7 +193,7 @@ PRINT 'BrokerLicenses updated to grace period: ' + CAST(@licUpdated AS VARCHAR);
 GO
 
 -- Update all existing BrokerAppointments to have ExpirationDate = 2099-01-01 (grace period)
-UPDATE [dbo].[BrokerAppointments]
+UPDATE [$(PRODUCTION_SCHEMA)].[BrokerAppointments]
 SET ExpirationDate = '2099-01-01',
     GracePeriodDate = '2099-01-01',
     LastModificationTime = GETUTCDATE()
@@ -205,7 +205,7 @@ PRINT 'BrokerAppointments updated to grace period: ' + CAST(@apptUpdated AS VARC
 GO
 
 -- Update all existing BrokerEOInsurances to have ExpirationDate = 2099-01-01 (grace period)
-UPDATE [dbo].[BrokerEOInsurances]
+UPDATE [$(PRODUCTION_SCHEMA)].[BrokerEOInsurances]
 SET ExpirationDate = '2099-01-01',
     GracePeriodDate = '2099-01-01',
     LastModificationTime = GETUTCDATE()

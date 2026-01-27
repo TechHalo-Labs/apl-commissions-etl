@@ -30,11 +30,11 @@ END
 -- Step 2: Check current state
 -- =============================================================================
 DECLARE @before_count INT;
-SELECT @before_count = COUNT(*) FROM [dbo].[BrokerBankingInfos];
+SELECT @before_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos];
 PRINT 'BrokerBankingInfos before export: ' + CAST(@before_count AS VARCHAR);
 
 DECLARE @staging_count INT;
-SELECT @staging_count = COUNT(*) FROM [etl].[stg_broker_banking_infos];
+SELECT @staging_count = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos];
 PRINT 'BrokerBankingInfos in staging: ' + CAST(@staging_count AS VARCHAR);
 
 -- =============================================================================
@@ -44,7 +44,7 @@ PRINT 'BrokerBankingInfos in staging: ' + CAST(@staging_count AS VARCHAR);
 PRINT '';
 PRINT 'Step 2: Exporting new broker banking infos...';
 
-INSERT INTO [dbo].[BrokerBankingInfos] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos] (
     BrokerId,
     PaymentPreference,
     BankName,
@@ -79,12 +79,12 @@ SELECT
     sbi.Notes,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_broker_banking_infos] sbi
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
 WHERE 
     -- Broker must exist in production
-    EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId)
+    EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[Brokers] b WHERE b.Id = sbi.BrokerId)
     -- Don't create duplicate banking info for same broker
-    AND NOT EXISTS (SELECT 1 FROM [dbo].[BrokerBankingInfos] bbi WHERE bbi.BrokerId = sbi.BrokerId);
+    AND NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos] bbi WHERE bbi.BrokerId = sbi.BrokerId);
 
 DECLARE @exported INT = @@ROWCOUNT;
 PRINT 'New BrokerBankingInfos exported: ' + CAST(@exported AS VARCHAR);
@@ -98,8 +98,8 @@ PRINT 'Step 3: Reporting skipped records...';
 -- Report staging records that couldn't be exported due to missing broker
 DECLARE @no_broker_count INT;
 SELECT @no_broker_count = COUNT(*)
-FROM [etl].[stg_broker_banking_infos] sbi
-WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId);
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
+WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[Brokers] b WHERE b.Id = sbi.BrokerId);
 
 IF @no_broker_count > 0
 BEGIN
@@ -110,17 +110,17 @@ BEGIN
         sbi.BrokerId,
         sbi.AccountHolderName,
         'Broker not in dbo.Brokers' AS Reason
-    FROM [etl].[stg_broker_banking_infos] sbi
-    WHERE NOT EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId)
+    FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
+    WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[Brokers] b WHERE b.Id = sbi.BrokerId)
     ORDER BY sbi.BrokerId;
 END
 
 -- Report staging records that were already in production
 DECLARE @already_exists_count INT;
 SELECT @already_exists_count = COUNT(*)
-FROM [etl].[stg_broker_banking_infos] sbi
-WHERE EXISTS (SELECT 1 FROM [dbo].[Brokers] b WHERE b.Id = sbi.BrokerId)
-  AND EXISTS (SELECT 1 FROM [dbo].[BrokerBankingInfos] bbi WHERE bbi.BrokerId = sbi.BrokerId);
+FROM [$(ETL_SCHEMA)].[stg_broker_banking_infos] sbi
+WHERE EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[Brokers] b WHERE b.Id = sbi.BrokerId)
+  AND EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos] bbi WHERE bbi.BrokerId = sbi.BrokerId);
 
 IF @already_exists_count > 0
 BEGIN
@@ -136,13 +136,13 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 DECLARE @after_count INT;
-SELECT @after_count = COUNT(*) FROM [dbo].[BrokerBankingInfos];
+SELECT @after_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos];
 PRINT 'BrokerBankingInfos after export: ' + CAST(@after_count AS VARCHAR);
 PRINT 'Net new records: ' + CAST(@after_count - @before_count AS VARCHAR);
 
 -- Breakdown by account type
 SELECT 'Production by Account Type' AS Metric, AccountType, COUNT(*) AS Cnt 
-FROM [dbo].[BrokerBankingInfos]
+FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos]
 GROUP BY AccountType
 ORDER BY Cnt DESC;
 
@@ -159,8 +159,8 @@ SELECT TOP 5
     LEFT(bbi.AccountNumber, 4) + '***' AS AccountNumberMasked,
     bbi.AccountType,
     bbi.AccountHolderName
-FROM [dbo].[BrokerBankingInfos] bbi
-INNER JOIN [dbo].[Brokers] b ON b.Id = bbi.BrokerId
+FROM [$(PRODUCTION_SCHEMA)].[BrokerBankingInfos] bbi
+INNER JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.Id = bbi.BrokerId
 ORDER BY bbi.Id DESC;
 
 PRINT '';

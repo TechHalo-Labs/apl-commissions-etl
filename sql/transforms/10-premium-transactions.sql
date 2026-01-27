@@ -18,7 +18,7 @@ PRINT '';
 -- Step 1: Truncate staging table
 -- =============================================================================
 PRINT 'Step 1: Truncating stg_premium_transactions...';
-TRUNCATE TABLE [etl].[stg_premium_transactions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_transactions];
 
 -- =============================================================================
 -- Step 2: Insert premium transactions from raw_premiums
@@ -26,7 +26,7 @@ TRUNCATE TABLE [etl].[stg_premium_transactions];
 PRINT '';
 PRINT 'Step 2: Creating premium transactions from raw_premiums...';
 
-INSERT INTO [etl].[stg_premium_transactions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_transactions] (
     Id, CertificateId, TransactionDate, PremiumAmount, 
     BillingPeriodStart, BillingPeriodEnd, PaymentStatus, SourceSystem, 
     CreatedDate, IsDeleted
@@ -42,7 +42,7 @@ SELECT
     'raw_premiums' AS SourceSystem,
     GETUTCDATE() AS CreatedDate,
     0 AS IsDeleted
-FROM [etl].[raw_premiums] p
+FROM [$(ETL_SCHEMA)].[raw_premiums] p
 WHERE p.Policy IS NOT NULL 
   AND LTRIM(RTRIM(p.Policy)) <> ''
   AND TRY_CAST(p.Amount AS DECIMAL(18,2)) IS NOT NULL;
@@ -64,7 +64,7 @@ PRINT 'Step 3: Creating premium transactions for policies without raw_premiums..
 DECLARE @offset BIGINT = 10000000;
 PRINT 'Using offset for policy-based premiums: ' + CAST(@offset AS VARCHAR);
 
-INSERT INTO [etl].[stg_premium_transactions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_transactions] (
     Id, CertificateId, TransactionDate, PremiumAmount, 
     BillingPeriodStart, BillingPeriodEnd, PaymentStatus, SourceSystem, 
     CreatedDate, IsDeleted
@@ -80,9 +80,9 @@ SELECT
     'stg_policies' AS SourceSystem,
     GETUTCDATE() AS CreatedDate,
     0 AS IsDeleted
-FROM [etl].[stg_policies] pol
+FROM [$(ETL_SCHEMA)].[stg_policies] pol
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_premium_transactions] pt 
+    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_premium_transactions] pt 
     WHERE pt.CertificateId = pol.Id
 )
   AND pol.Premium > 0;
@@ -99,19 +99,19 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 SELECT 'Total premium transactions' AS metric, COUNT(*) AS cnt 
-FROM [etl].[stg_premium_transactions];
+FROM [$(ETL_SCHEMA)].[stg_premium_transactions];
 
 SELECT 'Premium amount distribution' AS metric,
        SUM(CASE WHEN PremiumAmount <= 0 THEN 1 ELSE 0 END) AS zero_or_negative,
        SUM(CASE WHEN PremiumAmount > 0 AND PremiumAmount < 100 THEN 1 ELSE 0 END) AS under_100,
        SUM(CASE WHEN PremiumAmount >= 100 AND PremiumAmount < 500 THEN 1 ELSE 0 END) AS [100_to_500],
        SUM(CASE WHEN PremiumAmount >= 500 THEN 1 ELSE 0 END) AS over_500
-FROM [etl].[stg_premium_transactions];
+FROM [$(ETL_SCHEMA)].[stg_premium_transactions];
 
 -- Sample transactions
 SELECT TOP 10 
     Id, CertificateId, TransactionDate, PremiumAmount
-FROM [etl].[stg_premium_transactions]
+FROM [$(ETL_SCHEMA)].[stg_premium_transactions]
 ORDER BY Id;
 
 PRINT '';

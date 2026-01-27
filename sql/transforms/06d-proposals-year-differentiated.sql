@@ -20,7 +20,7 @@ PRINT '';
 -- =============================================================================
 PRINT 'Step 1: Finding year-differentiated keys...';
 
-DROP TABLE IF EXISTS [etl].[year_differentiated_keys];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[year_differentiated_keys];
 
 WITH ConfigsWithoutYear AS (
     SELECT 
@@ -28,7 +28,7 @@ WITH ConfigsWithoutYear AS (
         ProductCode,
         PlanCode,
         COUNT(DISTINCT ConfigJson) AS ConfigsWithoutYear
-    FROM [etl].[cert_split_configs_remainder2]
+    FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder2]
     GROUP BY GroupId, ProductCode, PlanCode
     HAVING COUNT(DISTINCT ConfigJson) > 1
 ),
@@ -43,7 +43,7 @@ ConfigsWithYear AS (
         COUNT(*) AS CertCount,
         MIN(EffectiveDate) AS MinEffDate,
         MAX(EffectiveDate) AS MaxEffDate
-    FROM [etl].[cert_split_configs_remainder2]
+    FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder2]
     GROUP BY GroupId, YEAR(EffectiveDate), ProductCode, PlanCode
 )
 SELECT 
@@ -55,7 +55,7 @@ SELECT
     cwy.CertCount,
     cwy.MinEffDate,
     cwy.MaxEffDate
-INTO [etl].[year_differentiated_keys]
+INTO [$(ETL_SCHEMA)].[year_differentiated_keys]
 FROM ConfigsWithYear cwy
 INNER JOIN ConfigsWithoutYear cwoy 
     ON cwoy.GroupId = cwy.GroupId 
@@ -66,7 +66,7 @@ WHERE cwy.ConfigsWithYear = 1;  -- Must be single config when Year included
 DECLARE @yd_keys INT = @@ROWCOUNT;
 PRINT 'Year-differentiated keys found: ' + CAST(@yd_keys AS VARCHAR);
 
-DECLARE @yd_certs INT = (SELECT SUM(CertCount) FROM [etl].[year_differentiated_keys]);
+DECLARE @yd_certs INT = (SELECT SUM(CertCount) FROM [$(ETL_SCHEMA)].[year_differentiated_keys]);
 PRINT 'Certificates in year-differentiated keys: ' + CAST(ISNULL(@yd_certs, 0) AS VARCHAR);
 
 -- =============================================================================
@@ -82,11 +82,11 @@ SELECT
     GroupId,
     MAX(TRY_CAST(SUBSTRING(Id, CHARINDEX('-', Id, 4) + 1, 10) AS INT)) AS MaxNum
 INTO #max_proposal_num
-FROM [etl].[stg_proposals]
+FROM [$(ETL_SCHEMA)].[stg_proposals]
 WHERE Id LIKE 'P-G%'
 GROUP BY GroupId;
 
-INSERT INTO [etl].[stg_proposals] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
@@ -107,7 +107,7 @@ SELECT
     -- NEW: Use BrokerUniquePartyId (only if broker exists)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b2 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b2 
             WHERE b2.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(ydk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
         )
         THEN REPLACE(REPLACE(JSON_VALUE(ydk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '')
@@ -129,10 +129,10 @@ SELECT
     CASE WHEN ydk.PlanCode = '*' THEN NULL ELSE CONCAT('["', ydk.PlanCode, '"]') END AS PlanCodeConstraints,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[year_differentiated_keys] ydk
+FROM [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
 LEFT JOIN #max_proposal_num mpn ON mpn.GroupId = CONCAT('G', ydk.GroupId)
-LEFT JOIN [etl].[stg_groups] g ON g.Id = CONCAT('G', ydk.GroupId)
-LEFT JOIN [etl].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(ydk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '');
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = CONCAT('G', ydk.GroupId)
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.ExternalPartyId = REPLACE(REPLACE(JSON_VALUE(ydk.ConfigJson, '$[0].brokerId'), 'P', ''), ' ', '');
 
 DECLARE @proposals_created INT = @@ROWCOUNT;
 PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
@@ -143,7 +143,7 @@ PRINT 'Proposals created: ' + CAST(@proposals_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Adding key mappings...';
 
-INSERT INTO [etl].[stg_proposal_key_mapping] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_proposal_key_mapping] (
     GroupId, EffectiveYear, ProductCode, PlanCode, ProposalId, SplitConfigHash
 )
 SELECT DISTINCT
@@ -153,20 +153,20 @@ SELECT DISTINCT
     csc.PlanCode,
     p.Id AS ProposalId,
     p.SplitConfigHash
-FROM [etl].[cert_split_configs_remainder2] csc
-INNER JOIN [etl].[year_differentiated_keys] ydk
+FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder2] csc
+INNER JOIN [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
     ON csc.GroupId = ydk.GroupId
     AND YEAR(csc.EffectiveDate) = ydk.EffYear
     AND csc.ProductCode = ydk.ProductCode
     AND csc.PlanCode = ydk.PlanCode
-INNER JOIN [etl].[stg_proposals] p 
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p 
     ON p.GroupId = CONCAT('G', csc.GroupId)
     AND p.ProductCodes = CONCAT('["', csc.ProductCode, '"]')
     AND (p.PlanCodes = CONCAT('["', csc.PlanCode, '"]') OR p.PlanCodes = '*')
     AND p.DateRangeFrom = YEAR(csc.EffectiveDate)
     AND p.Notes = 'Year-differentiated'
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[stg_proposal_key_mapping] pkm
+    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping] pkm
     WHERE pkm.GroupId = CONCAT('G', csc.GroupId)
       AND pkm.EffectiveYear = YEAR(csc.EffectiveDate)
       AND pkm.ProductCode = csc.ProductCode
@@ -182,7 +182,7 @@ PRINT 'Key mappings created: ' + CAST(@mappings_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Creating PremiumSplitVersions for year-differentiated proposals...';
 
-INSERT INTO [etl].[stg_premium_split_versions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -206,14 +206,14 @@ SELECT
     0 AS [Source],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_proposals] p
-INNER JOIN [etl].[year_differentiated_keys] ydk
+FROM [$(ETL_SCHEMA)].[stg_proposals] p
+INNER JOIN [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
     ON p.GroupId = CONCAT('G', ydk.GroupId)
     AND p.ProductCodes = CONCAT('["', ydk.ProductCode, '"]')
     AND (p.PlanCodes = CONCAT('["', ydk.PlanCode, '"]') OR (p.PlanCodes = '*' AND ydk.PlanCode = '*'))
     AND p.DateRangeFrom = ydk.EffYear
     AND p.Notes = 'Year-differentiated'
-LEFT JOIN [etl].[stg_groups] g ON g.Id = p.GroupId;
+LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = p.GroupId;
 
 DECLARE @yd_split_versions INT = @@ROWCOUNT;
 PRINT 'Split versions created: ' + CAST(@yd_split_versions AS VARCHAR);
@@ -225,13 +225,13 @@ PRINT '';
 PRINT 'Step 5: Creating PremiumSplitParticipants for year-differentiated proposals...';
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
-INSERT INTO [etl].[stg_premium_split_participants] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted
 )
 SELECT
-    (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) + 1 FROM [etl].[stg_premium_split_participants]) + 
+    (SELECT COALESCE(MAX(TRY_CAST(Id AS INT)), 0) + 1 FROM [$(ETL_SCHEMA)].[stg_premium_split_participants]) + 
         ROW_NUMBER() OVER (ORDER BY p.Id, j.splitSeq) - 1 AS Id,
     CONCAT('PSV-', p.Id) AS VersionId,
     -- BrokerId (required, deprecated but still needed)
@@ -239,7 +239,7 @@ SELECT
     -- NEW: Use BrokerUniquePartyId (only if broker exists)
     CASE 
         WHEN EXISTS (
-            SELECT 1 FROM [etl].[stg_brokers] b2 
+            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_brokers] b2 
             WHERE b2.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
         )
         THEN REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
@@ -256,8 +256,8 @@ SELECT
     p.EffectiveDateFrom AS EffectiveFrom,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_proposals] p
-INNER JOIN [etl].[year_differentiated_keys] ydk
+FROM [$(ETL_SCHEMA)].[stg_proposals] p
+INNER JOIN [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
     ON p.GroupId = CONCAT('G', ydk.GroupId)
     AND p.ProductCodes = CONCAT('["', ydk.ProductCode, '"]')
     AND (p.PlanCodes = CONCAT('["', ydk.PlanCode, '"]') OR (p.PlanCodes = '*' AND ydk.PlanCode = '*'))
@@ -271,7 +271,7 @@ CROSS APPLY OPENJSON(ydk.ConfigJson)
         [percent] DECIMAL(5,2) '$.percent',
         schedule NVARCHAR(100) '$.schedule'
     ) j
-LEFT JOIN [etl].[stg_brokers] b 
+LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b 
     ON b.ExternalPartyId = REPLACE(REPLACE(j.brokerId, 'P', ''), ' ', '')
 WHERE j.[level] = 1;
 
@@ -284,13 +284,13 @@ PRINT 'Split participants created: ' + CAST(@yd_split_participants AS VARCHAR);
 PRINT '';
 PRINT 'Step 6: Creating remainder table...';
 
-DROP TABLE IF EXISTS [etl].[cert_split_configs_remainder3];
+DROP TABLE IF EXISTS [$(ETL_SCHEMA)].[cert_split_configs_remainder3];
 
 SELECT csc.*
-INTO [etl].[cert_split_configs_remainder3]
-FROM [etl].[cert_split_configs_remainder2] csc
+INTO [$(ETL_SCHEMA)].[cert_split_configs_remainder3]
+FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder2] csc
 WHERE NOT EXISTS (
-    SELECT 1 FROM [etl].[year_differentiated_keys] ydk
+    SELECT 1 FROM [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
     WHERE csc.GroupId = ydk.GroupId
       AND YEAR(csc.EffectiveDate) = ydk.EffYear
       AND csc.ProductCode = ydk.ProductCode
@@ -300,7 +300,7 @@ WHERE NOT EXISTS (
 DECLARE @remainder_certs INT = @@ROWCOUNT;
 PRINT 'Certificates remaining: ' + CAST(@remainder_certs AS VARCHAR);
 
-DECLARE @remainder_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [etl].[cert_split_configs_remainder3]);
+DECLARE @remainder_groups INT = (SELECT COUNT(DISTINCT GroupId) FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder3]);
 PRINT 'Groups remaining: ' + CAST(@remainder_groups AS VARCHAR);
 
 -- =============================================================================
@@ -323,8 +323,8 @@ PRINT 'REMAINDER:';
 PRINT '  Certificates: ' + CAST(@remainder_certs AS VARCHAR);
 PRINT '  Groups: ' + CAST(@remainder_groups AS VARCHAR);
 PRINT '';
-DECLARE @total_proposals INT = (SELECT COUNT(*) FROM [etl].[stg_proposals]);
-DECLARE @total_mappings INT = (SELECT COUNT(*) FROM [etl].[stg_proposal_key_mapping]);
+DECLARE @total_proposals INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_proposals]);
+DECLARE @total_mappings INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_proposal_key_mapping]);
 PRINT 'TOTAL PROPOSALS SO FAR: ' + CAST(@total_proposals AS VARCHAR);
 PRINT 'TOTAL KEY MAPPINGS: ' + CAST(@total_mappings AS VARCHAR);
 PRINT '';

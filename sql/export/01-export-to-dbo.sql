@@ -21,9 +21,9 @@ PRINT '';
 -- =============================================================================
 PRINT 'Validating ETL data...';
 
-DECLARE @glCount INT = (SELECT COUNT(*) FROM [etl].[calc_gl_journal_entries]);
-DECLARE @traceCount INT = (SELECT COUNT(*) FROM [etl].[calc_traceability]);
-DECLARE @brokerTraceCount INT = (SELECT COUNT(*) FROM [etl].[calc_broker_traceabilities]);
+DECLARE @glCount INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries]);
+DECLARE @traceCount INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[calc_traceability]);
+DECLARE @brokerTraceCount INT = (SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[calc_broker_traceabilities]);
 
 PRINT 'GL Journal Entries to export: ' + CAST(@glCount AS VARCHAR);
 PRINT 'Traceability Reports to export: ' + CAST(@traceCount AS VARCHAR);
@@ -41,13 +41,13 @@ GO
 -- =============================================================================
 -- Export GL Journal Entries
 -- =============================================================================
-PRINT 'Exporting GL Journal Entries to [dbo].[GLJournalEntries]...';
+PRINT 'Exporting GL Journal Entries to [$(PRODUCTION_SCHEMA)].[GLJournalEntries]...';
 
 -- Note: Adjust target table/column names to match your production schema
 -- This is a template - update based on actual production table structure
 
 /*
-INSERT INTO [dbo].[GLJournalEntries] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[GLJournalEntries] (
     Id,
     PremiumTransactionId,
     PolicyId,
@@ -96,7 +96,7 @@ SELECT
     EntryType,
     SourceBrokerId,
     GETUTCDATE() AS CreationTime
-FROM [etl].[calc_gl_journal_entries];
+FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries];
 
 PRINT 'GL Journal Entries exported: ' + CAST(@@ROWCOUNT AS VARCHAR);
 */
@@ -110,10 +110,10 @@ GO
 -- Export Traceability Reports
 -- =============================================================================
 PRINT '';
-PRINT 'Exporting Traceability Reports to [dbo].[CommissionTraceabilityReports]...';
+PRINT 'Exporting Traceability Reports to [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports]...';
 
 /*
-INSERT INTO [dbo].[CommissionTraceabilityReports] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[CommissionTraceabilityReports] (
     Id,
     PremiumTransactionId,
     PolicyId,
@@ -162,7 +162,7 @@ SELECT
     IsClean,
     SourceType,
     GETUTCDATE() AS CreationTime
-FROM [etl].[calc_traceability];
+FROM [$(ETL_SCHEMA)].[calc_traceability];
 
 PRINT 'Traceability Reports exported: ' + CAST(@@ROWCOUNT AS VARCHAR);
 */
@@ -175,10 +175,10 @@ GO
 -- Export Broker Traceabilities
 -- =============================================================================
 PRINT '';
-PRINT 'Exporting Broker Traceabilities to [dbo].[BrokerTraceabilities]...';
+PRINT 'Exporting Broker Traceabilities to [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities]...';
 
 /*
-INSERT INTO [dbo].[BrokerTraceabilities] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[BrokerTraceabilities] (
     Id,
     CommissionTraceabilityReportId,
     BrokerId,
@@ -225,7 +225,7 @@ SELECT
     AssignmentVersionId,
     EntryType,
     GETUTCDATE() AS CreationTime
-FROM [etl].[calc_broker_traceabilities];
+FROM [$(ETL_SCHEMA)].[calc_broker_traceabilities];
 
 PRINT 'Broker Traceabilities exported: ' + CAST(@@ROWCOUNT AS VARCHAR);
 */
@@ -243,9 +243,9 @@ PRINT 'EXPORT SUMMARY';
 PRINT '============================================================';
 
 PRINT 'ETL Data available for export:';
-SELECT 'calc_gl_journal_entries' AS [Table], COUNT(*) AS [Rows] FROM [etl].[calc_gl_journal_entries]
-UNION ALL SELECT 'calc_traceability', COUNT(*) FROM [etl].[calc_traceability]
-UNION ALL SELECT 'calc_broker_traceabilities', COUNT(*) FROM [etl].[calc_broker_traceabilities];
+SELECT 'calc_gl_journal_entries' AS [Table], COUNT(*) AS [Rows] FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries]
+UNION ALL SELECT 'calc_traceability', COUNT(*) FROM [$(ETL_SCHEMA)].[calc_traceability]
+UNION ALL SELECT 'calc_broker_traceabilities', COUNT(*) FROM [$(ETL_SCHEMA)].[calc_broker_traceabilities];
 
 PRINT '';
 PRINT 'To enable export, uncomment the INSERT statements above';

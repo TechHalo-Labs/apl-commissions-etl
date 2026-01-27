@@ -31,11 +31,11 @@ END
 -- Step 2: Check current state
 -- =============================================================================
 DECLARE @before_count INT;
-SELECT @before_count = COUNT(*) FROM [dbo].[ScheduleRateTiers];
+SELECT @before_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers];
 PRINT 'ScheduleRateTiers before export: ' + CAST(@before_count AS VARCHAR);
 
 DECLARE @staging_count INT;
-SELECT @staging_count = COUNT(*) FROM [etl].[stg_schedule_rate_tiers];
+SELECT @staging_count = COUNT(*) FROM [$(ETL_SCHEMA)].[stg_schedule_rate_tiers];
 PRINT 'ScheduleRateTiers in staging: ' + CAST(@staging_count AS VARCHAR);
 
 IF @staging_count = 0
@@ -54,9 +54,9 @@ END
 PRINT '';
 PRINT 'Step 3: Exporting schedule rate tiers...';
 
-SET IDENTITY_INSERT [dbo].[ScheduleRateTiers] ON;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers] ON;
 
-INSERT INTO [dbo].[ScheduleRateTiers] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers] (
     Id,
     ScheduleRateId,
     MinVolume,
@@ -77,14 +77,14 @@ SELECT
     srt.RenewalRate,
     COALESCE(srt.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(srt.IsDeleted, 0) AS IsDeleted
-FROM [etl].[stg_schedule_rate_tiers] srt
+FROM [$(ETL_SCHEMA)].[stg_schedule_rate_tiers] srt
 WHERE 
     -- ScheduleRate must exist in production
-    EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId)
+    EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId)
     -- Don't create duplicates
-    AND srt.Id NOT IN (SELECT Id FROM [dbo].[ScheduleRateTiers]);
+    AND srt.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers]);
 
-SET IDENTITY_INSERT [dbo].[ScheduleRateTiers] OFF;
+SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers] OFF;
 
 DECLARE @exported INT = @@ROWCOUNT;
 PRINT 'New ScheduleRateTiers exported: ' + CAST(@exported AS VARCHAR);
@@ -98,8 +98,8 @@ PRINT 'Step 4: Reporting skipped records...';
 -- Report staging records that couldn't be exported due to missing schedule rate
 DECLARE @no_rate_count INT;
 SELECT @no_rate_count = COUNT(*)
-FROM [etl].[stg_schedule_rate_tiers] srt
-WHERE NOT EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId);
+FROM [$(ETL_SCHEMA)].[stg_schedule_rate_tiers] srt
+WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId);
 
 IF @no_rate_count > 0
 BEGIN
@@ -113,8 +113,8 @@ BEGIN
         srt.MaxVolume,
         srt.Rate,
         'ScheduleRateId not in dbo.ScheduleRates' AS Reason
-    FROM [etl].[stg_schedule_rate_tiers] srt
-    WHERE NOT EXISTS (SELECT 1 FROM [dbo].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId)
+    FROM [$(ETL_SCHEMA)].[stg_schedule_rate_tiers] srt
+    WHERE NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[ScheduleRates] sr WHERE sr.Id = srt.ScheduleRateId)
     ORDER BY srt.ScheduleRateId, srt.MinVolume;
 END
 
@@ -127,7 +127,7 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 DECLARE @after_count INT;
-SELECT @after_count = COUNT(*) FROM [dbo].[ScheduleRateTiers];
+SELECT @after_count = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers];
 PRINT 'ScheduleRateTiers after export: ' + CAST(@after_count AS VARCHAR);
 PRINT 'Net new records: ' + CAST(@after_count - @before_count AS VARCHAR);
 
@@ -139,7 +139,7 @@ SELECT 'Production by Volume Range' AS Metric,
     END AS VolumeRange,
     COUNT(*) AS Cnt,
     AVG(Rate) AS AvgRate
-FROM [dbo].[ScheduleRateTiers]
+FROM [$(PRODUCTION_SCHEMA)].[ScheduleRateTiers]
 GROUP BY 
     CASE 
         WHEN MaxVolume IS NULL THEN CONCAT(CAST(CAST(MinVolume AS INT) AS VARCHAR), '+')

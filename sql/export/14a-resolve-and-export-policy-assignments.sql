@@ -28,9 +28,9 @@ SELECT
     -- Resolve HierarchyId: Find hierarchy for this group + writing broker
     h.Id AS ResolvedHierarchyId
 INTO #ResolvedAssignments
-FROM [etl].[stg_policy_hierarchy_assignments] pha
-JOIN [dbo].[Policies] p ON p.Id = pha.PolicyId  -- Get GroupId from exported policy
-LEFT JOIN [dbo].[Hierarchies] h ON (
+FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+JOIN [$(PRODUCTION_SCHEMA)].[Policies] p ON p.Id = pha.PolicyId  -- Get GroupId from exported policy
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Hierarchies] h ON (
         -- Try exact match first
         h.GroupId = p.GroupId
         OR
@@ -43,8 +43,8 @@ LEFT JOIN [dbo].[Hierarchies] h ON (
     AND h.BrokerId = CAST(pha.WritingBrokerId AS BIGINT)  -- Match on broker
     AND h.Status = 1  -- Only active hierarchies
     AND h.IsDeleted = 0
-WHERE pha.PolicyId IN (SELECT Id FROM [dbo].[Policies])  -- Only for exported policies
-  AND p.GroupId IN (SELECT Id FROM [etl].[stg_included_groups]);  -- Only included groups
+WHERE pha.PolicyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])  -- Only for exported policies
+  AND p.GroupId IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);  -- Only included groups
 
 DECLARE @resolved_count INT = @@ROWCOUNT;
 PRINT 'Assignments prepared: ' + CAST(@resolved_count AS VARCHAR);
@@ -79,7 +79,7 @@ PRINT 'Step 2: Exporting aggregated assignments...';
     WHERE ResolvedHierarchyId IS NOT NULL  -- Only export if we found a hierarchy
     GROUP BY PolicyId, ResolvedHierarchyId, WritingBrokerId
 )
-INSERT INTO [dbo].[PolicyHierarchyAssignments] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] (
     Id,
     PolicyId,
     CertificateId,
@@ -101,10 +101,10 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM AggregatedAssignments aa
-WHERE aa.Id NOT IN (SELECT Id FROM [dbo].[PolicyHierarchyAssignments])
+WHERE aa.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments])
   -- Avoid unique constraint violation
   AND NOT EXISTS (
-      SELECT 1 FROM [dbo].[PolicyHierarchyAssignments] existing
+      SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] existing
       WHERE existing.PolicyId = aa.PolicyId
         AND existing.HierarchyId = aa.HierarchyId
         AND existing.WritingBrokerId = aa.WritingBrokerId
@@ -122,12 +122,12 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 SELECT 'Production Total' AS Metric, COUNT(*) AS Count
-FROM [dbo].[PolicyHierarchyAssignments];
+FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments];
 
 SELECT 'By IsNonConforming' AS Metric,
     SUM(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS NonConforming,
     SUM(CASE WHEN IsNonConforming = 0 OR IsNonConforming IS NULL THEN 1 ELSE 0 END) AS Conforming
-FROM [dbo].[PolicyHierarchyAssignments];
+FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments];
 
 -- Sample by group
 SELECT TOP 10
@@ -135,9 +135,9 @@ SELECT TOP 10
     p.GroupId,
     g.GroupName,
     COUNT(*) AS AssignmentCount
-FROM [dbo].[PolicyHierarchyAssignments] pha
-JOIN [dbo].[Policies] p ON p.Id = pha.PolicyId
-JOIN [dbo].[EmployerGroups] g ON g.Id = p.GroupId
+FROM [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] pha
+JOIN [$(PRODUCTION_SCHEMA)].[Policies] p ON p.Id = pha.PolicyId
+JOIN [$(PRODUCTION_SCHEMA)].[EmployerGroups] g ON g.Id = p.GroupId
 GROUP BY p.GroupId, g.GroupName
 ORDER BY COUNT(*) DESC;
 

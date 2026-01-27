@@ -3,7 +3,7 @@
 -- =====================================================
 
 -- Create CommissionRun if not exists
-IF NOT EXISTS (SELECT 1 FROM [dbo].[CommissionRuns] WHERE Id = 'SQL-ETL-V5')
+IF NOT EXISTS (SELECT 1 FROM [$(PRODUCTION_SCHEMA)].[CommissionRuns] WHERE Id = 'SQL-ETL-V5')
 BEGIN
     PRINT 'Creating CommissionRun...';
     
@@ -14,9 +14,9 @@ BEGIN
         @TotalAmount = COALESCE(SUM(CAST(CommissionAmount AS FLOAT)), 0),
         @TotalPremiums = COUNT(DISTINCT PremiumTransactionId),
         @TotalPremiumAmount = COALESCE(SUM(CAST(PremiumAmount AS FLOAT)), 0)
-    FROM [etl].[calc_gl_journal_entries];
+    FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries];
     
-    INSERT INTO [dbo].[CommissionRuns] (
+    INSERT INTO [$(PRODUCTION_SCHEMA)].[CommissionRuns] (
         Id, Name, PeriodStart, PeriodEnd, [Status], StartedAt, CompletedAt,
         TotalEntries, TotalAmount, ErrorCount, Notes, TotalPremiums,
         ProcessedCount, FailedCount, SkippedCount, TotalPremiumAmount,
@@ -65,14 +65,14 @@ GO
 
 -- Clear existing GL entries for this run
 PRINT 'Clearing existing GL entries for SQL-ETL-V5...';
-DELETE FROM [dbo].[GLJournalEntries] WHERE CommissionRunId = 'SQL-ETL-V5';
+DELETE FROM [$(PRODUCTION_SCHEMA)].[GLJournalEntries] WHERE CommissionRunId = 'SQL-ETL-V5';
 PRINT 'Cleared existing GL entries';
 GO
 
 -- Export GL Journal Entries
 PRINT 'Exporting GL Journal Entries...';
 
-INSERT INTO [dbo].[GLJournalEntries] (
+INSERT INTO [$(PRODUCTION_SCHEMA)].[GLJournalEntries] (
     SourceEejeId, JournalNumber, EntryDate, PostingDate, FiscalPeriod, Description,
     TotalDebits, TotalCredits, IsBalanced, StatusString, BrokerId, GroupId,
     PremiumPaymentId, PolicyId, HierarchyId, HierarchyTier, CommissionRate,
@@ -109,11 +109,11 @@ SELECT
     gl.CreationTime,
     0 AS IsDeleted,
     gl.CreationTime AS CreatedDate
-FROM [etl].[calc_gl_journal_entries] gl
-WHERE gl.BrokerId IN (SELECT Id FROM [dbo].[Brokers]);
+FROM [$(ETL_SCHEMA)].[calc_gl_journal_entries] gl
+WHERE gl.BrokerId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers]);
 
 DECLARE @glCount INT;
-SELECT @glCount = COUNT(*) FROM [dbo].[GLJournalEntries] WHERE CommissionRunId = 'SQL-ETL-V5';
+SELECT @glCount = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[GLJournalEntries] WHERE CommissionRunId = 'SQL-ETL-V5';
 PRINT 'GL entries exported: ' + CAST(@glCount AS VARCHAR);
 GO
 
@@ -124,10 +124,10 @@ UPDATE cr
 SET 
     TotalEntries = gl.cnt,
     TotalAmount = gl.total
-FROM [dbo].[CommissionRuns] cr
+FROM [$(PRODUCTION_SCHEMA)].[CommissionRuns] cr
 CROSS JOIN (
     SELECT COUNT(*) as cnt, COALESCE(SUM(CAST(TotalDebits AS FLOAT)), 0) as total
-    FROM [dbo].[GLJournalEntries] 
+    FROM [$(PRODUCTION_SCHEMA)].[GLJournalEntries] 
     WHERE CommissionRunId = 'SQL-ETL-V5'
 ) gl
 WHERE cr.Id = 'SQL-ETL-V5';

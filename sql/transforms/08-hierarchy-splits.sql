@@ -15,9 +15,9 @@ PRINT '';
 -- Step 1: Truncate staging tables
 -- =============================================================================
 PRINT 'Step 1: Truncating staging tables...';
-TRUNCATE TABLE [etl].[stg_state_rules];
-TRUNCATE TABLE [etl].[stg_state_rule_states];
-TRUNCATE TABLE [etl].[stg_hierarchy_splits];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_state_rules];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_state_rule_states];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_hierarchy_splits];
 
 -- =============================================================================
 -- Step 2: Create State Rules (one per HierarchyVersion + State combination)
@@ -25,7 +25,7 @@ TRUNCATE TABLE [etl].[stg_hierarchy_splits];
 PRINT '';
 PRINT 'Step 2: Creating state rules from certificate data...';
 
-INSERT INTO [etl].[stg_state_rules] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_state_rules] (
     Id, HierarchyVersionId, ShortName, Name, [Description], [Type], SortOrder,
     CreationTime, IsDeleted
 )
@@ -46,18 +46,18 @@ FROM (
         CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
         TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
         LTRIM(RTRIM(ci.CertIssuedState)) AS [State]
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.WritingBrokerID <> ''
       AND ci.CertIssuedState <> ''
       AND ci.RecStatus = 'A'  -- Only active split configurations
       AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
 ) cert_states
 -- Join to hierarchies via GroupId and BrokerId
-INNER JOIN [etl].[stg_hierarchies] h 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h 
     ON h.GroupId = cert_states.GroupId 
     AND h.BrokerId = cert_states.WritingBrokerId
 -- Get the hierarchy version
-INNER JOIN [etl].[stg_hierarchy_versions] hv 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv 
     ON hv.HierarchyId = h.Id;
 
 DECLARE @state_rules_count INT = @@ROWCOUNT;
@@ -69,7 +69,7 @@ PRINT 'State rules created: ' + CAST(@state_rules_count AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Creating state rule states...';
 
-INSERT INTO [etl].[stg_state_rule_states] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_state_rule_states] (
     Id, StateRuleId, StateCode, StateName, CreationTime, IsDeleted
 )
 SELECT
@@ -79,7 +79,7 @@ SELECT
     sr.ShortName AS StateName,  -- Could map to full state name if needed
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_state_rules] sr;
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr;
 
 DECLARE @state_rule_states_count INT = @@ROWCOUNT;
 PRINT 'State rule states created: ' + CAST(@state_rule_states_count AS VARCHAR);
@@ -98,10 +98,10 @@ DROP TABLE IF EXISTS #single_rule_hierarchies;
 
 SELECT sr.Id AS StateRuleId, sr.HierarchyVersionId
 INTO #single_rule_hierarchies
-FROM [etl].[stg_state_rules] sr
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
 WHERE sr.HierarchyVersionId IN (
     SELECT HierarchyVersionId
-    FROM [etl].[stg_state_rules]
+    FROM [$(ETL_SCHEMA)].[stg_state_rules]
     GROUP BY HierarchyVersionId
     HAVING COUNT(*) = 1
 );
@@ -111,7 +111,7 @@ PRINT 'Hierarchy versions with single state rule: ' + CAST(@single_rule_count AS
 
 -- Delete state rule states for single-rule hierarchies (catch-all has no states)
 DELETE srs
-FROM [etl].[stg_state_rule_states] srs
+FROM [$(ETL_SCHEMA)].[stg_state_rule_states] srs
 WHERE srs.StateRuleId IN (SELECT StateRuleId FROM #single_rule_hierarchies);
 
 PRINT 'State rule states deleted for catch-all conversion: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -122,7 +122,7 @@ SET sr.ShortName = 'ALL',
     sr.Name = 'All States',
     sr.[Description] = 'Catch-all state rule (applies to all states)',
     sr.[Type] = 1  -- 1 = CatchAll (0 = Specific)
-FROM [etl].[stg_state_rules] sr
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
 WHERE sr.Id IN (SELECT StateRuleId FROM #single_rule_hierarchies);
 
 PRINT 'State rules converted to catch-all: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -133,7 +133,7 @@ PRINT 'State rules converted to catch-all: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Actually, let's update the IDs to use 'ALL' instead of the old state code
 UPDATE sr
 SET sr.Id = CONCAT('SR-', sr.HierarchyVersionId, '-ALL')
-FROM [etl].[stg_state_rules] sr
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
 WHERE sr.Id IN (SELECT StateRuleId FROM #single_rule_hierarchies);
 
 PRINT 'State rule IDs updated to use ALL suffix';
@@ -148,7 +148,7 @@ PRINT '';
 PRINT 'Step 4: Creating hierarchy splits...';
 
 -- First, create splits for state-specific rules (ShortName != 'ALL')
-INSERT INTO [etl].[stg_hierarchy_splits] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchy_splits] (
     Id, StateRuleId, ProductId, ProductCode, ProductName, SortOrder,
     CreationTime, IsDeleted
 )
@@ -169,7 +169,7 @@ FROM (
         TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
         LTRIM(RTRIM(ci.CertIssuedState)) AS [State],
         LTRIM(RTRIM(ci.Product)) AS ProductCode
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.WritingBrokerID <> ''
       AND ci.CertIssuedState <> ''
       AND ci.Product <> ''
@@ -177,18 +177,18 @@ FROM (
       AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
 ) cert_products
 -- Join to hierarchies via GroupId and BrokerId
-INNER JOIN [etl].[stg_hierarchies] h 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h 
     ON h.GroupId = cert_products.GroupId 
     AND h.BrokerId = cert_products.WritingBrokerId
 -- Get the hierarchy version
-INNER JOIN [etl].[stg_hierarchy_versions] hv 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv 
     ON hv.HierarchyId = h.Id
 -- Get the state rule for this hierarchy version + state (state-specific only)
-INNER JOIN [etl].[stg_state_rules] sr
+INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] sr
     ON sr.HierarchyVersionId = hv.Id
     AND sr.ShortName = cert_products.[State]  -- Only state-specific rules
 -- Get product code metadata (optional)
-LEFT JOIN [etl].[stg_product_codes] pc 
+LEFT JOIN [$(ETL_SCHEMA)].[stg_product_codes] pc 
     ON pc.Code = cert_products.ProductCode;
 
 DECLARE @splits_state_specific INT = @@ROWCOUNT;
@@ -196,7 +196,7 @@ PRINT 'Hierarchy splits created (state-specific): ' + CAST(@splits_state_specifi
 
 -- Second, create splits for catch-all rules (ShortName = 'ALL')
 -- These get ALL products for the hierarchy, regardless of state
-INSERT INTO [etl].[stg_hierarchy_splits] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchy_splits] (
     Id, StateRuleId, ProductId, ProductCode, ProductName, SortOrder,
     CreationTime, IsDeleted
 )
@@ -216,25 +216,25 @@ FROM (
         CONCAT('G', LTRIM(RTRIM(ci.GroupId))) AS GroupId,
         TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
         LTRIM(RTRIM(ci.Product)) AS ProductCode
-    FROM [etl].[input_certificate_info] ci
+    FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
     WHERE ci.WritingBrokerID <> ''
       AND ci.Product <> ''
       AND ci.RecStatus = 'A'  -- Only active split configurations
       AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
 ) cert_products
 -- Join to hierarchies via GroupId and BrokerId
-INNER JOIN [etl].[stg_hierarchies] h 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h 
     ON h.GroupId = cert_products.GroupId 
     AND h.BrokerId = cert_products.WritingBrokerId
 -- Get the hierarchy version
-INNER JOIN [etl].[stg_hierarchy_versions] hv 
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv 
     ON hv.HierarchyId = h.Id
 -- Get the catch-all state rule for this hierarchy version
-INNER JOIN [etl].[stg_state_rules] sr
+INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] sr
     ON sr.HierarchyVersionId = hv.Id
     AND sr.ShortName = 'ALL'  -- Only catch-all rules
 -- Get product code metadata (optional)
-LEFT JOIN [etl].[stg_product_codes] pc 
+LEFT JOIN [$(ETL_SCHEMA)].[stg_product_codes] pc 
     ON pc.Code = cert_products.ProductCode;
 
 DECLARE @splits_catch_all INT = @@ROWCOUNT;
@@ -254,10 +254,10 @@ PRINT 'Step 5: Linking HierarchyId to premium split participants...';
 UPDATE psp
 SET psp.HierarchyId = h.Id,
     psp.HierarchyName = h.Name
-FROM [etl].[stg_premium_split_participants] psp
-INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.Id = psp.VersionId
-INNER JOIN [etl].[stg_proposals] p ON p.Id = psv.ProposalId
-INNER JOIN [etl].[stg_hierarchies] h 
+FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] psp
+INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_versions] psv ON psv.Id = psp.VersionId
+INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.Id = psv.ProposalId
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h 
     ON h.GroupId = p.GroupId
     AND h.BrokerId = psp.BrokerId
 WHERE psp.HierarchyId IS NULL;
@@ -267,7 +267,7 @@ PRINT 'Split participants linked to hierarchies: ' + CAST(@split_hier_count AS V
 
 -- Report participants without HierarchyId
 DECLARE @missing_hier INT = (
-    SELECT COUNT(*) FROM [etl].[stg_premium_split_participants] 
+    SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] 
     WHERE HierarchyId IS NULL
 );
 IF @missing_hier > 0
@@ -280,10 +280,10 @@ IF @missing_hier > 0
 PRINT '';
 PRINT 'Step 6: Creating split distributions...';
 
-TRUNCATE TABLE [etl].[stg_split_distributions];
+TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_split_distributions];
 
 -- For each hierarchy split, create a distribution for each participant in the hierarchy
-INSERT INTO [etl].[stg_split_distributions] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_split_distributions] (
     Id, HierarchySplitId, HierarchyParticipantId, ParticipantEntityId,
     Percentage, ScheduleId, ScheduleName, CreationTime, IsDeleted
 )
@@ -300,19 +300,19 @@ SELECT
     COALESCE(s.Name, s_resolved.Name) AS ScheduleName,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [etl].[stg_hierarchy_splits] hs
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
 -- Get the state rule to find the hierarchy version
-INNER JOIN [etl].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
 -- Get all participants for this hierarchy version
-INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = sr.HierarchyVersionId
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = sr.HierarchyVersionId
 -- Get schedule name (from ScheduleId if available)
-LEFT JOIN [etl].[stg_schedules] s ON s.Id = hp.ScheduleId
+LEFT JOIN [$(ETL_SCHEMA)].[stg_schedules] s ON s.Id = hp.ScheduleId
 -- Resolve ScheduleId from ScheduleCode if ScheduleId is NULL
-LEFT JOIN [etl].[stg_schedules] s_resolved ON s_resolved.ExternalId = hp.ScheduleCode AND hp.ScheduleId IS NULL
+LEFT JOIN [$(ETL_SCHEMA)].[stg_schedules] s_resolved ON s_resolved.ExternalId = hp.ScheduleCode AND hp.ScheduleId IS NULL
 -- Get participant count for equal distribution fallback
 CROSS APPLY (
     SELECT COUNT(*) as cnt
-    FROM [etl].[stg_hierarchy_participants] hp2
+    FROM [$(ETL_SCHEMA)].[stg_hierarchy_participants] hp2
     WHERE hp2.HierarchyVersionId = sr.HierarchyVersionId
 ) participant_counts;
 
@@ -327,18 +327,18 @@ PRINT '============================================================';
 PRINT 'VERIFICATION';
 PRINT '============================================================';
 
-SELECT 'stg_state_rules' AS entity, COUNT(*) AS cnt FROM [etl].[stg_state_rules]
+SELECT 'stg_state_rules' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_state_rules]
 UNION ALL
-SELECT 'stg_state_rule_states' AS entity, COUNT(*) AS cnt FROM [etl].[stg_state_rule_states]
+SELECT 'stg_state_rule_states' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_state_rule_states]
 UNION ALL
-SELECT 'stg_hierarchy_splits' AS entity, COUNT(*) AS cnt FROM [etl].[stg_hierarchy_splits];
+SELECT 'stg_hierarchy_splits' AS entity, COUNT(*) AS cnt FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits];
 
 PRINT '';
 PRINT 'State rules per hierarchy version (top 10):';
 SELECT TOP 10 
        HierarchyVersionId, 
        COUNT(*) AS state_count
-FROM [etl].[stg_state_rules]
+FROM [$(ETL_SCHEMA)].[stg_state_rules]
 GROUP BY HierarchyVersionId
 ORDER BY state_count DESC;
 
@@ -347,7 +347,7 @@ PRINT 'Splits per state rule (top 10):';
 SELECT TOP 10 
        StateRuleId, 
        COUNT(*) AS product_count
-FROM [etl].[stg_hierarchy_splits]
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits]
 GROUP BY StateRuleId
 ORDER BY product_count DESC;
 
