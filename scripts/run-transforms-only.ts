@@ -1,226 +1,163 @@
+#!/usr/bin/env tsx
 /**
- * Run ONLY the transform step - does NOT recreate schema (preserves raw data)
- * 
- * Usage:
- *   npx tsx scripts/run-transforms-only.ts              # Run all transforms
- *   npx tsx scripts/run-transforms-only.ts --group G23326  # Filter to single group
+ * Run transforms only (skip data loading)
+ * Use this when raw/input tables are already populated
  */
 
 import * as sql from 'mssql';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const config: sql.config = {
-  server: process.env.SQLSERVER_HOST || 'halo-sql.database.windows.net',
-  database: process.env.SQLSERVER_DATABASE || 'halo-sqldb',
-  user: process.env.SQLSERVER_USER || '***REMOVED***',
-  password: process.env.SQLSERVER_PASSWORD || '***REMOVED***',
-  options: {
-    encrypt: true,
-    trustServerCertificate: true,
-  },
-  requestTimeout: 300000, // 5 minutes
-  connectionTimeout: 30000,
-};
+function parseConnectionString(connStr: string): Partial<sql.config> {
+  const parts: Record<string, string> = {};
+  connStr.split(';').forEach(part => {
+    const [key, ...valueParts] = part.split('=');
+    if (key && valueParts.length > 0) {
+      parts[key.trim().toLowerCase()] = valueParts.join('=').trim();
+    }
+  });
+  const encrypt = parts['encrypt'];
+  const trustCert = parts['trustservercertificate'];
+  return {
+    server: parts['server'] || parts['data source'],
+    database: parts['database'] || parts['initial catalog'],
+    user: parts['user id'] || parts['uid'],
+    password: parts['password'] || parts['pwd'],
+    options: {
+      encrypt: encrypt === undefined ? true : encrypt.toLowerCase() === 'true',
+      trustServerCertificate: trustCert === undefined ? true : trustCert.toLowerCase() === 'true',
+      enableArithAbort: true,
+    },
+    pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+    requestTimeout: 600000, // 10 minutes
+  };
+}
 
-const SQL_DIR = path.join(__dirname, '../sql');
+function getSqlConfig(): sql.config {
+  const connStr = process.env.SQLSERVER;
+  if (!connStr) {
+    console.error('SQLSERVER environment variable not set');
+    process.exit(1);
+  }
+  return parseConnectionString(connStr) as sql.config;
+}
 
-// Transform SQL files in order
-const transformFiles = [
-  'transforms/00-references.sql',
-  'transforms/01-brokers.sql',
-  'transforms/02-groups.sql',
-  'transforms/03-products.sql',
-  'transforms/04-schedules.sql',
-  'transforms/06-proposals.sql',
-  'transforms/07-hierarchies.sql',
-  'transforms/08-hierarchy-splits.sql',
-  'transforms/09-policies.sql',
-  'transforms/10-premium-transactions.sql',
-  'transforms/11-fees.sql',
+function log(message: string, level: 'info' | 'success' | 'warn' | 'error' = 'info') {
+  const timestamp = new Date().toISOString();
+  const prefix = level === 'success' ? '✅' : level === 'warn' ? '⚠️' : level === 'error' ? '❌' : '📋';
+  console.log(`[${timestamp}] ${prefix}  ${message}`);
+}
+
+const transforms = [
+  // Phase 1: Reference tables
+  'sql/transforms/00-references.sql',
+  
+  // Phase 2: Core entities
+  'sql/transforms/01-brokers.sql',
+  'sql/transforms/12-licenses.sql',
+  'sql/transforms/13-eo-insurances.sql',
+  'sql/transforms/02-groups.sql',
+  'sql/transforms/03-products.sql',
+  'sql/transforms/04-schedules.sql',
+  
+  // Phase 3: Tiered proposal creation
+  'sql/transforms/06a-proposals-simple-groups.sql',
+  'sql/transforms/06b-proposals-non-conformant.sql',
+  'sql/transforms/06c-proposals-plan-differentiated.sql',
+  'sql/transforms/06d-proposals-year-differentiated.sql',
+  'sql/transforms/06e-proposals-granular.sql',
+  'sql/transforms/06f-consolidate-proposals.sql',
+  'sql/transforms/06g-normalize-proposal-date-ranges.sql',
+  
+  // Phase 4: Hierarchies and splits
+  'sql/transforms/07-hierarchies.sql',
+  'sql/transforms/08-hierarchy-splits.sql',
+  
+  // Phase 5: Policies and transactions
+  'sql/transforms/09-policies.sql',
+  'sql/transforms/10-premium-transactions.sql',
+  
+  // Phase 6: Policy hierarchy assignments
+  'sql/transforms/11-policy-hierarchy-assignments.sql',
+  
+  // Phase 7: Additional entities
+  'sql/transforms/11-fees.sql',
+  'sql/transforms/12-broker-banking-infos.sql',
 ];
 
-function log(message: string, level: 'info' | 'error' | 'success' = 'info'): void {
-  const timestamp = new Date().toISOString();
-  const prefix = { info: '  ', error: '❌', success: '✅' }[level];
-  console.log(`[${timestamp}] ${prefix} ${message}`);
-}
-
-function parseArgs(): { groupFilter: string | null } {
-  const args = process.argv.slice(2);
-  let groupFilter: string | null = null;
+async function executeSqlFile(pool: sql.ConnectionPool, filePath: string) {
+  const fullPath = path.join(process.cwd(), filePath);
+  const fileName = path.basename(filePath);
   
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--group' && args[i + 1]) {
-      groupFilter = args[i + 1];
-      // Ensure G prefix
-      if (!groupFilter.startsWith('G')) {
-        groupFilter = 'G' + groupFilter;
-      }
-      i++;
-    }
+  log(`Executing ${filePath}...`);
+  
+  if (!fs.existsSync(fullPath)) {
+    log(`File not found: ${fullPath}`, 'error');
+    throw new Error(`File not found: ${fullPath}`);
   }
   
-  return { groupFilter };
-}
-
-async function filterInputTables(pool: sql.ConnectionPool, groupFilter: string): Promise<void> {
-  log(`Filtering input tables to group: ${groupFilter}`);
+  const sqlContent = fs.readFileSync(fullPath, 'utf8');
   
-  // Get the group number without the G prefix for raw data matching
-  const groupNumber = groupFilter.replace(/^G/, '');
+  // Split by GO statements (case insensitive)
+  const batches = sqlContent.split(/^\s*GO\s*$/im).filter(b => b.trim().length > 0);
   
-  // Filter input_certificate_info to only the specified group
-  // CRITICAL: Must handle NULL GroupIds - they don't match <> comparison
-  const certResult = await pool.request().query(`
-    DELETE FROM [etl].[input_certificate_info]
-    WHERE LTRIM(RTRIM(GroupId)) <> '${groupNumber}'
-       OR GroupId IS NULL 
-       OR LTRIM(RTRIM(GroupId)) = '';
-    SELECT @@ROWCOUNT AS deleted;
-  `);
-  log(`input_certificate_info: Removed ${certResult.recordset[0].deleted} rows (keeping group ${groupNumber})`);
-  
-  // Filter input_commission_details to certificates from the specified group
-  const commResult = await pool.request().query(`
-    DELETE cd FROM [etl].[input_commission_details] cd
-    WHERE NOT EXISTS (
-      SELECT 1 FROM [etl].[input_certificate_info] ci
-      WHERE ci.CertificateId = cd.CertificateId
-    );
-    SELECT @@ROWCOUNT AS deleted;
-  `);
-  log(`input_commission_details: Removed ${commResult.recordset[0].deleted} rows (keeping matching certificates)`);
-  
-  // Verify counts after filtering
-  const counts = await pool.request().query(`
-    SELECT 
-      (SELECT COUNT(*) FROM [etl].[input_certificate_info]) AS cert_count,
-      (SELECT COUNT(*) FROM [etl].[input_commission_details]) AS comm_count
-  `);
-  log(`Filtered counts - Certificates: ${counts.recordset[0].cert_count}, Commissions: ${counts.recordset[0].comm_count}`, 'success');
-}
-
-async function executeSqlFile(pool: sql.ConnectionPool, filePath: string): Promise<void> {
-  const fullPath = path.join(SQL_DIR, filePath);
-  const sqlContent = fs.readFileSync(fullPath, 'utf-8');
-  
-  // Split by GO statements
-  const batches = sqlContent
-    .split(/^\s*GO\s*$/gim)
-    .filter(batch => batch.trim().length > 0);
-  
-  log(`Executing ${filePath} (${batches.length} batches)...`);
+  log(`  ${batches.length} batch(es) found`);
   
   for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i].trim();
+    if (batch.length === 0) continue;
+    
     try {
-      await pool.request().batch(batches[i]);
+      await pool.request().query(batch);
     } catch (err: any) {
       log(`Error in batch ${i + 1}: ${err.message}`, 'error');
       throw err;
     }
   }
   
-  log(`${filePath} completed`, 'success');
+  log(`  ${fileName} completed`, 'success');
 }
 
 async function main() {
-  const { groupFilter } = parseArgs();
+  console.log('='.repeat(60));
+  console.log('ETL TRANSFORMS ONLY');
+  console.log('='.repeat(60));
+  console.log('');
   
-  log('');
-  log('============================================================');
-  log('SQL Server ETL - TRANSFORMS ONLY (Preserving Raw Data)');
-  if (groupFilter) {
-    log(`*** FILTERED MODE: Group ${groupFilter} only ***`);
-  }
-  log('============================================================');
-  log('');
-  
+  const config = getSqlConfig();
   const pool = await sql.connect(config);
-  log('Connected to SQL Server', 'success');
   
   try {
-    // First, recreate ONLY staging tables (not raw tables)
+    log('Connected to SQL Server');
+    
+    // Quick check that input tables have data
+    const certCount = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[input_certificate_info]`);
+    log(`Input tables ready: ${certCount.recordset[0].cnt.toLocaleString()} certificates`, 'success');
+    
     log('');
-    log('Creating staging tables...');
-    await executeSqlFile(pool, '03-staging-tables.sql');
-    
-    // If group filter is specified, filter the input tables
-    if (groupFilter) {
-      log('');
-      log('============================================================');
-      log('Applying Group Filter');
-      log('============================================================');
-      await filterInputTables(pool, groupFilter);
-    }
-    
-    // Run transforms
+    log('='.repeat(60));
+    log('STEP 1: Data Transforms');
+    log('='.repeat(60));
     log('');
-    log('============================================================');
-    log('Running Transforms');
-    log('============================================================');
     
-    for (const transformFile of transformFiles) {
+    for (const transformFile of transforms) {
       await executeSqlFile(pool, transformFile);
-    }
-    
-    // Summary
-    log('');
-    log('============================================================');
-    log('Transform Complete - Staging Table Counts');
-    log('============================================================');
-    
-    const tables = [
-      'stg_brokers', 'stg_groups', 'stg_products', 'stg_plans',
-      'stg_schedules', 'stg_schedule_versions', 'stg_schedule_rates',
-      'stg_proposals', 'stg_proposal_products',
-      'stg_hierarchies', 'stg_hierarchy_versions', 'stg_hierarchy_participants',
-      'stg_premium_split_versions', 'stg_premium_split_participants',
-      'stg_policies', 'stg_premium_transactions', 'stg_fees'
-    ];
-    
-    for (const table of tables) {
-      try {
-        const result = await pool.request().query(`SELECT COUNT(*) as cnt FROM [etl].[${table}]`);
-        const count = result.recordset[0].cnt;
-        const status = count > 0 ? '✅' : '⚠️';
-        log(`${status} ${table}: ${count.toLocaleString()} rows`);
-      } catch {
-        log(`❌ ${table}: table not found`);
-      }
-    }
-    
-    // If group filter, show filtered data summary
-    if (groupFilter) {
       log('');
-      log('============================================================');
-      log(`Filtered Data Summary for ${groupFilter}`);
-      log('============================================================');
-      
-      const summary = await pool.request().query(`
-        SELECT 
-          (SELECT COUNT(*) FROM [etl].[stg_proposals] WHERE GroupId = '${groupFilter}') AS proposals,
-          (SELECT COUNT(*) FROM [etl].[stg_proposal_products] WHERE ProposalId LIKE '%${groupFilter}%') AS proposal_products,
-          (SELECT COUNT(*) FROM [etl].[stg_hierarchies] WHERE GroupId = '${groupFilter}') AS hierarchies,
-          (SELECT COUNT(*) FROM [etl].[stg_policies] WHERE GroupId = '${groupFilter}') AS policies,
-          (SELECT COUNT(*) FROM [etl].[stg_premium_split_versions] WHERE GroupId = '${groupFilter.replace('G', '')}') AS split_versions
-      `);
-      const s = summary.recordset[0];
-      log(`Proposals: ${s.proposals}`);
-      log(`Proposal Products: ${s.proposal_products}`);
-      log(`Hierarchies: ${s.hierarchies}`);
-      log(`Policies: ${s.policies}`);
-      log(`Split Versions: ${s.split_versions}`);
     }
     
+    log('');
+    log('='.repeat(60));
+    log('TRANSFORMS COMPLETED SUCCESSFULLY', 'success');
+    log('='.repeat(60));
+    
+  } catch (err: any) {
+    log(`Pipeline failed: ${err.message}`, 'error');
+    console.error(err);
+    process.exit(1);
   } finally {
     await pool.close();
-    log('');
     log('Connection closed');
   }
 }
 
-main().catch(err => {
-  console.error('Transform failed:', err);
-  process.exit(1);
-});
+main();

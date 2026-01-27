@@ -171,6 +171,8 @@ GO
 -- =============================================================================
 TRUNCATE TABLE [etl].[stg_hierarchies];
 
+-- Create hierarchies - ONE per (Group, WritingBroker, SplitStructure)
+-- But link to ALL matching proposals based on date ranges
 INSERT INTO [etl].[stg_hierarchies] (
     Id, Name, [Description], [Type], [Status], ProposalId, ProposalNumber, GroupId, GroupName,
     GroupNumber, BrokerId, BrokerName, BrokerLevel, ContractId, SourceType,
@@ -182,11 +184,37 @@ SELECT
     CONCAT('Commission hierarchy for ', COALESCE(b.Name, 'broker'), ' on group ', hd.GroupId) AS [Description],
     0 AS [Type],
     0 AS [Status],
+    -- Link to the FIRST matching proposal based on date range
+    -- Priority: 1) Proposal where hierarchy date falls within proposal range
+    --           2) Open-ended proposal (no end date) where hierarchy date >= proposal start
+    --           3) Most recent proposal as fallback
     COALESCE(
-        (SELECT TOP 1 m.ProposalId FROM [etl].[stg_proposal_key_mapping] m WHERE m.GroupId = hd.GroupId ORDER BY m.EffectiveYear DESC),
-        (SELECT TOP 1 p.Id FROM [etl].[stg_proposals] p WHERE p.GroupId = hd.GroupId AND p.EffectiveDateTo IS NULL ORDER BY p.EffectiveDateFrom DESC)
+        -- Match 1: Hierarchy date within proposal date range
+        (SELECT TOP 1 p.Id 
+         FROM [etl].[stg_proposals] p 
+         WHERE p.GroupId = hd.GroupId
+           AND p.EffectiveDateFrom IS NOT NULL
+           AND CAST(hd.MinEffDate AS DATE) >= p.EffectiveDateFrom
+           AND (p.EffectiveDateTo IS NULL OR CAST(hd.MinEffDate AS DATE) <= p.EffectiveDateTo)
+         ORDER BY p.EffectiveDateFrom DESC),
+        -- Match 2: Open-ended proposal where hierarchy date >= proposal start
+        (SELECT TOP 1 p.Id 
+         FROM [etl].[stg_proposals] p 
+         WHERE p.GroupId = hd.GroupId
+           AND p.EffectiveDateTo IS NULL
+           AND p.EffectiveDateFrom IS NOT NULL
+           AND CAST(hd.MinEffDate AS DATE) >= p.EffectiveDateFrom
+         ORDER BY p.EffectiveDateFrom DESC),
+        -- Match 3: Fallback to most recent proposal
+        (SELECT TOP 1 p.Id 
+         FROM [etl].[stg_proposals] p 
+         WHERE p.GroupId = hd.GroupId
+         ORDER BY p.EffectiveDateFrom DESC)
     ) AS ProposalId,
-    (SELECT TOP 1 p.ProposalNumber FROM [etl].[stg_proposals] p WHERE p.GroupId = hd.GroupId ORDER BY p.EffectiveDateFrom DESC) AS ProposalNumber,
+    (SELECT TOP 1 p.ProposalNumber 
+     FROM [etl].[stg_proposals] p 
+     WHERE p.GroupId = hd.GroupId
+     ORDER BY p.EffectiveDateFrom DESC) AS ProposalNumber,
     hd.GroupId AS GroupId,
     g.Name AS GroupName,
     REPLACE(hd.GroupId, 'G', '') AS GroupNumber,
