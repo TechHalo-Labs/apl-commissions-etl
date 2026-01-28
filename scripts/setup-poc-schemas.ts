@@ -6,6 +6,54 @@
 import * as sql from 'mssql';
 import { loadConfig, getSqlConfig } from './lib/config-loader';
 
+async function resetSchemas(pool: sql.ConnectionPool): Promise<void> {
+  console.log('🔄 Resetting POC schemas to ensure clean state...\n');
+  
+  // Drop and recreate all POC schemas
+  const schemas = ['poc_dbo', 'poc_etl', 'poc_raw_data'];
+  
+  for (const schemaName of schemas) {
+    // Drop schema if exists
+    await pool.request().query(`
+      IF EXISTS (SELECT 1 FROM sys.schemas WHERE name = '${schemaName}')
+      BEGIN
+        -- Drop procedures first
+        DECLARE @sql NVARCHAR(MAX) = N'';
+        SELECT @sql = @sql + 'DROP PROCEDURE IF EXISTS [${schemaName}].[' + p.name + ']; '
+        FROM sys.procedures p
+        INNER JOIN sys.schemas s ON p.schema_id = s.schema_id
+        WHERE s.name = '${schemaName}';
+        IF LEN(@sql) > 0 EXEC sp_executesql @sql;
+        
+        -- Drop FK constraints
+        SET @sql = N'';
+        SELECT @sql = @sql + 'ALTER TABLE [${schemaName}].[' + OBJECT_NAME(fk.parent_object_id) + '] DROP CONSTRAINT [' + fk.name + ']; '
+        FROM sys.foreign_keys fk
+        INNER JOIN sys.tables t ON fk.parent_object_id = t.object_id
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        WHERE s.name = '${schemaName}';
+        IF LEN(@sql) > 0 EXEC sp_executesql @sql;
+        
+        -- Drop tables
+        SET @sql = N'';
+        SELECT @sql = @sql + N'DROP TABLE IF EXISTS [${schemaName}].[' + t.name + N']; '
+        FROM sys.tables t
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        WHERE s.name = '${schemaName}';
+        IF LEN(@sql) > 0 EXEC sp_executesql @sql;
+        
+        DROP SCHEMA [${schemaName}];
+      END
+    `);
+    
+    // Create schema (must be in separate batch)
+    await pool.request().query(`CREATE SCHEMA [${schemaName}]`);
+    console.log(`   ✅ [${schemaName}] reset`);
+  }
+  
+  console.log('');
+}
+
 async function main() {
   console.log('\n🔧 Setting Up POC Schemas with Sample Data...\n');
   
@@ -35,19 +83,29 @@ async function main() {
     console.log(`   Max Records:       ${maxRecords.brokers} per entity`);
     console.log('');
     
-    // Step 1: Create POC schemas
-    console.log('Step 1/4: Creating POC schemas...');
-    await pool.request().query(`
-      IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'poc_raw_data')
-        EXEC('CREATE SCHEMA [poc_raw_data]');
-      
-      IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'poc_etl')
-        EXEC('CREATE SCHEMA [poc_etl]');
-      
-      IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = 'poc_dbo')
-        EXEC('CREATE SCHEMA [poc_dbo]');
+    // Step 0: Reset all POC schemas for clean slate
+    await resetSchemas(pool);
+    
+    // Step 1: Verify clean state
+    console.log('Step 1/4: Verifying clean state...');
+    const tableCheck = await pool.request().query(`
+      SELECT s.name as SchemaName, COUNT(t.name) as TableCount
+      FROM sys.schemas s
+      LEFT JOIN sys.tables t ON s.schema_id = t.schema_id
+      WHERE s.name IN ('poc_raw_data', 'poc_etl', 'poc_dbo')
+      GROUP BY s.name
     `);
-    console.log('   ✅ Schemas created: poc_raw_data, poc_etl, poc_dbo\n');
+    
+    console.log('   Schema status:');
+    tableCheck.recordset.forEach(row => {
+      console.log(`      [${row.SchemaName}]: ${row.TableCount} tables`);
+    });
+    
+    if (tableCheck.recordset.some(row => row.TableCount > 0)) {
+      throw new Error('POC schemas are not clean! Reset failed.');
+    }
+    
+    console.log('   ✅ All POC schemas are clean\n');
     
     // Step 2: Copy raw tables structure and sample data from etl schema
     console.log('Step 2/4: Copying sample data from [etl] to [poc_raw_data]...');

@@ -10,6 +10,7 @@ export interface SQLExecutionOptions {
   scriptPath: string;
   stepId?: string; // For progress tracking
   debugMode?: boolean;
+  pocMode?: boolean; // For POC schema isolation
 }
 
 export interface SQLExecutionResult {
@@ -31,7 +32,12 @@ export async function executeSQLScript(options: SQLExecutionOptions): Promise<SQ
     const scriptContent = fs.readFileSync(options.scriptPath, 'utf-8');
     
     // Replace schema variables
-    const processedSQL = substituteSchemaVariables(scriptContent, options.config);
+    let processedSQL = substituteSchemaVariables(scriptContent, options.config);
+    
+    // Replace hardcoded schema references if in POC mode
+    if (options.pocMode) {
+      processedSQL = substitutePOCSchemas(processedSQL, options.config);
+    }
     
     // Replace debug mode variables if in debug mode
     const finalSQL = options.debugMode
@@ -82,6 +88,29 @@ export function substituteSchemaVariables(sql: string, config: ETLConfig): strin
     .replace(/\$\(ETL_SCHEMA\)/g, config.database.schemas.processing)
     .replace(/\$\(PROCESSING_SCHEMA\)/g, config.database.schemas.processing)
     .replace(/\$\(PRODUCTION_SCHEMA\)/g, config.database.schemas.production);
+}
+
+/**
+ * Substitute hardcoded schema references for POC mode
+ * Aggressively replaces [etl] and [dbo] with POC schema names
+ */
+export function substitutePOCSchemas(sql: string, config: ETLConfig): string {
+  // Replace hardcoded schema references
+  return sql
+    .replace(/\[etl\]\./g, `[${config.database.schemas.processing}].`)
+    .replace(/\[dbo\]\./g, `[${config.database.schemas.production}].`)
+    .replace(/FROM etl\./g, `FROM ${config.database.schemas.processing}.`)
+    .replace(/INTO etl\./g, `INTO ${config.database.schemas.processing}.`)
+    .replace(/JOIN etl\./g, `JOIN ${config.database.schemas.processing}.`)
+    .replace(/FROM dbo\./g, `FROM ${config.database.schemas.production}.`)
+    .replace(/INTO dbo\./g, `INTO ${config.database.schemas.production}.`)
+    .replace(/JOIN dbo\./g, `JOIN ${config.database.schemas.production}.`)
+    .replace(/WHERE s\.name = 'etl'/g, `WHERE s.name = '${config.database.schemas.processing}'`)
+    .replace(/WHERE name = 'etl'/g, `WHERE name = '${config.database.schemas.processing}'`)
+    .replace(/schema_name\(\) = 'etl'/g, `schema_name() = '${config.database.schemas.processing}'`)
+    .replace(/'etl' schema/g, `'${config.database.schemas.processing}' schema`)
+    .replace(/in \[etl\] schema/g, `in [${config.database.schemas.processing}] schema`)
+    .replace(/\[etl\] schema/g, `[${config.database.schemas.processing}] schema`);
 }
 
 /**
