@@ -26,7 +26,7 @@ TRUNCATE TABLE [etl].[stg_brokers];
 -- Individual brokers (ALL, not just active)
 PRINT 'Loading ALL individual brokers...';
 
-INSERT INTO [etl].[stg_brokers] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
     Id, ExternalPartyId, Name, FirstName, LastName, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
 )
 SELECT
@@ -54,7 +54,7 @@ PRINT 'Individual brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Organization brokers (ALL, not just active)
 PRINT 'Loading ALL organization brokers...';
 
-INSERT INTO [etl].[stg_brokers] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
 )
 SELECT
@@ -83,7 +83,7 @@ PRINT 'Loading brokers from legacy individual roster...';
 
 IF OBJECT_ID('etl.raw_individual_brokers_legacy', 'U') IS NOT NULL
 BEGIN
-    INSERT INTO [etl].[stg_brokers] (
+    INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
         Id, ExternalPartyId, Name, FirstName, LastName, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
     )
     SELECT
@@ -119,7 +119,7 @@ PRINT 'Loading brokers from legacy organization roster...';
 
 IF OBJECT_ID('etl.raw_org_brokers_legacy', 'U') IS NOT NULL
 BEGIN
-    INSERT INTO [etl].[stg_brokers] (
+    INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
         Id, ExternalPartyId, Name, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
     )
     SELECT
@@ -151,7 +151,7 @@ END
 -- Finally, insert PLACEHOLDER brokers for any still-missing references
 PRINT 'Loading placeholder brokers for remaining missing references...';
 
-INSERT INTO [etl].[stg_brokers] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], CreationTime, IsDeleted
 )
 SELECT
@@ -172,7 +172,7 @@ PRINT 'Placeholder brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Also insert ALL brokers from certificates (for referential integrity with all policies)
 PRINT 'Loading additional brokers from certificates...';
 
-INSERT INTO [etl].[stg_brokers] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], CreationTime, IsDeleted
 )
 SELECT DISTINCT
@@ -206,7 +206,7 @@ TRUNCATE TABLE [etl].[stg_broker_licenses];
 PRINT '';
 PRINT 'Loading ALL broker licenses with date corrections...';
 
-INSERT INTO [etl].[stg_broker_licenses] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_licenses] (
     Id, BrokerId, [State], LicenseNumber, [Type], [Status], EffectiveDate, ExpirationDate,
     LicenseCode, IsResidentLicense, ApplicableCounty, CreationTime, IsDeleted
 )
@@ -273,7 +273,7 @@ TRUNCATE TABLE [etl].[stg_broker_eo_insurances];
 PRINT '';
 PRINT 'Loading ALL broker E&O insurance...';
 
-INSERT INTO [etl].[stg_broker_eo_insurances] (
+INSERT INTO [$(ETL_SCHEMA)].[stg_broker_eo_insurances] (
     Id, BrokerId, PolicyNumber, Carrier, CoverageAmount, DeductibleAmount, ClaimMaxAmount,
     AnnualMaxAmount, PolicyMaxAmount, LiabilityLimit, EffectiveDate, ExpirationDate,
     [Status], CreationTime, IsDeleted

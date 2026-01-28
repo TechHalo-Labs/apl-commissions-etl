@@ -36,7 +36,14 @@ export async function executeSQLScript(options: SQLExecutionOptions): Promise<SQ
     
     // Replace hardcoded schema references if in POC mode
     if (options.pocMode) {
+      if (options.debugMode) {
+        console.log(`\n🔧 POC MODE ACTIVE:`);
+        console.log(`   Processing Schema: ${options.config.database.schemas.processing}`);
+        console.log(`   Production Schema: ${options.config.database.schemas.production}`);
+      }
       processedSQL = substitutePOCSchemas(processedSQL, options.config);
+    } else if (options.debugMode) {
+      console.log(`\n⚠️  POC MODE: DISABLED (pocMode flag is false)`);
     }
     
     // Replace debug mode variables if in debug mode
@@ -47,25 +54,66 @@ export async function executeSQLScript(options: SQLExecutionOptions): Promise<SQ
     if (options.debugMode) {
       console.log('\n🐛 DEBUG: Processed SQL (first 500 chars):');
       console.log(finalSQL.substring(0, 500) + '...\n');
+      
+      // Show schema references in the SQL
+      const schemaRefs = finalSQL.match(/\[(poc_etl|poc_dbo|etl|dbo)\]\./g) || [];
+      const uniqueRefs = Array.from(new Set(schemaRefs));
+      if (uniqueRefs.length > 0) {
+        console.log(`   Schema references found: ${uniqueRefs.join(', ')}`);
+      }
+      
+      // Save full SQL for inspection in POC mode
+      const scriptName = path.basename(options.scriptPath);
+      if (options.pocMode && (scriptName === '03-staging-tables.sql' || scriptName === '01-brokers.sql')) {
+        const fs = require('fs');
+        const outputPath = `/tmp/processed-${scriptName}`;
+        fs.writeFileSync(outputPath, finalSQL);
+        console.log(`   📝 Saved to ${outputPath}`);
+        
+        // Count what we're about to execute
+        const createTables = (finalSQL.match(/CREATE TABLE/gi) || []).length;
+        const insertIntos = (finalSQL.match(/INSERT INTO/gi) || []).length;
+        console.log(`   🔍 About to execute: ${createTables} CREATE TABLE, ${insertIntos} INSERT INTO`);
+      }
     }
     
-    // Execute SQL with retry logic for transient failures
-    const result = await retryWithBackoff(
-      () => options.pool.request().query(finalSQL),
-      {
-        maxRetries: 3,
-        baseDelay: 1000,
-        onRetry: (attempt, error) => {
-          console.log(`    Retry attempt ${attempt} for ${path.basename(options.scriptPath)}`);
+    // Split SQL by GO batch separator (SQL Server requirement)
+    const batches = finalSQL
+      .split(/^\s*GO\s*$/gm)
+      .map(batch => batch.trim())
+      .filter(batch => batch.length > 0);
+    
+    if (options.debugMode && batches.length > 1) {
+      console.log(`   📦 SQL split into ${batches.length} batches (GO separator handling)`);
+    }
+    
+    // Execute SQL batches with retry logic for transient failures
+    console.log(`   ⚡ Executing ${batches.length} SQL batch(es)...`);
+    let totalRowsAffected = 0;
+    
+    for (let i = 0; i < batches.length; i++) {
+      const batch = batches[i];
+      const result = await retryWithBackoff(
+        () => options.pool.request().query(batch),
+        {
+          maxRetries: 3,
+          baseDelay: 1000,
+          onRetry: (attempt, error) => {
+            console.log(`    Retry attempt ${attempt} for ${path.basename(options.scriptPath)} batch ${i+1}`);
+          }
         }
+      );
+      
+      if (result.rowsAffected?.[0]) {
+        totalRowsAffected += result.rowsAffected[0];
       }
-    );
+    }
     
     const duration = (Date.now() - startTime) / 1000;
     
     return {
       success: true,
-      recordsAffected: result.rowsAffected?.[0],
+      recordsAffected: totalRowsAffected,
       duration
     };
   } catch (error) {
@@ -93,24 +141,54 @@ export function substituteSchemaVariables(sql: string, config: ETLConfig): strin
 /**
  * Substitute hardcoded schema references for POC mode
  * Aggressively replaces [etl] and [dbo] with POC schema names
+ * Enhanced with comprehensive patterns for complete schema isolation
  */
 export function substitutePOCSchemas(sql: string, config: ETLConfig): string {
-  // Replace hardcoded schema references
+  const processingSchema = config.database.schemas.processing;
+  const productionSchema = config.database.schemas.production;
+  
   return sql
-    .replace(/\[etl\]\./g, `[${config.database.schemas.processing}].`)
-    .replace(/\[dbo\]\./g, `[${config.database.schemas.production}].`)
-    .replace(/FROM etl\./g, `FROM ${config.database.schemas.processing}.`)
-    .replace(/INTO etl\./g, `INTO ${config.database.schemas.processing}.`)
-    .replace(/JOIN etl\./g, `JOIN ${config.database.schemas.processing}.`)
-    .replace(/FROM dbo\./g, `FROM ${config.database.schemas.production}.`)
-    .replace(/INTO dbo\./g, `INTO ${config.database.schemas.production}.`)
-    .replace(/JOIN dbo\./g, `JOIN ${config.database.schemas.production}.`)
-    .replace(/WHERE s\.name = 'etl'/g, `WHERE s.name = '${config.database.schemas.processing}'`)
-    .replace(/WHERE name = 'etl'/g, `WHERE name = '${config.database.schemas.processing}'`)
-    .replace(/schema_name\(\) = 'etl'/g, `schema_name() = '${config.database.schemas.processing}'`)
-    .replace(/'etl' schema/g, `'${config.database.schemas.processing}' schema`)
-    .replace(/in \[etl\] schema/g, `in [${config.database.schemas.processing}] schema`)
-    .replace(/\[etl\] schema/g, `[${config.database.schemas.processing}] schema`);
+    // Table operations with brackets
+    .replace(/\[etl\]\./g, `[${processingSchema}].`)
+    .replace(/\[dbo\]\./g, `[${productionSchema}].`)
+    
+    // Table operations without brackets  
+    .replace(/FROM etl\./g, `FROM ${processingSchema}.`)
+    .replace(/INTO etl\./g, `INTO ${processingSchema}.`)
+    .replace(/JOIN etl\./g, `JOIN ${processingSchema}.`)
+    .replace(/UPDATE etl\./g, `UPDATE ${processingSchema}.`)
+    .replace(/FROM dbo\./g, `FROM ${productionSchema}.`)
+    .replace(/INTO dbo\./g, `INTO ${productionSchema}.`)
+    .replace(/JOIN dbo\./g, `JOIN ${productionSchema}.`)
+    .replace(/UPDATE dbo\./g, `UPDATE ${productionSchema}.`)
+    
+    // Schema existence checks
+    .replace(/IF EXISTS \(SELECT 1 FROM sys\.schemas WHERE name = 'etl'\)/g,
+      `IF EXISTS (SELECT 1 FROM sys.schemas WHERE name = '${processingSchema}')`)
+    .replace(/WHERE s\.name = 'etl'/g, `WHERE s.name = '${processingSchema}'`)
+    .replace(/WHERE name = 'etl'/g, `WHERE name = '${processingSchema}'`)
+    .replace(/WHERE schema_name\(\) = 'etl'/g, `WHERE schema_name() = '${processingSchema}'`)
+    .replace(/schema_name\(\) = 'etl'/g, `schema_name() = '${processingSchema}'`)
+    
+    // Schema operations (DROP/CREATE) - Critical for POC isolation
+    .replace(/DROP SCHEMA \[etl\]/g, `DROP SCHEMA [${processingSchema}]`)
+    .replace(/CREATE SCHEMA \[etl\]/g, `CREATE SCHEMA [${processingSchema}]`)
+    .replace(/DROP SCHEMA \[dbo\]/g, `DROP SCHEMA [${productionSchema}]`)
+    .replace(/CREATE SCHEMA \[dbo\]/g, `CREATE SCHEMA [${productionSchema}]`)
+    
+    // Print statements and comments
+    .replace(/\[etl\] schema/g, `[${processingSchema}] schema`)
+    .replace(/'etl' schema/g, `'${processingSchema}' schema`)
+    .replace(/in \[etl\]/g, `in [${processingSchema}]`)
+    .replace(/in etl schema/g, `in ${processingSchema} schema`)
+    
+    // Dynamic SQL building patterns
+    .replace(/'DROP TABLE IF EXISTS \[etl\]\.\['/g, `'DROP TABLE IF EXISTS [${processingSchema}].[' `)
+    .replace(/\+ 'DROP TABLE IF EXISTS \[etl\]\.\['/g, `+ 'DROP TABLE IF EXISTS [${processingSchema}].[' `)
+    
+    // Column and variable references
+    .replace(/= 'etl'/g, `= '${processingSchema}'`)
+    .replace(/= N'etl'/g, `= N'${processingSchema}'`);
 }
 
 /**

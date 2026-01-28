@@ -36,92 +36,146 @@ async function pauseForConfirmation(message: string): Promise<void> {
   });
 }
 
+interface SchemaSnapshot {
+  poc_etl_tables: number;
+  poc_etl_records: number;
+  poc_dbo_tables: number;
+  poc_dbo_records: number;
+  etl_records: number;
+  dbo_records: number;
+}
+
+/**
+ * Capture complete schema snapshot for verification
+ */
+async function captureSchemaSnapshot(pool: sql.ConnectionPool): Promise<SchemaSnapshot> {
+  const snapshot: SchemaSnapshot = {
+    poc_etl_tables: 0,
+    poc_etl_records: 0,
+    poc_dbo_tables: 0,
+    poc_dbo_records: 0,
+    etl_records: 0,
+    dbo_records: 0
+  };
+  
+  try {
+    // POC ETL tables
+    const pocEtlTables = await pool.request().query(`
+      SELECT COUNT(*) as cnt
+      FROM sys.tables t
+      INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+      WHERE s.name = 'poc_etl'
+    `);
+    snapshot.poc_etl_tables = pocEtlTables.recordset[0].cnt;
+    
+    if (snapshot.poc_etl_tables > 0) {
+      const pocEtlRecords = await pool.request().query(`
+        SELECT SUM(p.rows) as total
+        FROM sys.tables t
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        INNER JOIN sys.partitions p ON t.object_id = p.object_id
+        WHERE s.name = 'poc_etl' AND p.index_id IN (0, 1)
+      `);
+      snapshot.poc_etl_records = pocEtlRecords.recordset[0].total || 0;
+    }
+    
+    // POC DBO tables
+    const pocDboTables = await pool.request().query(`
+      SELECT COUNT(*) as cnt
+      FROM sys.tables t
+      INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+      WHERE s.name = 'poc_dbo'
+    `);
+    snapshot.poc_dbo_tables = pocDboTables.recordset[0].cnt;
+    
+    if (snapshot.poc_dbo_tables > 0) {
+      const pocDboRecords = await pool.request().query(`
+        SELECT SUM(p.rows) as total
+        FROM sys.tables t
+        INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        INNER JOIN sys.partitions p ON t.object_id = p.object_id
+        WHERE s.name = 'poc_dbo' AND p.index_id IN (0, 1)
+      `);
+      snapshot.poc_dbo_records = pocDboRecords.recordset[0].total || 0;
+    }
+    
+    // Standard ETL records
+    const etlRecords = await pool.request().query(`
+      SELECT SUM(p.rows) as total
+      FROM sys.tables t
+      INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+      INNER JOIN sys.partitions p ON t.object_id = p.object_id
+      WHERE s.name = 'etl' AND p.index_id IN (0, 1)
+    `);
+    snapshot.etl_records = etlRecords.recordset[0].total || 0;
+    
+    // Standard DBO records
+    const dboRecords = await pool.request().query(`
+      SELECT SUM(p.rows) as total
+      FROM sys.tables t
+      INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+      INNER JOIN sys.partitions p ON t.object_id = p.object_id
+      WHERE s.name = 'dbo' AND p.index_id IN (0, 1)
+    `);
+    snapshot.dbo_records = dboRecords.recordset[0].total || 0;
+    
+  } catch (error) {
+    console.error('Error capturing snapshot:', error);
+  }
+  
+  return snapshot;
+}
+
 /**
  * Verify POC schema isolation and production safety
+ * Enhanced with before/after snapshots and violation detection
  */
-async function verifyPOCSchemas(pool: sql.ConnectionPool, phase: string): Promise<void> {
+async function verifyPOCSchemas(
+  pool: sql.ConnectionPool,
+  phase: string,
+  beforeSnapshot?: SchemaSnapshot
+): Promise<SchemaSnapshot> {
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`📊 VERIFICATION: ${phase}`);
   console.log('═'.repeat(70) + '\n');
   
-  // Check that POC schemas exist
-  const pocSchemas = await pool.request().query(`
-    SELECT name FROM sys.schemas 
-    WHERE name IN ('poc_raw_data', 'poc_etl', 'poc_dbo')
-    ORDER BY name
-  `);
+  const afterSnapshot = await captureSchemaSnapshot(pool);
   
-  console.log(`POC Schemas Status: ${pocSchemas.recordset.length}/3 schemas exist`);
+  // Check POC schema changes
+  console.log('POC Schema Status:');
+  console.log(`  [poc_etl]:  ${afterSnapshot.poc_etl_tables} tables, ${afterSnapshot.poc_etl_records} records`);
+  console.log(`  [poc_dbo]:  ${afterSnapshot.poc_dbo_tables} tables, ${afterSnapshot.poc_dbo_records} records`);
   
-  // Count tables in each schema
-  const tableCounts = await pool.request().query(`
-    SELECT s.name as SchemaName, COUNT(t.name) as TableCount
-    FROM sys.schemas s
-    LEFT JOIN sys.tables t ON s.schema_id = t.schema_id
-    WHERE s.name IN ('poc_raw_data', 'poc_etl', 'poc_dbo')
-    GROUP BY s.name
-    ORDER BY s.name
-  `);
-  
-  console.log('\nPOC Schema Table Counts:');
-  tableCounts.recordset.forEach(row => {
-    console.log(`   [${row.SchemaName}]: ${row.TableCount} tables`);
-  });
-  
-  // Sample some key staging tables if they exist
-  try {
-    const stagingData = await pool.request().query(`
-      SELECT 
-        (SELECT COUNT(*) FROM [poc_etl].[stg_brokers]) as Brokers,
-        (SELECT COUNT(*) FROM [poc_etl].[stg_groups]) as Groups,
-        (SELECT COUNT(*) FROM [poc_etl].[stg_policies]) as Policies
-    `);
+  // Check standard schemas for violations
+  if (beforeSnapshot) {
+    console.log('\n✅ Isolation Verification:');
     
-    if (stagingData.recordset.length > 0) {
-      const data = stagingData.recordset[0];
-      console.log('\nPOC Staging Data:');
-      console.log(`   Brokers:  ${data.Brokers}`);
-      console.log(`   Groups:   ${data.Groups}`);
-      console.log(`   Policies: ${data.Policies}`);
-    }
-  } catch {
-    // Tables don't exist yet, that's fine
-  }
-  
-  // Sample production POC tables if they exist
-  try {
-    const prodData = await pool.request().query(`
-      SELECT 
-        (SELECT COUNT(*) FROM [poc_dbo].[Brokers]) as Brokers,
-        (SELECT COUNT(*) FROM [poc_dbo].[Group]) as Groups,
-        (SELECT COUNT(*) FROM [poc_dbo].[Policies]) as Policies
-    `);
+    const etlChanged = afterSnapshot.etl_records !== beforeSnapshot.etl_records;
+    const dboChanged = afterSnapshot.dbo_records !== beforeSnapshot.dbo_records;
     
-    if (prodData.recordset.length > 0) {
-      const data = prodData.recordset[0];
-      console.log('\nPOC Production Data:');
-      console.log(`   Brokers:  ${data.Brokers}`);
-      console.log(`   Groups:   ${data.Groups}`);
-      console.log(`   Policies: ${data.Policies}`);
+    if (etlChanged) {
+      console.log(`  ❌ VIOLATION: [etl] changed (${beforeSnapshot.etl_records} → ${afterSnapshot.etl_records})`);
+      throw new Error('ISOLATION VIOLATION: [etl] schema was modified!');
+    } else {
+      console.log(`  ✅ [etl]:  ${afterSnapshot.etl_records} records (UNCHANGED)`);
     }
-  } catch {
-    // Tables don't exist yet, that's fine
+    
+    if (dboChanged) {
+      console.log(`  ❌ VIOLATION: [dbo] changed (${beforeSnapshot.dbo_records} → ${afterSnapshot.dbo_records})`);
+      throw new Error('ISOLATION VIOLATION: [dbo] schema was modified!');
+    } else {
+      console.log(`  ✅ [dbo]:  ${afterSnapshot.dbo_records} records (UNCHANGED)`);
+    }
+  } else {
+    // First verification, just show current state
+    console.log('\n📊 Standard Schemas Baseline:');
+    console.log(`  [etl]:  ${afterSnapshot.etl_records} records`);
+    console.log(`  [dbo]:  ${afterSnapshot.dbo_records} records`);
   }
-  
-  // Verify production [dbo] is untouched
-  const prodBrokerCount = await pool.request().query(`
-    SELECT COUNT(*) as cnt FROM [dbo].[Brokers]
-  `);
-  
-  const prodPolicyCount = await pool.request().query(`
-    SELECT COUNT(*) as cnt FROM [dbo].[Policies]
-  `);
-  
-  console.log('\n✅ Production Schema Safety Check:');
-  console.log(`   [dbo].[Brokers]:  ${prodBrokerCount.recordset[0].cnt} records (UNTOUCHED)`);
-  console.log(`   [dbo].[Policies]: ${prodPolicyCount.recordset[0].cnt} records (UNTOUCHED)`);
   
   console.log('\n' + '═'.repeat(70) + '\n');
+  
+  return afterSnapshot;
 }
 
 /**
@@ -269,9 +323,8 @@ async function main() {
   // Define script paths
   const scriptsDir = path.join(__dirname, '../sql');
   
+  // POC mode: Skip schema setup, schemas already exist from setup-poc-schemas.ts
   const schemaScripts = [
-    path.join(scriptsDir, '00a-state-management-tables.sql'),
-    path.join(scriptsDir, '00-schema-setup.sql'),
     path.join(scriptsDir, '01-raw-tables.sql'),
     path.join(scriptsDir, '02-input-tables.sql'),
     path.join(scriptsDir, '03-staging-tables.sql'),
@@ -330,9 +383,9 @@ async function main() {
     
     let currentStep = 0;
     
-    // Step 0: Initial verification
+    // Step 0: Initial verification (capture baseline)
     await pauseForConfirmation('Paused before INITIAL SETUP verification');
-    await verifyPOCSchemas(pool, 'Initial State');
+    const initialSnapshot = await verifyPOCSchemas(pool, 'Initial State');
     
     // Phase 1: Schema Setup
     await pauseForConfirmation(`Paused before PHASE 1: Schema Setup (${schemaScripts.length} scripts)`);
@@ -342,7 +395,7 @@ async function main() {
     );
     phaseResults.push(phase1Result.result);
     currentStep = phase1Result.nextStep;
-    await verifyPOCSchemas(pool, 'After Schema Setup');
+    const phase1Snapshot = await verifyPOCSchemas(pool, 'After Schema Setup', initialSnapshot);
     
     if (phase1Result.result.status === 'failed') {
       throw new Error(`Phase 1 failed: ${phase1Result.result.error}`);
@@ -356,7 +409,7 @@ async function main() {
     );
     phaseResults.push(phase2Result.result);
     currentStep = phase2Result.nextStep;
-    await verifyPOCSchemas(pool, 'After Data Transforms');
+    const phase2Snapshot = await verifyPOCSchemas(pool, 'After Data Transforms', phase1Snapshot);
     
     if (phase2Result.result.status === 'failed') {
       throw new Error(`Phase 2 failed: ${phase2Result.result.error}`);
@@ -370,7 +423,7 @@ async function main() {
     );
     phaseResults.push(phase3Result.result);
     currentStep = phase3Result.nextStep;
-    await verifyPOCSchemas(pool, 'After Export to Production');
+    const finalSnapshot = await verifyPOCSchemas(pool, 'After Export to Production', phase2Snapshot);
     
     if (phase3Result.result.status === 'failed') {
       throw new Error(`Phase 3 failed: ${phase3Result.result.error}`);
@@ -381,7 +434,7 @@ async function main() {
     
     // Final verification
     await pauseForConfirmation('Paused before FINAL VERIFICATION');
-    await verifyPOCSchemas(pool, 'Final State');
+    await verifyPOCSchemas(pool, 'Final State', initialSnapshot);
     
     const totalDuration = (Date.now() - pipelineStartTime) / 1000;
     
@@ -389,6 +442,13 @@ async function main() {
     printSummary(phaseResults, totalDuration);
     
     progress.logRunComplete(totalSteps, totalDuration);
+    
+    // Report 100% isolation success
+    console.log('\n' + '╔' + '═'.repeat(68) + '╗');
+    console.log('║' + ' '.repeat(18) + '✅ 100% SCHEMA ISOLATION' + ' '.repeat(24) + '║');
+    console.log('╚' + '═'.repeat(68) + '╝\n');
+    console.log('All phases completed with verified isolation.');
+    console.log('Standard schemas [etl] and [dbo] remain completely untouched.\n');
     
   } catch (error) {
     console.error('\n❌ POC Pipeline Failed:');

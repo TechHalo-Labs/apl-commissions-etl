@@ -109,13 +109,24 @@ if (!flags.resume && !flags.resumeFrom) {
 
 const scriptsDir = path.join(__dirname, '../sql');
 
-const schemaScripts = [
-  path.join(scriptsDir, '00a-state-management-tables.sql'),
-  path.join(scriptsDir, '00-schema-setup.sql'),
-  path.join(scriptsDir, '01-raw-tables.sql'),
-  path.join(scriptsDir, '02-input-tables.sql'),
-  path.join(scriptsDir, '03-staging-tables.sql'),
-];
+// Schema setup scripts - conditional based on POC mode
+// In POC mode, skip 00-schema-setup.sql and 00a-state-management-tables.sql
+// because schemas are already created by setup-poc-schemas.ts
+const schemaScripts = config.database.pocMode === true
+  ? [
+      // POC mode: Skip schema setup, schemas already exist
+      path.join(scriptsDir, '01-raw-tables.sql'),
+      path.join(scriptsDir, '02-input-tables.sql'),
+      path.join(scriptsDir, '03-staging-tables.sql'),
+    ]
+  : [
+      // Standard mode: Full schema setup
+      path.join(scriptsDir, '00a-state-management-tables.sql'),
+      path.join(scriptsDir, '00-schema-setup.sql'),
+      path.join(scriptsDir, '01-raw-tables.sql'),
+      path.join(scriptsDir, '02-input-tables.sql'),
+      path.join(scriptsDir, '03-staging-tables.sql'),
+    ];
 
 const transformScripts = [
   path.join(scriptsDir, 'transforms/00-references.sql'),
@@ -246,7 +257,7 @@ async function main() {
             scriptPath,
             stepId,
             debugMode: config.debugMode.enabled,
-            pocMode: (config.database as any).pocMode === true
+            pocMode: config.database.pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);
@@ -291,7 +302,7 @@ async function main() {
             scriptPath,
             stepId,
             debugMode: config.debugMode.enabled,
-            pocMode: (config.database as any).pocMode === true
+            pocMode: config.database.pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);
@@ -336,7 +347,7 @@ async function main() {
             scriptPath,
             stepId,
             debugMode: config.debugMode.enabled,
-            pocMode: (config.database as any).pocMode === true
+            pocMode: config.database.pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);

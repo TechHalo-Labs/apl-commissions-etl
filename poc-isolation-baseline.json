@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-01-28T01:53:38.161Z",
+  "pocSchemas": [
+    {
+      "schema": "poc_raw_data",
+      "tables": 8,
+      "records": "700"
+    },
+    {
+      "schema": "poc_etl",
+      "tables": 2,
+      "records": "0"
+    },
+    {
+      "schema": "poc_dbo",
+      "tables": 0,
+      "records": 0
+    }
+  ],
+  "standardSchemas": [
+    {
+      "schema": "etl",
+      "before": "9125629",
+      "after": "9125629",
+      "changed": false
+    },
+    {
+      "schema": "dbo",
+      "before": "1102024",
+      "after": "1102024",
+      "changed": false
+    }
+  ],
+  "violations": [],
+  "success": true
+}

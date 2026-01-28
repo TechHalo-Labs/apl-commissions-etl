@@ -11,6 +11,7 @@ export interface ETLConfig {
       processing: string;  // 'etl'
       production: string;  // 'dbo'
     };
+    pocMode?: boolean;  // Enable POC schema isolation mode
   };
   inputFiles: {
     premiums: string;
@@ -118,7 +119,8 @@ export function loadConfig(overrides?: Partial<ETLConfig>, configFile?: string):
         transition: process.env.TRANSITION_SCHEMA || fileConfig.database?.schemas?.transition || 'raw_data',
         processing: process.env.PROCESSING_SCHEMA || fileConfig.database?.schemas?.processing || 'etl',
         production: process.env.PRODUCTION_SCHEMA || fileConfig.database?.schemas?.production || 'dbo',
-      }
+      },
+      pocMode: fileConfig.database?.pocMode || false
     },
     inputFiles: {
       premiums: process.env.INPUT_PREMIUMS || fileConfig.inputFiles?.premiums || '',
