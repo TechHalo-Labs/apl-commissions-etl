@@ -1,0 +1,302 @@
+
+📋 ETL Configuration:
+════════════════════════════════════════════════════════════════
+{
+  "database": {
+    "connectionString": "Server=halo-sql.database.windows.net;Database=halo-sqldb;User Id=azadmin;Password=***;TrustServerCertificate=True;Encrypt=True;",
+    "schemas": {
+      "source": "new_data",
+      "transition": "raw_data",
+      "processing": "etl",
+      "production": "dbo"
+    },
+    "pocMode": false
+  },
+  "inputFiles": {
+    "premiums": "",
+    "certificateInfo": "",
+    "commissionsDetail": "",
+    "individualBrokers": "",
+    "orgBrokers": "",
+    "licenses": "",
+    "eo": "",
+    "scheduleRates": "",
+    "perfGroups": "",
+    "fees": ""
+  },
+  "debugMode": {
+    "enabled": false,
+    "maxRecords": {
+      "brokers": 100000,
+      "groups": 100000,
+      "policies": 1000000,
+      "premiums": 10000000,
+      "hierarchies": 100000,
+      "proposals": 100000
+    }
+  },
+  "resume": {
+    "enabled": false,
+    "resumeFromRunId": null
+  }
+}
+════════════════════════════════════════════════════════════════
+
+⚠️  State tables not found - running without state tracking
+
+╔════════════════════════════════════════════════════════════════╗
+║  ETL Pipeline Run Started                                      ║
+╚════════════════════════════════════════════════════════════════╝
+  Run Name:    ETL-full-2026-01-28T19-04-27-191Z
+  Run Type:    full
+  Total Steps: 29
+  Started:     2026-01-28T19:04:27.782Z
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 Phase 1/6: Schema Setup
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [1/29] 00a-state-management-tables.sql (3.4%)
+   ⚡ Executing 11 SQL batch(es)...
+    ✅ 00a-state-management-tables.sql completed in 0.1s
+
+  [2/29] 00-schema-setup.sql (6.9%)
+   ⚡ Executing 5 SQL batch(es)...
+    ✅ 00-schema-setup.sql completed (0 records) in 1.1s
+
+  [3/29] 01-raw-tables.sql (10.3%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 01-raw-tables.sql completed (0 records) in 0.3s
+
+  [4/29] 02-input-tables.sql (13.8%)
+   ⚡ Executing 6 SQL batch(es)...
+    ✅ 02-input-tables.sql completed (1 records) in 1.6s
+
+  [5/29] 03-staging-tables.sql (17.2%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 03-staging-tables.sql completed (0 records) in 0.6s
+
+  [6/29] 03a-prestage-tables.sql (20.7%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 03a-prestage-tables.sql completed (0 records) in 0.3s
+
+  [7/29] 03b-conformance-table.sql (24.1%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 03b-conformance-table.sql completed (0 records) in 0.1s
+
+
+✅ Phase "Schema Setup" completed in 4.2s
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 Phase 2/6: Data Ingest
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [8/29] copy-from-poc-etl.sql (27.6%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ copy-from-poc-etl.sql completed in 0.1s
+
+  [9/29] populate-input-tables.sql (31.0%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ populate-input-tables.sql completed (0 records) in 0.2s
+
+
+✅ Phase "Data Ingest" completed in 0.3s
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 Phase 3/6: Data Transforms
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  [10/29] 00-references.sql (34.5%)
+   ⚡ Executing 6 SQL batch(es)...
+    ✅ 00-references.sql completed (1 records) in 0.9s
+
+  [11/29] 01-brokers.sql (37.9%)
+   ⚡ Executing 3 SQL batch(es)...
+    ✅ 01-brokers.sql completed (0 records) in 0.5s
+
+  [12/29] 02-groups.sql (41.4%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 02-groups.sql completed (0 records) in 0.2s
+
+  [13/29] 03-products.sql (44.8%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 03-products.sql completed (0 records) in 0.2s
+
+  [14/29] 04-schedules.sql (48.3%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 04-schedules.sql completed (0 records) in 0.2s
+
+  [15/29] 06a-proposals-simple-groups.sql (51.7%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06a-proposals-simple-groups.sql completed (0 records) in 0.2s
+
+  [16/29] 06b-proposals-non-conformant.sql (55.2%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06b-proposals-non-conformant.sql completed (0 records) in 0.2s
+
+  [17/29] 06c-proposals-plan-differentiated.sql (58.6%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06c-proposals-plan-differentiated.sql completed in 0.2s
+
+  [18/29] 06d-proposals-year-differentiated.sql (62.1%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06d-proposals-year-differentiated.sql completed in 0.1s
+
+  [19/29] 06e-proposals-granular.sql (65.5%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06e-proposals-granular.sql completed in 0.1s
+
+  [20/29] 06f-populate-prestage-split-configs.sql (69.0%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06f-populate-prestage-split-configs.sql completed (0 records) in 0.2s
+
+  [21/29] 06g-normalize-proposal-date-ranges.sql (72.4%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06g-normalize-proposal-date-ranges.sql completed (0 records) in 0.2s
+
+  [22/29] 06z-update-proposal-broker-names.sql (75.9%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 06z-update-proposal-broker-names.sql completed (0 records) in 0.2s
+
+  [23/29] 07-hierarchies.sql (79.3%)
+   ⚡ Executing 10 SQL batch(es)...
+    ✅ 07-hierarchies.sql completed in 0.1s
+
+  [24/29] 08-analyze-conformance.sql (82.8%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 08-analyze-conformance.sql completed (0 records) in 1.0s
+
+  [25/29] 08-hierarchy-splits.sql (86.2%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 08-hierarchy-splits.sql completed (0 records) in 0.2s
+
+  [26/29] 09-policies.sql (89.7%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 09-policies.sql completed (0 records) in 0.2s
+
+  [27/29] 10-premium-transactions.sql (93.1%)
+   ⚡ Executing 2 SQL batch(es)...
+    ✅ 10-premium-transactions.sql completed (1 records) in 0.4s
+
+  [28/29] 11-policy-hierarchy-assignments.sql (96.6%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 11-policy-hierarchy-assignments.sql completed (0 records) in 0.2s
+
+  [29/29] 99-audit-and-cleanup.sql (100.0%)
+   ⚡ Executing 1 SQL batch(es)...
+    ✅ 99-audit-and-cleanup.sql completed in 0.1s
+
+
+✅ Phase "Data Transforms" completed in 5.6s
+
+
+🔄 Running proposal consolidation...
+
+🔄 Starting proposal consolidation...
+   Using schema: etl
+════════════════════════════════════════════════════════════
+
+📥 Step 1: Loading pre-stage proposals...
+   ✓ Loaded 0 pre-stage proposals
+
+🔀 Step 2: Sorting proposals...
+   ✓ Proposals sorted by GroupId → EffectiveDateFrom → SplitConfigurationMD5
+
+🔨 Step 3: Running iterative consolidation algorithm...
+   ✓ Consolidated: 0 retained, 0 consumed
+
+💾 Step 4: Updating pre-stage with consolidation flags...
+   ✓ Updated 0 retained proposals
+   ✓ Updated 0 consumed proposals
+
+📤 Step 5: Copying retained proposals to staging...
+   ✓ Copied 0 proposals to staging
+
+🏷️  Step 5.5: Assigning display names...
+   ✓ Assigned display names to 0 proposals
+
+🏗️  Step 6: Copying hierarchies to staging...
+   ✓ Copied 0 hierarchies
+   ✓ Copied 0 hierarchy versions
+   ✓ Copied 0 hierarchy participants
+
+📋 Step 7: Copying split versions and participants...
+   ✓ Copied 0 split versions
+   ✓ Copied 0 split participants
+
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+═
+✅ Consolidation complete!
+
+✓ Consolidation completed in 2.14s
+
+
+╔════════════════════════════════════════════════════════════════╗
+║  ETL Pipeline Run Completed                                    ║
+╚════════════════════════════════════════════════════════════════╝
+  Steps Completed: 29
+  Total Duration:  12.2s
+  Started:         2026-01-28T19:04:27.782Z
+  Completed:       2026-01-28T19:04:40.013Z
+

@@ -1,0 +1,587 @@
+{
+  "splitConfiguration": {
+    "premiumSplitVersion": {
+      "id": "PSV-G25992-V1",
+      "groupId": "G25992",
+      "groupName": "ABC Manufacturing Co.",
+      "groupNumber": "ABC-001",
+      "proposalId": "P-G25992-DENTAL",
+      "proposalNumber": "PRO-2025-0123",
+      "productId": "DENTAL",
+      "versionNumber": "1.0",
+      "effectiveFrom": "2025-01-01T00:00:00Z",
+      "effectiveTo": null,
+      "changeDescription": "Initial split configuration for ABC Manufacturing",
+      "totalSplitPercent": 100.0,
+      "status": 0,
+      "statusName": "Active",
+      "source": 1,
+      "sourceName": "Contract",
+      "hubspotDealId": "HS-DEAL-789456",
+      "creationTime": "2024-12-15T10:30:00Z"
+    },
+    "splitParticipants": [
+      {
+        "id": "SP-1",
+        "versionId": "PSV-G25992-V1",
+        "brokerId": 12345,
+        "brokerUniquePartyId": "AGT-12345",
+        "brokerName": "Smith, John (Writing Agent)",
+        "brokerNPN": "NPN123456789",
+        "splitPercent": 60.0,
+        "isWritingAgent": true,
+        "hierarchyId": "H-G25992-1",
+        "hierarchyName": "Smith's Team - Dental Specialists",
+        "templateId": "TMPL-DENTAL-STANDARD",
+        "templateName": "Standard Dental Commission Structure",
+        "effectiveFrom": "2025-01-01T00:00:00Z",
+        "effectiveTo": null,
+        "notes": "Primary writing agent, gets 60% split",
+        "sequence": 1,
+        "splitType": 0,
+        "splitTypeName": "Standard"
+      },
+      {
+        "id": "SP-2",
+        "versionId": "PSV-G25992-V1",
+        "brokerId": 67890,
+        "brokerUniquePartyId": "AGT-67890",
+        "brokerName": "Johnson, Mary (Partner)",
+        "brokerNPN": "NPN987654321",
+        "splitPercent": 40.0,
+        "isWritingAgent": false,
+        "hierarchyId": "H-G25992-2",
+        "hierarchyName": "Johnson's Regional Team",
+        "templateId": "TMPL-DENTAL-REGIONAL",
+        "templateName": "Regional Partner Structure",
+        "effectiveFrom": "2025-01-01T00:00:00Z",
+        "effectiveTo": null,
+        "notes": "Regional partner, gets 40% split",
+        "sequence": 2,
+        "splitType": 0,
+        "splitTypeName": "Standard"
+      }
+    ]
+  },
+  "hierarchies": [
+    {
+      "hierarchy": {
+        "id": "H-G25992-1",
+        "name": "Smith's Team - Dental Specialists",
+        "description": "Primary dental sales team with 4-tier structure",
+        "type": 0,
+        "typeName": "Commission",
+        "status": 0,
+        "statusName": "Active",
+        "proposalId": "P-G25992-DENTAL",
+        "proposalNumber": "PRO-2025-0123",
+        "groupId": "G25992",
+        "groupName": "ABC Manufacturing Co.",
+        "groupNumber": "ABC-001",
+        "brokerId": 12345,
+        "brokerName": "Smith, John",
+        "brokerLevel": 1,
+        "contractId": "CONTRACT-789",
+        "contractNumber": "CNT-2025-0456",
+        "effectiveDate": "2025-01-01T00:00:00Z",
+        "expiryDate": null,
+        "currentVersionId": "HV-G25992-1-V2",
+        "currentVersionNumber": "2.0",
+        "previousVersionId": "HV-G25992-1-V1",
+        "isActive": true,
+        "creationTime": "2024-12-15T10:30:00Z"
+      },
+      "currentVersion": {
+        "versionId": "HV-G25992-1-V2",
+        "versionNumber": "2.0",
+        "effectiveDate": "2025-01-01T00:00:00Z",
+        "expiryDate": null,
+        "changeReason": "Updated rates for 2025, added new tier 4 participant",
+        "totalParticipants": 4,
+        "tierCount": 4
+      },
+      "tiers": [
+        {
+          "level": 1,
+          "levelName": "Writing Agent",
+          "sortOrder": 1,
+          "participants": [
+            {
+              "id": "HP-1-1",
+              "hierarchyVersionId": "HV-G25992-1-V2",
+              "entityId": 12345,
+              "entityName": "Smith, John",
+              "entityType": "Broker",
+              "npn": "NPN123456789",
+              "level": 1,
+              "sortOrder": 1,
+              "splitPercent": 50.0,
+              "scheduleCode": "SCH-DENTAL-TIER1-2025",
+              "scheduleId": 1001,
+              "schedule": {
+                "id": 1001,
+                "externalId": "SCH-DENTAL-TIER1-2025",
+                "name": "Dental Tier 1 - 2025",
+                "description": "Writing agent rates for dental products",
+                "status": "Active",
+                "commissionType": "Tiered",
+                "rateStructure": "GroupSize",
+                "effectiveDate": "2025-01-01",
+                "endDate": null,
+                "productLines": ["Dental", "Vision"],
+                "productCodes": ["DENTAL", "VISION", "DENT_PLUS"],
+                "owner": "Underwriting Team",
+                "contractCount": 45,
+                "productCount": 3,
+                "currentVersionId": 2001,
+                "currentVersionNumber": "1.0"
+              },
+              "commissionRate": 15.0,
+              "firstYearRate": 18.0,
+              "renewalRate": 15.0,
+              "bonusRate": 2.0,
+              "rateDetails": {
+                "ratesByGroupSize": [
+                  {
+                    "groupSizeTier": "Small (1-25)",
+                    "groupSizeFrom": 1,
+                    "groupSizeTo": 25,
+                    "firstYearRate": 20.0,
+                    "renewalRate": 17.0,
+                    "bonusRate": 2.0
+                  },
+                  {
+                    "groupSizeTier": "Medium (26-100)",
+                    "groupSizeFrom": 26,
+                    "groupSizeTo": 100,
+                    "firstYearRate": 18.0,
+                    "renewalRate": 15.0,
+                    "bonusRate": 2.0
+                  },
+                  {
+                    "groupSizeTier": "Large (101-500)",
+                    "groupSizeFrom": 101,
+                    "groupSizeTo": 500,
+                    "firstYearRate": 15.0,
+                    "renewalRate": 12.0,
+                    "bonusRate": 1.5
+                  }
+                ],
+                "ratesByState": [
+                  {
+                    "state": "TX",
+                    "maxAllowableCommission": 25.0,
+                    "firstYearRate": 18.0,
+                    "renewalRate": 15.0
+                  },
+                  {
+                    "state": "CA",
+                    "maxAllowableCommission": 20.0,
+                    "firstYearRate": 16.0,
+                    "renewalRate": 13.0
+                  },
+                  {
+                    "state": "FL",
+                    "maxAllowableCommission": 22.0,
+                    "firstYearRate": 18.0,
+                    "renewalRate": 15.0
+                  }
+                ]
+              },
+              "paidBrokerId": 12345,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T10:30:00Z"
+            }
+          ]
+        },
+        {
+          "level": 2,
+          "levelName": "Supervising Agent",
+          "sortOrder": 2,
+          "participants": [
+            {
+              "id": "HP-1-2",
+              "hierarchyVersionId": "HV-G25992-1-V2",
+              "entityId": 23456,
+              "entityName": "Williams, Robert",
+              "entityType": "Broker",
+              "npn": "NPN234567890",
+              "level": 2,
+              "sortOrder": 2,
+              "splitPercent": 30.0,
+              "scheduleCode": "SCH-DENTAL-TIER2-2025",
+              "scheduleId": 1002,
+              "schedule": {
+                "id": 1002,
+                "externalId": "SCH-DENTAL-TIER2-2025",
+                "name": "Dental Tier 2 - 2025",
+                "description": "Supervising agent override rates",
+                "status": "Active",
+                "commissionType": "Override",
+                "rateStructure": "GroupSize",
+                "effectiveDate": "2025-01-01",
+                "endDate": null,
+                "productLines": ["Dental", "Vision"],
+                "productCodes": ["DENTAL", "VISION", "DENT_PLUS"],
+                "owner": "Underwriting Team"
+              },
+              "commissionRate": 8.0,
+              "firstYearRate": 10.0,
+              "renewalRate": 8.0,
+              "bonusRate": 1.0,
+              "rateDetails": {
+                "ratesByGroupSize": [
+                  {
+                    "groupSizeTier": "Small (1-25)",
+                    "firstYearRate": 12.0,
+                    "renewalRate": 10.0
+                  },
+                  {
+                    "groupSizeTier": "Medium (26-100)",
+                    "firstYearRate": 10.0,
+                    "renewalRate": 8.0
+                  },
+                  {
+                    "groupSizeTier": "Large (101-500)",
+                    "firstYearRate": 8.0,
+                    "renewalRate": 6.0
+                  }
+                ]
+              },
+              "paidBrokerId": 23456,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T10:30:00Z"
+            }
+          ]
+        },
+        {
+          "level": 3,
+          "levelName": "Regional Manager",
+          "sortOrder": 3,
+          "participants": [
+            {
+              "id": "HP-1-3",
+              "hierarchyVersionId": "HV-G25992-1-V2",
+              "entityId": 34567,
+              "entityName": "Davis, Jennifer",
+              "entityType": "Broker",
+              "npn": "NPN345678901",
+              "level": 3,
+              "sortOrder": 3,
+              "splitPercent": 15.0,
+              "scheduleCode": "SCH-DENTAL-TIER3-2025",
+              "scheduleId": 1003,
+              "schedule": {
+                "id": 1003,
+                "externalId": "SCH-DENTAL-TIER3-2025",
+                "name": "Dental Tier 3 - 2025",
+                "description": "Regional manager override rates",
+                "status": "Active",
+                "commissionType": "Override",
+                "rateStructure": "Flat",
+                "effectiveDate": "2025-01-01",
+                "endDate": null,
+                "productLines": ["Dental", "Vision"],
+                "productCodes": ["DENTAL", "VISION", "DENT_PLUS"]
+              },
+              "commissionRate": 4.0,
+              "firstYearRate": 5.0,
+              "renewalRate": 4.0,
+              "bonusRate": 0.5,
+              "rateDetails": {
+                "flatRate": true,
+                "firstYearRate": 5.0,
+                "renewalRate": 4.0
+              },
+              "paidBrokerId": 34567,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T10:30:00Z"
+            }
+          ]
+        },
+        {
+          "level": 4,
+          "levelName": "MGA Override",
+          "sortOrder": 4,
+          "participants": [
+            {
+              "id": "HP-1-4",
+              "hierarchyVersionId": "HV-G25992-1-V2",
+              "entityId": 45678,
+              "entityName": "Elite Insurance MGA",
+              "entityType": "Organization",
+              "taxId": "EIN-12-3456789",
+              "level": 4,
+              "sortOrder": 4,
+              "splitPercent": 5.0,
+              "scheduleCode": "SCH-DENTAL-MGA-2025",
+              "scheduleId": 1004,
+              "schedule": {
+                "id": 1004,
+                "externalId": "SCH-DENTAL-MGA-2025",
+                "name": "MGA Override - 2025",
+                "description": "Managing General Agent override rates",
+                "status": "Active",
+                "commissionType": "Override",
+                "rateStructure": "Flat",
+                "effectiveDate": "2025-01-01",
+                "endDate": null,
+                "productLines": ["All"],
+                "productCodes": ["*"]
+              },
+              "commissionRate": 2.0,
+              "firstYearRate": 2.5,
+              "renewalRate": 2.0,
+              "bonusRate": 0.0,
+              "rateDetails": {
+                "flatRate": true,
+                "firstYearRate": 2.5,
+                "renewalRate": 2.0
+              },
+              "paidBrokerId": 45678,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T10:30:00Z"
+            }
+          ]
+        }
+      ],
+      "totals": {
+        "totalSplitPercent": 100.0,
+        "totalCommissionRate": 29.0,
+        "tierCount": 4,
+        "participantCount": 4,
+        "activeAssignments": 0
+      }
+    },
+    {
+      "hierarchy": {
+        "id": "H-G25992-2",
+        "name": "Johnson's Regional Team",
+        "description": "Regional partner team with 3-tier structure",
+        "type": 0,
+        "typeName": "Commission",
+        "status": 0,
+        "statusName": "Active",
+        "proposalId": "P-G25992-DENTAL",
+        "proposalNumber": "PRO-2025-0123",
+        "groupId": "G25992",
+        "groupName": "ABC Manufacturing Co.",
+        "groupNumber": "ABC-001",
+        "brokerId": 67890,
+        "brokerName": "Johnson, Mary",
+        "brokerLevel": 1,
+        "contractId": "CONTRACT-790",
+        "contractNumber": "CNT-2025-0457",
+        "effectiveDate": "2025-01-01T00:00:00Z",
+        "expiryDate": null,
+        "currentVersionId": "HV-G25992-2-V1",
+        "currentVersionNumber": "1.0",
+        "isActive": true,
+        "creationTime": "2024-12-15T11:00:00Z"
+      },
+      "currentVersion": {
+        "versionId": "HV-G25992-2-V1",
+        "versionNumber": "1.0",
+        "effectiveDate": "2025-01-01T00:00:00Z",
+        "expiryDate": null,
+        "changeReason": "Initial regional partner hierarchy",
+        "totalParticipants": 3,
+        "tierCount": 3
+      },
+      "tiers": [
+        {
+          "level": 1,
+          "levelName": "Partner Agent",
+          "sortOrder": 1,
+          "participants": [
+            {
+              "id": "HP-2-1",
+              "hierarchyVersionId": "HV-G25992-2-V1",
+              "entityId": 67890,
+              "entityName": "Johnson, Mary",
+              "entityType": "Broker",
+              "npn": "NPN987654321",
+              "level": 1,
+              "sortOrder": 1,
+              "splitPercent": 60.0,
+              "scheduleCode": "SCH-DENTAL-PARTNER-2025",
+              "scheduleId": 1005,
+              "schedule": {
+                "id": 1005,
+                "externalId": "SCH-DENTAL-PARTNER-2025",
+                "name": "Partner Agent - Dental 2025",
+                "description": "Regional partner agent rates",
+                "status": "Active",
+                "commissionType": "Tiered",
+                "rateStructure": "GroupSize",
+                "effectiveDate": "2025-01-01",
+                "endDate": null,
+                "productLines": ["Dental"],
+                "productCodes": ["DENTAL"]
+              },
+              "commissionRate": 14.0,
+              "firstYearRate": 16.0,
+              "renewalRate": 14.0,
+              "bonusRate": 1.5,
+              "paidBrokerId": 67890,
+              "assignmentOverrides": [
+                {
+                  "assignmentId": "ASG-001",
+                  "assignedToBrokerId": 78901,
+                  "assignedToBrokerName": "Anderson, Tom",
+                  "assignmentPercent": 50.0,
+                  "effectiveFrom": "2025-01-01T00:00:00Z",
+                  "effectiveTo": null,
+                  "reason": "Temporary coverage during leave"
+                }
+              ],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T11:00:00Z"
+            }
+          ]
+        },
+        {
+          "level": 2,
+          "levelName": "Regional Supervisor",
+          "sortOrder": 2,
+          "participants": [
+            {
+              "id": "HP-2-2",
+              "hierarchyVersionId": "HV-G25992-2-V1",
+              "entityId": 56789,
+              "entityName": "Martinez, Carlos",
+              "entityType": "Broker",
+              "npn": "NPN456789012",
+              "level": 2,
+              "sortOrder": 2,
+              "splitPercent": 30.0,
+              "scheduleCode": "SCH-DENTAL-TIER2-2025",
+              "scheduleId": 1002,
+              "schedule": {
+                "id": 1002,
+                "externalId": "SCH-DENTAL-TIER2-2025",
+                "name": "Dental Tier 2 - 2025",
+                "description": "Supervising agent override rates"
+              },
+              "commissionRate": 8.0,
+              "firstYearRate": 10.0,
+              "renewalRate": 8.0,
+              "bonusRate": 1.0,
+              "paidBrokerId": 56789,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T11:00:00Z"
+            }
+          ]
+        },
+        {
+          "level": 3,
+          "levelName": "MGA Override",
+          "sortOrder": 3,
+          "participants": [
+            {
+              "id": "HP-2-3",
+              "hierarchyVersionId": "HV-G25992-2-V1",
+              "entityId": 45678,
+              "entityName": "Elite Insurance MGA",
+              "entityType": "Organization",
+              "taxId": "EIN-12-3456789",
+              "level": 3,
+              "sortOrder": 3,
+              "splitPercent": 10.0,
+              "scheduleCode": "SCH-DENTAL-MGA-2025",
+              "scheduleId": 1004,
+              "schedule": {
+                "id": 1004,
+                "externalId": "SCH-DENTAL-MGA-2025",
+                "name": "MGA Override - 2025",
+                "description": "Managing General Agent override rates"
+              },
+              "commissionRate": 2.0,
+              "firstYearRate": 2.5,
+              "renewalRate": 2.0,
+              "bonusRate": 0.0,
+              "paidBrokerId": 45678,
+              "assignmentOverrides": [],
+              "isDeleted": false,
+              "creationTime": "2024-12-15T11:00:00Z"
+            }
+          ]
+        }
+      ],
+      "totals": {
+        "totalSplitPercent": 100.0,
+        "totalCommissionRate": 24.0,
+        "tierCount": 3,
+        "participantCount": 3,
+        "activeAssignments": 1
+      }
+    }
+  ],
+  "metadata": {
+    "generatedAt": "2026-01-28T00:00:00Z",
+    "description": "Example split configuration with two hierarchies showing multi-tier commission structures",
+    "notes": [
+      "Split 1 (60%): 4-tier hierarchy with writing agent, supervisor, regional manager, and MGA",
+      "Split 2 (40%): 3-tier hierarchy with partner agent (has assignment), supervisor, and MGA",
+      "Total split adds to 100%",
+      "Each tier has its own schedule with state-specific and group-size-tiered rates",
+      "Waterfall calculation applies: each tier gets their rate percentage of the split premium",
+      "Assignment override on Split 2 Tier 1: 50% of Johnson's commission goes to Anderson"
+    ],
+    "calculationExample": {
+      "premiumAmount": 1000.0,
+      "split1Amount": 600.0,
+      "split1Distribution": {
+        "tier1_smith": {
+          "splitPremium": 600.0,
+          "rate": 15.0,
+          "commission": 90.0
+        },
+        "tier2_williams": {
+          "splitPremium": 600.0,
+          "rate": 8.0,
+          "commission": 48.0
+        },
+        "tier3_davis": {
+          "splitPremium": 600.0,
+          "rate": 4.0,
+          "commission": 24.0
+        },
+        "tier4_mga": {
+          "splitPremium": 600.0,
+          "rate": 2.0,
+          "commission": 12.0
+        },
+        "split1Total": 174.0
+      },
+      "split2Amount": 400.0,
+      "split2Distribution": {
+        "tier1_johnson": {
+          "splitPremium": 400.0,
+          "rate": 14.0,
+          "baseCommission": 56.0,
+          "assignment_anderson": 28.0,
+          "johnson_receives": 28.0
+        },
+        "tier2_martinez": {
+          "splitPremium": 400.0,
+          "rate": 8.0,
+          "commission": 32.0
+        },
+        "tier3_mga": {
+          "splitPremium": 400.0,
+          "rate": 2.0,
+          "commission": 8.0
+        },
+        "split2Total": 96.0
+      },
+      "grandTotal": 270.0,
+      "effectiveCommissionRate": 27.0
+    }
+  }
+}

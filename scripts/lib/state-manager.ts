@@ -44,11 +44,28 @@ export class ETLStateManager {
   private currentRunId: string | null = null;
   private currentStepId: string | null = null;
   private schemaName: string = 'etl';
+  private stateTablesExist: boolean = false;
 
   constructor(pool: sql.ConnectionPool, schemaName?: string) {
     this.pool = pool;
     if (schemaName) {
       this.schemaName = schemaName;
+    }
+  }
+  
+  /**
+   * Check if state management tables exist
+   */
+  async checkStateTablesExist(): Promise<boolean> {
+    try {
+      await this.pool.request().query(`
+        SELECT TOP 1 1 FROM [${this.schemaName}].[etl_run_state]
+      `);
+      this.stateTablesExist = true;
+      return true;
+    } catch {
+      this.stateTablesExist = false;
+      return false;
     }
   }
 
@@ -61,6 +78,19 @@ export class ETLStateManager {
     totalSteps: number,
     config?: any
   ): Promise<string> {
+    // Check if state tables exist first
+    if (!this.stateTablesExist) {
+      await this.checkStateTablesExist();
+    }
+    
+    if (!this.stateTablesExist) {
+      console.log('⚠️  State tables not found - running without state tracking');
+      // Generate a valid GUID for compatibility with UNIQUEIDENTIFIER parameters
+      const crypto = require('crypto');
+      this.currentRunId = crypto.randomUUID();
+      return this.currentRunId;
+    }
+    
     const request = this.pool.request();
     
     const configSnapshot = config ? JSON.stringify(config) : null;
@@ -86,8 +116,8 @@ export class ETLStateManager {
     script: string,
     completedSteps: number
   ): Promise<void> {
-    if (!this.currentRunId) {
-      throw new Error('No active run. Call startRun first.');
+    if (!this.currentRunId || !this.stateTablesExist) {
+      return;
     }
 
     await this.pool.request()
@@ -103,8 +133,9 @@ export class ETLStateManager {
    * Complete the current run successfully
    */
   async completeRun(): Promise<void> {
-    if (!this.currentRunId) {
-      throw new Error('No active run. Call startRun first.');
+    if (!this.currentRunId || !this.stateTablesExist) {
+      this.currentRunId = null;
+      return;
     }
 
     await this.pool.request()
@@ -118,8 +149,9 @@ export class ETLStateManager {
    * Fail the current run
    */
   async failRun(error: Error, canResume: boolean = true): Promise<void> {
-    if (!this.currentRunId) {
-      throw new Error('No active run. Call startRun first.');
+    if (!this.currentRunId || !this.stateTablesExist) {
+      this.currentRunId = null;
+      return;
     }
 
     const errorMessage = `${error.name}: ${error.message}\n${error.stack}`;
@@ -145,7 +177,13 @@ export class ETLStateManager {
     if (!this.currentRunId) {
       throw new Error('No active run. Call startRun first.');
     }
-
+    
+    if (!this.stateTablesExist) {
+      const crypto = require('crypto');
+      this.currentStepId = crypto.randomUUID();
+      return this.currentStepId;
+    }
+    
     const request = this.pool.request();
     
     const result = await request
@@ -166,8 +204,11 @@ export class ETLStateManager {
    */
   async completeStep(stepId?: string, recordsProcessed?: number): Promise<void> {
     const id = stepId || this.currentStepId;
-    if (!id) {
-      throw new Error('No active step. Call startStep first.');
+    if (!id || !this.stateTablesExist) {
+      if (!stepId) {
+        this.currentStepId = null;
+      }
+      return;
     }
 
     await this.pool.request()
@@ -185,8 +226,11 @@ export class ETLStateManager {
    */
   async failStep(stepId: string | undefined, error: Error): Promise<void> {
     const id = stepId || this.currentStepId;
-    if (!id) {
-      throw new Error('No active step. Call startStep first.');
+    if (!id || !this.stateTablesExist) {
+      if (!stepId) {
+        this.currentStepId = null;
+      }
+      return;
     }
 
     const errorMessage = `${error.name}: ${error.message}\n${error.stack}`;

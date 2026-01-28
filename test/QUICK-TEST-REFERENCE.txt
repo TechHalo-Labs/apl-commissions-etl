@@ -1,0 +1,133 @@
+═══════════════════════════════════════════════════════════════════════════════
+  HIERARCHY FIX - FOCUSED TEST QUICK REFERENCE
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 RUN THE TEST
+───────────────────────────────────────────────────────────────────────────────
+cd /Users/kennpalm/Downloads/source/APL/apl-commissions-etl/test
+./run-hierarchy-test.sh
+
+OR
+
+sqlcmd -S "halo-sql.database.windows.net" -d "halo-sqldb" -U "azadmin" \
+       -P 'AzureSQLWSXHjj!jks7600' -C -i test/test-hierarchy-fix.sql
+
+───────────────────────────────────────────────────────────────────────────────
+⏱️  Duration: ~10-15 seconds
+🎯 Scope: Group G16163 only (10 proposals, 4 split sequences)
+───────────────────────────────────────────────────────────────────────────────
+
+
+✅ EXPECTED RESULTS (Test Pass)
+───────────────────────────────────────────────────────────────────────────────
+✅ PASS: CertSplitSeq to Hierarchy ratio is 1:1 (4 hierarchies)
+✅ PASS: All hierarchies have valid GroupId
+✅ PASS: All hierarchies have valid BrokerId
+✅ PASS: All hierarchies have valid HierarchyId
+
+🎉 The fix is working correctly!
+   - No consolidation by StructureSignature
+   - Each CertSplitSeq has its own hierarchy
+   - All foreign keys are valid
+   - Ready for full ETL run
+
+
+❌ FAILURE INDICATORS (Test Fail)
+───────────────────────────────────────────────────────────────────────────────
+❌ FAIL: CertSplitSeq to Hierarchy ratio is not 1:1
+   Expected: 4 hierarchies
+   Got: 1 hierarchies  ← Still consolidating!
+
+❌ FAIL: Found X hierarchies with NULL GroupId
+❌ FAIL: Found X hierarchies with NULL BrokerId
+
+
+KEY METRICS
+───────────────────────────────────────────────────────────────────────────────
+Metric                          Expected    Description
+────────────────────────────────────────────────────────────────────────────
+CertSplitSeq count              4           Unique splits in G16163
+Hierarchies created             4           Should match (1:1 ratio)
+Mapping ratio                   1.00        Must be exactly 1.00
+Duplicate CertSplitSeq          0           Must be 0
+NULL GroupId                    0           Must be 0
+NULL BrokerId                   0           Must be 0
+NULL HierarchyId                0           Must be 0
+Proposals with hierarchy        10          All 10 proposals covered
+
+
+WHAT THE TEST VALIDATES
+───────────────────────────────────────────────────────────────────────────────
+✓ No consolidation by StructureSignature
+✓ 1-to-1 mapping: CertSplitSeq → Hierarchy
+✓ Referential integrity: All foreign keys valid
+✓ Data quality: No NULL values
+✓ Proposal coverage: All proposals have hierarchies
+
+
+IF TEST PASSES → NEXT STEPS
+───────────────────────────────────────────────────────────────────────────────
+1. Run full transform (with verification):
+   cd /Users/kennpalm/Downloads/source/APL/apl-commissions-etl
+   npx tsx scripts/run-pipeline.ts --step-by-step --transforms-only
+
+2. Validate all groups:
+   -- Check hierarchy coverage across all groups
+   SELECT 
+       COUNT(*) AS total_proposals,
+       SUM(CASE WHEN EXISTS (
+           SELECT 1 FROM Hierarchies h WHERE h.ProposalId = p.Id
+       ) THEN 1 ELSE 0 END) AS with_hierarchy
+   FROM Proposals p;
+   -- Target: 95%+ with hierarchies
+
+3. Export to production:
+   npx tsx scripts/run-pipeline.ts --export-only
+
+
+IF TEST FAILS → TROUBLESHOOTING
+───────────────────────────────────────────────────────────────────────────────
+Problem: Still consolidating (ratio not 1:1)
+Fix: 
+  1. Check 07-hierarchies.sql line 95 has NO GROUP BY
+  2. Verify changes were saved
+  3. Re-run test
+
+Problem: NULL values detected
+Fix:
+  1. Check if stg_groups/stg_brokers are populated
+  2. Run brokers/groups transforms first if needed
+
+Problem: Proposals not resolving
+Fix:
+  1. Check if stg_proposals is populated
+  2. Verify G16163 proposals exist
+
+
+DOCUMENTATION
+───────────────────────────────────────────────────────────────────────────────
+📄 Full test guide:        test/TEST-GUIDE.md
+📄 Fix documentation:      FIX-HIERARCHY-CONSOLIDATION.md
+📄 Test SQL script:        test/test-hierarchy-fix.sql
+📄 Runner script:          test/run-hierarchy-test.sh
+
+
+QUICK VALIDATION AFTER FULL ETL
+───────────────────────────────────────────────────────────────────────────────
+-- Check for orphaned proposals (should be near 0%)
+SELECT 
+    COUNT(*) AS total_proposals,
+    SUM(CASE WHEN NOT EXISTS (
+        SELECT 1 FROM Hierarchies h WHERE h.ProposalId = p.Id
+    ) THEN 1 ELSE 0 END) AS orphaned,
+    CAST(SUM(CASE WHEN NOT EXISTS (
+        SELECT 1 FROM Hierarchies h WHERE h.ProposalId = p.Id
+    ) THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS DECIMAL(5,2)) AS orphaned_pct
+FROM Proposals p
+WHERE p.Status = 2;
+
+-- Before fix: 76.5% orphaned
+-- After fix:  ~0% orphaned (target)
+
+
+═══════════════════════════════════════════════════════════════════════════════

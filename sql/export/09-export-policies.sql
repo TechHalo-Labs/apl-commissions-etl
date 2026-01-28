@@ -1,9 +1,10 @@
 -- =====================================================
 -- Export Policies from etl staging to dbo
--- Only exports policies that don't already exist
+-- Only exports policies for CONFORMANT and NEARLY CONFORMANT groups
+-- Also exports Direct-to-Consumer (DTC) policies (NULL/empty GroupId)
 -- =====================================================
 
-PRINT 'Exporting missing Policies to dbo.Policies...';
+PRINT 'Exporting missing Policies to dbo.Policies (conformant + nearly conformant groups + DTC)...';
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[Policies] (
     Id, PolicyNumber, CertificateNumber, OldPolicyNumber, PolicyType, [Status],
@@ -58,7 +59,17 @@ SELECT
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_policies] sp
 WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
-  AND sp.GroupId IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);  -- 🔧 Only policies for included groups
+  AND (
+    -- Export policies for conformant + nearly conformant groups
+    sp.GroupId IN (
+      SELECT GroupId 
+      FROM [$(ETL_SCHEMA)].[GroupConformanceStatistics]
+      WHERE GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
+    )
+    -- Also export Direct-to-Consumer (DTC) policies with NULL/empty GroupId
+    OR sp.GroupId IS NULL 
+    OR sp.GroupId = ''
+  )
 
 DECLARE @policyCount INT;
 SELECT @policyCount = @@ROWCOUNT;

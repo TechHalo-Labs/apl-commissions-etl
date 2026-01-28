@@ -82,17 +82,18 @@ SELECT
     GroupId,
     MAX(TRY_CAST(SUBSTRING(Id, CHARINDEX('-', Id, 4) + 1, 10) AS INT)) AS MaxNum
 INTO #max_proposal_num
-FROM [$(ETL_SCHEMA)].[stg_proposals]
+FROM [prestage].[prestage_proposals]
 WHERE Id LIKE 'P-G%'
 GROUP BY GroupId;
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
+INSERT INTO [prestage].[prestage_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, PlanCodeConstraints,
+    SplitConfigurationJSON, SplitConfigurationMD5, IsRetained, ConsumedByProposalId, ConsolidationReason,
     CreationTime, IsDeleted
 )
 SELECT
@@ -127,6 +128,11 @@ SELECT
     CASE WHEN ydk.MaxEffDate <> ydk.MinEffDate THEN ydk.MaxEffDate ELSE NULL END AS EffectiveDateTo,
     CASE WHEN ydk.PlanCode = '*' THEN 0 ELSE 1 END AS EnablePlanCodeFiltering,
     CASE WHEN ydk.PlanCode = '*' THEN NULL ELSE CONCAT('["', ydk.PlanCode, '"]') END AS PlanCodeConstraints,
+    NULL AS SplitConfigurationJSON,    -- Populated later
+    NULL AS SplitConfigurationMD5,     -- Populated later
+    0 AS IsRetained,                   -- Default 0
+    NULL AS ConsumedByProposalId,      -- Default NULL
+    NULL AS ConsolidationReason,       -- Default NULL
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
@@ -159,7 +165,7 @@ INNER JOIN [$(ETL_SCHEMA)].[year_differentiated_keys] ydk
     AND YEAR(csc.EffectiveDate) = ydk.EffYear
     AND csc.ProductCode = ydk.ProductCode
     AND csc.PlanCode = ydk.PlanCode
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p 
+INNER JOIN [prestage].[prestage_proposals] p 
     ON p.GroupId = CONCAT('G', csc.GroupId)
     AND p.ProductCodes = CONCAT('["', csc.ProductCode, '"]')
     AND (p.PlanCodes = CONCAT('["', csc.PlanCode, '"]') OR p.PlanCodes = '*')
@@ -182,7 +188,7 @@ PRINT 'Key mappings created: ' + CAST(@mappings_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Creating PremiumSplitVersions for year-differentiated proposals...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
+INSERT INTO [prestage].[prestage_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -225,7 +231,7 @@ PRINT '';
 PRINT 'Step 5: Creating PremiumSplitParticipants for year-differentiated proposals...';
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
+INSERT INTO [prestage].[prestage_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted

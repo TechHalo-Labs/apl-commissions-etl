@@ -191,6 +191,7 @@ CREATE TABLE [$(ETL_SCHEMA)].[stg_groups] (
     [Type] INT DEFAULT 0,
     IsNonConformant BIT DEFAULT 0,
     NonConformantDescription NVARCHAR(2000),
+    PrimaryBrokerId BIGINT NULL,  -- From PerfGroupModel.BrokerUniqueId
     CreationTime DATETIME2 DEFAULT GETUTCDATE(),
     IsDeleted BIT DEFAULT 0,
     CONSTRAINT PK_stg_groups PRIMARY KEY (Id)
@@ -381,6 +382,7 @@ CREATE TABLE [$(ETL_SCHEMA)].[stg_proposals] (
     EnableEffectiveDateFiltering BIT DEFAULT 0,
     ConstrainingEffectiveDateFrom DATETIME2,
     ConstrainingEffectiveDateTo DATETIME2,
+    DisplayName NVARCHAR(100),  -- Intelligent name: {GroupName} - {EffectiveDateFrom} - {SequenceNum}
     CreationTime DATETIME2 DEFAULT GETUTCDATE(),
     IsDeleted BIT DEFAULT 0,
     CONSTRAINT PK_stg_proposals PRIMARY KEY (Id)

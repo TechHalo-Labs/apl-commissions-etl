@@ -17,16 +17,24 @@
  *   --resume              Resume from last failed run
  *   --resume-from <id>    Resume from specific run ID
  *   --debug               Enable debug mode with record limits
+ *   --step-by-step        Enable manual verification mode (pauses between steps)
  *   --skip-schema         Skip schema setup
  *   --skip-ingest         Skip data ingestion
  *   --skip-transform      Skip transforms
  *   --skip-export         Skip export to production
  *   --transforms-only     Run transforms only (skip ingest and export)
  *   --export-only         Run export only (skip ingest and transforms)
+ * 
+ * Step-by-Step Mode:
+ *   npx tsx scripts/run-pipeline.ts --step-by-step
+ *   - Pauses after each step for verification
+ *   - Shows detailed verification results
+ *   - Prompts to continue before next step
  */
 
 import * as sql from 'mssql';
 import * as path from 'path';
+import * as readline from 'readline';
 import { loadConfig, getSqlConfig, validateConfig, printConfig, ETLConfig } from './lib/config-loader';
 import { ETLStateManager } from './lib/state-manager';
 import { ProgressReporter } from './lib/progress-reporter';
@@ -49,6 +57,7 @@ const flags = {
   transformsOnly: args.includes('--transforms-only'),
   exportOnly: args.includes('--export-only'),
   config: args.includes('--config') ? args[args.indexOf('--config') + 1] : undefined,
+  stepByStep: args.includes('--step-by-step'),  // NEW: Step-by-step mode with verification pauses
 };
 
 // Apply composite flags
@@ -109,6 +118,12 @@ if (!flags.resume && !flags.resumeFrom) {
 
 const scriptsDir = path.join(__dirname, '../sql');
 
+// Ingest scripts - copy data from source schema to ETL working schema
+const ingestScripts = [
+  path.join(scriptsDir, 'ingest/copy-from-poc-etl.sql'),  // Main data copy
+  path.join(scriptsDir, 'ingest/populate-input-tables.sql')  // Populate input_* from raw_*
+];
+
 // Schema setup scripts - conditional based on POC mode
 // In POC mode, skip 00-schema-setup.sql and 00a-state-management-tables.sql
 // because schemas are already created by setup-poc-schemas.ts
@@ -118,6 +133,8 @@ const schemaScripts = config.database.pocMode === true
       path.join(scriptsDir, '01-raw-tables.sql'),
       path.join(scriptsDir, '02-input-tables.sql'),
       path.join(scriptsDir, '03-staging-tables.sql'),
+      path.join(scriptsDir, '03a-prestage-tables.sql'),  // NEW: Pre-stage schema
+      path.join(scriptsDir, '03b-conformance-table.sql'),  // NEW: Conformance statistics table
     ]
   : [
       // Standard mode: Full schema setup
@@ -126,6 +143,8 @@ const schemaScripts = config.database.pocMode === true
       path.join(scriptsDir, '01-raw-tables.sql'),
       path.join(scriptsDir, '02-input-tables.sql'),
       path.join(scriptsDir, '03-staging-tables.sql'),
+      path.join(scriptsDir, '03a-prestage-tables.sql'),  // NEW: Pre-stage schema
+      path.join(scriptsDir, '03b-conformance-table.sql'),  // NEW: Conformance statistics table
     ];
 
 const transformScripts = [
@@ -139,14 +158,17 @@ const transformScripts = [
   path.join(scriptsDir, 'transforms/06c-proposals-plan-differentiated.sql'),
   path.join(scriptsDir, 'transforms/06d-proposals-year-differentiated.sql'),
   path.join(scriptsDir, 'transforms/06e-proposals-granular.sql'),
-  path.join(scriptsDir, 'transforms/06f-consolidate-proposals.sql'),
+  // REMOVED: path.join(scriptsDir, 'transforms/06f-consolidate-proposals.sql'),  // OLD SQL consolidation
+  path.join(scriptsDir, 'transforms/06f-populate-prestage-split-configs.sql'),  // NEW: Pre-stage split config JSON
   path.join(scriptsDir, 'transforms/06g-normalize-proposal-date-ranges.sql'),
   path.join(scriptsDir, 'transforms/06z-update-proposal-broker-names.sql'),
   path.join(scriptsDir, 'transforms/07-hierarchies.sql'),
+  path.join(scriptsDir, 'transforms/08-analyze-conformance.sql'),  // NEW: Analyze group conformance (guides export filtering)
   path.join(scriptsDir, 'transforms/08-hierarchy-splits.sql'),
   path.join(scriptsDir, 'transforms/09-policies.sql'),
   path.join(scriptsDir, 'transforms/10-premium-transactions.sql'),
   path.join(scriptsDir, 'transforms/11-policy-hierarchy-assignments.sql'),
+  path.join(scriptsDir, 'transforms/99-audit-and-cleanup.sql'),  // NEW: Post-transform audit and data fixes
 ];
 
 const exportScripts = [
@@ -171,6 +193,86 @@ const exportScripts = [
 ];
 
 // =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Get step metadata for rich display
+ */
+function getStepMetadata(scriptName: string): { description?: string; testHint?: string } {
+  const metadata: Record<string, { description: string; testHint: string }> = {
+    'copy-from-poc-etl.sql': {
+      description: '⚠️ CRITICAL: Copies raw data from source schema to ETL working schema',
+      testHint: 'SELECT COUNT(*) FROM [etl].[raw_certificate_info]; -- expect ~1.5M'
+    },
+    'populate-input-tables.sql': {
+      description: 'Transforms raw_* tables into input_* staging format',
+      testHint: 'SELECT COUNT(*) FROM [etl].[input_certificate_info]; -- expect ~1.5M'
+    },
+    '01-brokers.sql': {
+      description: 'Transforms broker data (individuals + organizations)',
+      testHint: 'SELECT COUNT(*), SUM(CASE WHEN ExternalPartyId IS NOT NULL THEN 1 ELSE 0 END) AS with_id FROM [etl].[stg_brokers];'
+    },
+    '02-groups.sql': {
+      description: 'Transforms employer groups with PrimaryBrokerId',
+      testHint: 'SELECT COUNT(*), SUM(CASE WHEN PrimaryBrokerId IS NOT NULL THEN 1 ELSE 0 END) AS with_broker FROM [etl].[stg_groups];'
+    },
+    '04-schedules.sql': {
+      description: '⚠️ CRITICAL: Transforms commission schedules (must find schedules!)',
+      testHint: 'SELECT COUNT(*) FROM [etl].[stg_schedules]; -- expect ~600-700, if 0 = FAIL!'
+    },
+    '07-hierarchies.sql': {
+      description: '⚠️ CRITICAL: Creates hierarchies with commission splits',
+      testHint: 'SELECT CAST(SUM(CASE WHEN ScheduleId IS NOT NULL THEN 1 ELSE 0 END)*100.0/COUNT(*) AS DECIMAL(5,2)) AS schedule_link_pct FROM [etl].[stg_hierarchy_participants];'
+    },
+    '99-audit-and-cleanup.sql': {
+      description: '⚠️ IMPORTANT: Final data quality audit and cleanup',
+      testHint: 'Review audit output above for data quality metrics'
+    }
+  };
+  
+  return metadata[scriptName] || {};
+}
+
+/**
+ * Prompt user for confirmation in step-by-step mode
+ */
+function askToContinue(currentStep: number, totalSteps: number, scriptName: string): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  const metadata = getStepMetadata(scriptName);
+  
+  return new Promise((resolve) => {
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(`  Step ${currentStep}/${totalSteps} completed: ${scriptName}`);
+    if (metadata.description) {
+      console.log(`  📋 ${metadata.description}`);
+    }
+    console.log(`${'═'.repeat(60)}`);
+    
+    if (metadata.testHint) {
+      console.log(`\n  💡 Quick Test:`);
+      console.log(`     ${metadata.testHint}`);
+    }
+    console.log(`\n  📚 Full test queries: STEP-BY-STEP-TEST-GUIDE.md`);
+    console.log(`  🔧 Dedicated scripts: run-ingest-step-by-step.ts / run-transforms-step-by-step.ts\n`);
+    
+    rl.question('Continue to next step? (y/n/q to quit): ', (answer) => {
+      rl.close();
+      const ans = answer.toLowerCase();
+      if (ans === 'q' || ans === 'quit' || ans === 'n' || ans === 'no') {
+        resolve(false);
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+
+// =============================================================================
 // Main Pipeline
 // =============================================================================
 
@@ -190,6 +292,7 @@ async function main() {
     // Calculate total steps
     let totalSteps = 0;
     if (!flags.skipSchema) totalSteps += schemaScripts.length;
+    if (!flags.skipIngest) totalSteps += ingestScripts.length;
     if (!flags.skipTransform) totalSteps += transformScripts.length;
     if (!flags.skipExport) totalSteps += exportScripts.length;
     
@@ -229,12 +332,25 @@ async function main() {
     
     progress.logRunStart(runName, runType, totalSteps);
     
+    // Display step-by-step mode notice
+    if (flags.stepByStep) {
+      console.log('\n' + '━'.repeat(60));
+      console.log('📋 STEP-BY-STEP MODE ENABLED');
+      console.log('━'.repeat(60));
+      console.log('Pipeline will pause after each step for verification.');
+      console.log('\n💡 TIP: For richer descriptions and comprehensive test queries:');
+      console.log('   • Ingest:     npx tsx scripts/run-ingest-step-by-step.ts');
+      console.log('   • Transforms: npx tsx scripts/run-transforms-step-by-step.ts');
+      console.log('\n📚 Full testing guide: STEP-BY-STEP-TEST-GUIDE.md');
+      console.log('━'.repeat(60) + '\n');
+    }
+    
     let currentStep = 0;
     const startTime = Date.now();
     
     // Phase 1: Schema Setup
     if (!flags.skipSchema) {
-      progress.logPhase('Schema Setup', 1, 5);
+      progress.logPhase('Schema Setup', 1, 6);
       
       for (const scriptPath of schemaScripts) {
         currentStep++;
@@ -276,10 +392,66 @@ async function main() {
       progress.logPhaseComplete('Schema Setup', phaseTime);
     }
     
-    // Phase 2: Transforms
+    // Phase 2: Data Ingest
+    if (!flags.skipIngest) {
+      const phaseStartTime = Date.now();
+      progress.logPhase('Data Ingest', 2, 6);
+      
+      for (const scriptPath of ingestScripts) {
+        currentStep++;
+        const scriptName = path.basename(scriptPath);
+        const stepStartTime = Date.now();
+        
+        progress.logStep(scriptName, currentStep, totalSteps);
+        
+        const stepId = await stateManager.startStep(
+          currentStep,
+          scriptPath,
+          scriptName,
+          'Ingest'
+        );
+        
+        try {
+          const result = await executeSQLScript({
+            config,
+            pool,
+            scriptPath,
+            stepId,
+            debugMode: config.debugMode.enabled,
+            pocMode: config.database.pocMode === true
+          });
+          
+          await stateManager.completeStep(stepId, result.recordsAffected);
+          await stateManager.updateProgress('Ingest', scriptName, scriptPath, currentStep);
+          
+          const duration = (Date.now() - stepStartTime) / 1000;
+          progress.logStepComplete(scriptName, duration, result.recordsAffected);
+          
+          // Step-by-step mode: Pause for verification
+          if (flags.stepByStep) {
+            const shouldContinue = await askToContinue(currentStep, totalSteps, scriptName);
+            if (!shouldContinue) {
+              console.log('\n⏸️  Pipeline paused by user at ingest phase.');
+              console.log(`Resume with: npx tsx scripts/run-pipeline.ts --resume\n`);
+              await stateManager.failRun(new Error('User paused execution'), true);
+              process.exit(0);
+            }
+          }
+          
+        } catch (error) {
+          await stateManager.failStep(stepId, error as Error);
+          throw error;
+        }
+      }
+      
+      const phaseTime = (Date.now() - phaseStartTime) / 1000;
+      progress.logPhaseComplete('Data Ingest', phaseTime);
+    }
+    
+    // Phase 3: Transforms
     if (!flags.skipTransform) {
       const phaseStartTime = Date.now();
-      progress.logPhase('Data Transforms', 2, 5);
+      progress.logPhase('Data Transforms', 3, 6);
       
       for (const scriptPath of transformScripts) {
         currentStep++;
@@ -311,6 +483,17 @@ async function main() {
           const duration = (Date.now() - stepStartTime) / 1000;
           progress.logStepComplete(scriptName, duration, result.recordsAffected);
           
+          // Step-by-step mode: Pause for verification
+          if (flags.stepByStep) {
+            const shouldContinue = await askToContinue(currentStep, totalSteps, scriptName);
+            if (!shouldContinue) {
+              console.log('\n⏸️  Pipeline paused by user at transform phase.');
+              console.log(`Resume with: npx tsx scripts/run-pipeline.ts --resume\n`);
+              await stateManager.failRun(new Error('User paused execution'), true);
+              process.exit(0);
+            }
+          }
+          
         } catch (error) {
           await stateManager.failStep(stepId, error as Error);
           throw error;
@@ -319,12 +502,32 @@ async function main() {
       
       const phaseTime = (Date.now() - phaseStartTime) / 1000;
       progress.logPhaseComplete('Data Transforms', phaseTime);
+      
+      // NEW: Run TypeScript consolidation after transforms
+      console.log('\n🔄 Running proposal consolidation...');
+      const consolidationStartTime = Date.now();
+      const { consolidateProposals } = await import('./transforms/consolidate-proposals');
+      await consolidateProposals(pool, config.database.schemas.processing);
+      const consolidationTime = (Date.now() - consolidationStartTime) / 1000;
+      console.log(`✓ Consolidation completed in ${consolidationTime.toFixed(2)}s\n`);
     }
     
-    // Phase 3: Export
+    // Phase 4: Export
     if (!flags.skipExport) {
+      // ⛔ SAFETY LOCK: Export temporarily disabled during consolidation testing
+      throw new Error(
+        '⛔ EXPORT PHASE BLOCKED FOR SAFETY\n\n' +
+        'Export has been temporarily disabled to prevent accidental production writes\n' +
+        'during consolidation testing.\n\n' +
+        'To re-enable exports:\n' +
+        '1. Open scripts/run-pipeline.ts\n' +
+        '2. Remove or comment out the safety lock at line ~515\n' +
+        '3. Verify consolidation audit results first!\n\n' +
+        'For now, use: npx tsx scripts/run-pipeline.ts --skip-export'
+      );
+      
       const phaseStartTime = Date.now();
-      progress.logPhase('Export to Production', 3, 5);
+      progress.logPhase('Export to Production', 4, 6);
       
       for (const scriptPath of exportScripts) {
         currentStep++;

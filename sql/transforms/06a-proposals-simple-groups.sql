@@ -104,16 +104,18 @@ PRINT 'Certificates in simple groups: ' + CAST(@simple_certs AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Creating proposals for simple groups...';
 
--- Clear existing proposals (will rebuild)
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_proposals];
+-- Clear existing prestage proposals (will rebuild)
+TRUNCATE TABLE [prestage].[prestage_proposals];
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
+INSERT INTO [prestage].[prestage_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
-    EnablePlanCodeFiltering, CreationTime, IsDeleted
+    EnablePlanCodeFiltering,
+    SplitConfigurationJSON, SplitConfigurationMD5, IsRetained, ConsumedByProposalId, ConsolidationReason,
+    CreationTime, IsDeleted
 )
 SELECT
     CONCAT('P-G', sg.GroupId, '-1') AS Id,
@@ -146,6 +148,11 @@ SELECT
     sg.MinEffDate AS EffectiveDateFrom,
     NULL AS EffectiveDateTo,
     0 AS EnablePlanCodeFiltering,
+    NULL AS SplitConfigurationJSON,    -- Populated later
+    NULL AS SplitConfigurationMD5,     -- Populated later
+    0 AS IsRetained,                   -- Default 0
+    NULL AS ConsumedByProposalId,      -- Default NULL
+    NULL AS ConsolidationReason,       -- Default NULL
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[simple_groups] sg
@@ -175,7 +182,7 @@ SELECT DISTINCT
     p.SplitConfigHash
 FROM [$(ETL_SCHEMA)].[cert_split_configs] csc
 INNER JOIN [$(ETL_SCHEMA)].[simple_groups] sg ON sg.GroupId = csc.GroupId
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p ON p.Id = CONCAT('P-G', csc.GroupId, '-1');
+INNER JOIN [prestage].[prestage_proposals] p ON p.Id = CONCAT('P-G', csc.GroupId, '-1');
 
 DECLARE @mappings_created INT = @@ROWCOUNT;
 PRINT 'Key mappings created: ' + CAST(@mappings_created AS VARCHAR);
@@ -188,10 +195,10 @@ PRINT '';
 PRINT 'Step 5: Creating PremiumSplitVersions for simple groups...';
 
 -- Clear existing split versions (will be rebuilt for all proposal types)
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_versions];
+TRUNCATE TABLE [prestage].[prestage_premium_split_versions];
 
 -- Calculate TotalSplitPercent from ConfigJson (sum of level=1 participants)
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
+INSERT INTO [prestage].[prestage_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -229,10 +236,10 @@ PRINT '';
 PRINT 'Step 6: Creating PremiumSplitParticipants for simple groups...';
 
 -- Clear existing split participants (will be rebuilt for all proposal types)
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_premium_split_participants];
+TRUNCATE TABLE [prestage].[prestage_premium_split_participants];
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
+INSERT INTO [prestage].[prestage_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted

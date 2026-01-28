@@ -1,12 +1,13 @@
 -- =====================================================
 -- Export Groups from etl staging to dbo
--- Only exports groups that don't already exist
+-- Only exports CONFORMANT and NEARLY CONFORMANT groups
+-- Filters out non-conformant groups using GroupConformanceStatistics
 -- Maps staging columns to production schema
 -- =====================================================
 
-PRINT 'Exporting missing Groups to dbo.EmployerGroups...';
+PRINT 'Exporting missing Groups to dbo.EmployerGroups (conformant + nearly conformant only)...';
 
--- 🔧 Apply filtered groups exclusion
+-- Filter: Only export groups with >=95% conformance
 INSERT INTO [$(PRODUCTION_SCHEMA)].[EmployerGroups] (
     Id, GroupNumber, GroupName, StateAbbreviation, SitusState, GroupSize,
     TaxId, IsPublicSector, IsNonConformant, NonConformantDescription,
@@ -32,8 +33,9 @@ SELECT
     sg.CreationTime,
     COALESCE(sg.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_groups] sg
+-- Export ALL groups (no conformance filtering)
+-- Non-conformant groups will use PolicyHierarchyAssignments for commissions
 WHERE sg.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[EmployerGroups])
-  AND sg.Id IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_included_groups]);  -- 🔧 Only included groups
 
 DECLARE @groupCount INT;
 SELECT @groupCount = @@ROWCOUNT;

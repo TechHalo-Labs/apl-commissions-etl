@@ -5,14 +5,145 @@ SQL Server-based ETL pipeline for APL Commissions calculation, replacing the pre
 ## Architecture
 
 ```
-CSV Files → SQL Server [etl] Schema → 8-Stage Calculation → [dbo] Production
+CSV Files → SQL Server [etl] Schema → Pre-Stage → Consolidation → Stage → 8-Stage Calculation → [dbo] Production
 ```
 
 ### Key Features
 - **No intermediate database**: All processing happens in SQL Server
+- **Pre-stage with audit trail**: Unconsolidated proposals retained for full transparency
+- **TypeScript consolidation**: In-memory algorithm with explicit rules (no complex SQL)
 - **8-stage cascading calculation pipeline**: Each stage is a simple `INSERT INTO...SELECT FROM`
 - **Transferee bug fix**: Correctly handles self-payments (`BrokerId === PaidBrokerId`)
 - **Full traceability**: One traceability report per premium, one broker traceability per GL entry
+
+## Proposal Consolidation
+
+### Two-Phase Consolidation Approach
+
+The ETL uses a transparent two-phase consolidation process:
+
+1. **Pre-Stage Phase**: All proposals are retained in granular form with full split configuration JSON
+2. **Consolidation Phase**: TypeScript algorithm consolidates proposals in-memory using explicit rules
+
+### Pre-Stage Schema
+
+Pre-stage tables (schema: `prestage`) retain unconsolidated proposals for audit purposes:
+
+- `prestage_proposals` - All granular proposals with `SplitConfigurationJSON` and `SplitConfigurationMD5`
+- `prestage_hierarchies` - Unconsolidated hierarchies
+- `prestage_hierarchy_versions` - Unconsolidated hierarchy versions
+- `prestage_hierarchy_participants` - Unconsolidated hierarchy participants
+- `prestage_premium_split_versions` - Unconsolidated split versions
+- `prestage_premium_split_participants` - Unconsolidated split participants
+
+### Consolidation Rules
+
+1. **Different GroupId** → Close retained proposal, start new
+2. **Different SplitConfigurationMD5** → Close retained proposal, start new
+3. **Conflicting PlanCode** → Close retained proposal, start new
+4. **Same configuration** → Extend date range (including non-contiguous gaps), accumulate product codes
+
+### Split Configuration JSON
+
+Each proposal includes a comprehensive split configuration JSON with full hierarchy details:
+
+```json
+{
+  "totalSplitPercent": 100.0,
+  "splits": [
+    {
+      "splitPercent": 60.0,
+      "hierarchyId": "H-G25992-1",
+      "hierarchy": {
+        "hierarchyId": "H-G25992-1",
+        "hierarchyName": "Main Hierarchy",
+        "participants": [
+          {
+            "level": 1,
+            "brokerId": 12345,
+            "brokerName": "John Doe",
+            "splitPercent": 50.0,
+            "commissionRate": 15.0,
+            "scheduleCode": "RZ4",
+            "scheduleId": 789,
+            "scheduleName": "Standard Rates"
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+### Audit Trail
+
+Query to see consolidation for a group:
+
+```sql
+SELECT 
+  Id, IsRetained, ConsumedByProposalId, ConsolidationReason,
+  DateRangeFrom, DateRangeTo, ProductCodes
+FROM [prestage].[prestage_proposals]
+WHERE GroupId = 'G12345'
+ORDER BY IsRetained DESC, DateRangeFrom;
+```
+
+### Running Consolidation
+
+```bash
+# Full pipeline (includes consolidation)
+npx tsx scripts/run-pipeline.ts
+
+# Verify consolidation results
+npx tsx scripts/verify-consolidation.ts
+```
+
+### Schema Lifecycle
+
+The `prestage` schema is retained during ETL audit phase and dropped when moving to production:
+
+```bash
+# When ready for production, drop pre-stage schema
+sqlcmd -S server -d database -i sql/99-drop-prestage-schema.sql
+```
+
+## Group Conformance & Export Filtering
+
+The ETL pipeline includes **automatic conformance analysis** to ensure data quality:
+
+### Conformance Levels
+
+| Level | Criteria | Export |
+|-------|----------|--------|
+| **Conformant** | 100% of certificates map to exactly one proposal | ✅ **Exported** |
+| **Nearly Conformant** | >=95% of certificates map correctly | ✅ **Exported** |
+| **Non-Conformant** | <95% conformance | ❌ **Skipped** |
+
+### How It Works
+
+1. **Analysis Phase** (`08-analyze-conformance.sql`):
+   - Deduplicates certificates across source tables
+   - Maps each certificate to proposals via (GroupId, Year, Product, PlanCode)
+   - Calculates conformance percentage per group
+   - Stores results in `GroupConformanceStatistics` table
+
+2. **Export Filtering** (all export scripts):
+   - Groups, Proposals, Hierarchies, Policies filter by conformance
+   - Only conformant + nearly conformant groups are exported
+   - Direct-to-Consumer (DTC) policies with NULL GroupId are always exported
+
+### View Conformance Statistics
+
+```sql
+SELECT 
+    GroupClassification,
+    COUNT(*) AS GroupCount,
+    SUM(TotalCertificates) AS TotalCerts,
+    AVG(ConformancePercentage) AS AvgConformance
+FROM [etl].[GroupConformanceStatistics]
+GROUP BY GroupClassification
+ORDER BY GroupClassification;
+```
 
 ## Directory Structure
 
@@ -23,18 +154,23 @@ v5-etl/
 │   ├── 01-raw-tables.sql            # Raw table definitions
 │   ├── 02-input-tables.sql          # Input table population
 │   ├── 03-staging-tables.sql        # Staging table definitions
+│   ├── 03a-prestage-tables.sql      # Pre-stage schema (consolidation audit)
+│   ├── 03b-conformance-table.sql    # Conformance statistics table
 │   ├── bulk-insert.sql              # Template for BULK INSERT
 │   ├── transforms/
 │   │   ├── 00-references.sql        # Build reference tables
 │   │   ├── 01-brokers.sql           # Transform brokers
-│   │   └── 07-hierarchies.sql       # Transform hierarchies (WITH BUG FIX)
+│   │   ├── 07-hierarchies.sql       # Transform hierarchies (WITH BUG FIX)
+│   │   └── 08-analyze-conformance.sql # Group conformance analysis
 │   ├── calc/
 │   │   ├── 00-calc-tables.sql       # Calculation table definitions
 │   │   └── run-calculation.sql      # 8-stage calculation pipeline
 │   └── export/
-│       └── 01-export-to-dbo.sql     # Export to production
+│       └── 05-export-groups.sql     # Export to production (filtered by conformance)
 ├── scripts/
-│   └── run-pipeline.ts              # TypeScript orchestrator
+│   ├── run-pipeline.ts              # TypeScript orchestrator
+│   └── transforms/
+│       └── consolidate-proposals.ts # In-memory proposal consolidation
 ├── package.json
 └── tsconfig.json
 ```

@@ -3,10 +3,11 @@ SET NOCOUNT ON;
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 -- Export Proposals from etl staging to dbo
--- Only exports proposals that don't already exist
+-- Only exports proposals for CONFORMANT and NEARLY CONFORMANT groups
+-- Filters using GroupConformanceStatistics
 -- =====================================================
 
-PRINT 'Exporting missing Proposals to dbo.Proposals...';
+PRINT 'Exporting missing Proposals to dbo.Proposals (conformant + nearly conformant groups only)...';
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[Proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
@@ -50,9 +51,12 @@ SELECT
     sp.CreationTime,
     sp.IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_proposals] sp
-LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- NEW: Join on ExternalPartyId
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- Join on ExternalPartyId
+-- NEW: Filter by conformance (only export proposals for conformant + nearly conformant groups)
+INNER JOIN [$(ETL_SCHEMA)].[GroupConformanceStatistics] gcs
+    ON gcs.GroupId = sp.GroupId
+    AND gcs.GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
 WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
-  -- Removed stg_included_groups filter - table may not exist and prevents export of fixed proposals
   AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
   -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
   AND NOT EXISTS (

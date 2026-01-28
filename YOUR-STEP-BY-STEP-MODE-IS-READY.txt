@@ -1,0 +1,373 @@
+═══════════════════════════════════════════════════════════════════════════════
+         ✅ YOUR STEP-BY-STEP MODE IS NOW FULLY ENHANCED!
+═══════════════════════════════════════════════════════════════════════════════
+
+You asked for:
+  "In --step-by-step mode, I want a nice description for each step 
+   and a 'How to test results' section with queries to run."
+
+═══════════════════════════════════════════════════════════════════════════════
+
+                    ✅ DONE! Here's What You Got:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     ENHANCED STEP DISPLAY                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+Every step now shows:
+
+  ╔════════════════════════════════════════════════════════╗
+  ║  Step 2: Brokers                                       ║
+  ╚════════════════════════════════════════════════════════╝
+
+  📋 Description: 
+     Transforms broker data from both individual and organization rosters
+
+  🎯 Purpose:
+     Creates the master broker registry by combining individual agents 
+     and broker organizations. Sets ExternalPartyId (UniquePartyId) which 
+     is the primary identifier for brokers.
+
+  ✅ Expected Results:
+     • ~12,000 total brokers (mix of individuals and organizations)
+     • ~95%+ should have ExternalPartyId populated
+     • All brokers should have Status=0 (Active)
+     • Names should be properly formatted (not empty)
+
+  📄 Script: 01-brokers.sql
+
+  ⏳ Executing...
+  ✅ Step completed in 3.45s
+
+  [Verification results table shown]
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🔍 HOW TO TEST RESULTS:
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Copy and run these queries to verify data quality:
+
+  -- Check broker type distribution
+  SELECT BrokerType, COUNT(*) AS cnt, 
+         COUNT(DISTINCT ExternalPartyId) AS unique_ids
+  FROM [etl].[stg_brokers]
+  GROUP BY BrokerType;
+
+  -- Check for missing critical data
+  SELECT 
+      SUM(CASE WHEN ExternalPartyId IS NULL THEN 1 ELSE 0 END) AS missing_external_id,
+      SUM(CASE WHEN Name IS NULL OR Name = '' THEN 1 ELSE 0 END) AS missing_name,
+      SUM(CASE WHEN Status != 0 THEN 1 ELSE 0 END) AS inactive_status
+  FROM [etl].[stg_brokers];
+
+  -- Sample brokers
+  SELECT TOP 10 Id, Name, BrokerType, ExternalPartyId, Status 
+  FROM [etl].[stg_brokers] 
+  ORDER BY Id;
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Continue to next step? (y/n):
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│             COMPREHENSIVE TESTING GUIDE CREATED                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  📄 File: STEP-BY-STEP-TEST-GUIDE.md
+
+  Contains:
+  ✅ All 12+ transform steps fully documented
+  ✅ 3-5 test queries per step
+  ✅ Expected results with specific metrics
+  ✅ Purpose and business context
+  ✅ Critical step indicators (⚠️ CRITICAL)
+  ✅ Common issues and troubleshooting
+  ✅ Summary verification queries
+  ✅ Success criteria checklist
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         HOW TO USE IT                                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  1. Run step-by-step mode:
+
+     npx tsx scripts/run-pipeline.ts \
+       --config appsettings.poc2.json \
+       --step-by-step
+
+  2. After each step:
+     • Review the "VERIFICATION RESULTS" table
+     • Copy test queries from "HOW TO TEST RESULTS" section
+     • Paste into SQL Server Management Studio or Azure Data Studio
+     • Compare results against "Expected Results"
+     • Type 'y' to continue or 'n' to stop
+
+  3. Open the guide for reference:
+
+     code STEP-BY-STEP-TEST-GUIDE.md
+
+     Or keep it open in a second terminal/window alongside the pipeline
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    WHAT'S ENHANCED IN EACH STEP                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  Ingest Phase (2 steps):
+  ──────────────────────────────────────────────────────────────────────────────
+  ✅ Step 1: Copy Raw Data ⚠️ CRITICAL
+     • Shows if raw data exists before proceeding
+     • Test queries check all raw tables
+     • Alerts if source schema is empty
+
+  ✅ Step 2: Populate Input Tables
+     • Verifies CertSplitSeq population
+     • Checks schedule name linkage
+     • Validates data transformation
+
+
+  Transform Phase (12+ steps):
+  ──────────────────────────────────────────────────────────────────────────────
+  ✅ Step 1: References
+     • States and products lookup data
+     • Validates no duplicates
+
+  ✅ Step 2: Brokers ⭐
+     • Checks ExternalPartyId population (~95% target)
+     • Verifies Status=Active
+     • Individual vs Organization breakdown
+
+  ✅ Step 3: Groups ⭐
+     • PrimaryBrokerId population (~95% target)
+     • Real group names (not generic)
+     • Group size validation
+
+  ✅ Step 4: Products
+     • Product category distribution
+     • Missing data checks
+
+  ✅ Step 5: Schedules ⚠️ CRITICAL ⭐
+     • MUST find ~600-700 schedules
+     • ~10,000+ rates expected
+     • If 0 schedules, ETL FAILS
+     • Checks raw data exists
+
+  ✅ Step 6a-g: Proposals (7 sub-steps)
+     • Tiered proposal generation
+     • BrokerId population check
+     • Date range normalization
+     • BrokerName from Brokers table
+
+  ✅ Step 7: Hierarchies ⚠️ CRITICAL ⭐
+     • ~8,000-10,000 hierarchies expected
+     • ScheduleId linking ≥95% (CRITICAL!)
+     • No StructureSignature consolidation
+     • One hierarchy per CertSplitSeq
+
+  ✅ Step 8: Hierarchy Splits
+     • Split percent totals (100% or 200%)
+     • Participant counts
+
+  ✅ Step 9: Policies
+     • ~1.5M policies expected
+     • ProposalId resolution rates
+
+  ✅ Step 10: Policy Hierarchy Assignments
+     • ~92K non-conformant assignments
+     • ScheduleId on PHA participants
+
+  ✅ Step 11: Special Schedule Rates
+     • Year-specific rate variations
+
+  ✅ Step 12: Audit & Cleanup ⚠️ IMPORTANT ⭐
+     • Final data quality pass
+     • Fixes missing PrimaryBrokerId
+     • Fixes missing BrokerUniquePartyId
+     • Fixes NULL ScheduleId (fallback matching)
+     • Summary of all fixes applied
+
+  ⭐ = Has comprehensive test queries
+  ⚠️ = Critical must-pass step
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         EXAMPLE OUTPUT                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  $ npx tsx scripts/run-transforms-step-by-step.ts --config appsettings.poc2.json
+
+  ════════════════════════════════════════════════════════
+        TRANSFORM PHASE - STEP-BY-STEP EXECUTION
+  ════════════════════════════════════════════════════════
+
+  This script will execute each transform step individually.
+  After each step, verification results will be shown.
+  You can review the results before continuing.
+
+  📚 For detailed step descriptions and test queries, see:
+     STEP-BY-STEP-TEST-GUIDE.md (comprehensive testing guide)
+
+  Total steps: 12
+  ════════════════════════════════════════════════════════
+
+  ╔════════════════════════════════════════════════════════╗
+  ║  Step 5: Schedules ⚠️ CRITICAL                        ║
+  ╚════════════════════════════════════════════════════════╝
+
+  📋 Description: ⚠️ CRITICAL: Transforms commission schedules and rates (must succeed!)
+
+  🎯 Purpose:
+     Creates commission rate schedules from raw_schedule_rates. This step MUST 
+     find schedules in input data, or downstream steps will fail. Uses permanent 
+     work tables to avoid sqlcmd batching issues. Schedule rates define commission 
+     percentages for first-year and renewal commissions.
+
+  ✅ Expected Results:
+     • ~600-700 unique schedules
+     • ~10,000+ schedule rates (first-year + renewal)
+     • CRITICAL: If schedules = 0, ETL has failed - check raw data exists
+     • Rates should have FirstYearRate and RenewalRate populated
+
+  📄 Script: 04-schedules.sql
+
+  ⏳ Executing...
+
+  ✅ Step completed in 12.34s
+  📊 Records affected: 10,421
+
+  ┌─────────────────────────────────────────┐
+  │         VERIFICATION RESULTS            │
+  └─────────────────────────────────────────┘
+
+  Result Set 1:
+  ┌────────────────┬──────────────────┐
+  │ table          │ total_schedules  │
+  ├────────────────┼──────────────────┤
+  │ stg_schedules  │ 686              │
+  └────────────────┴──────────────────┘
+
+  Result Set 2:
+  ┌───────────────────┬──────────────┬──────────────┬───────────────────┐
+  │ table             │ total_rates  │ with_first   │ avg_first_year    │
+  ├───────────────────┼──────────────┼──────────────┼───────────────────┤
+  │ stg_schedule_rates│ 10421        │ 10421        │ 12.45             │
+  └───────────────────┴──────────────┴──────────────┴───────────────────┘
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  🔍 HOW TO TEST RESULTS:
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Copy and run these queries to verify data quality:
+
+  -- ⚠️ CRITICAL: Check schedule count (should be > 0!)
+  SELECT COUNT(*) AS total_schedules 
+  FROM [poc_etl2].[stg_schedules];
+
+  -- If 0 schedules, check if raw data exists
+  SELECT COUNT(*) AS raw_schedule_rates_count 
+  FROM [poc_etl2].[raw_schedule_rates];
+
+  -- Check schedule rate distribution
+  SELECT 
+      COUNT(*) AS total_rates,
+      SUM(CASE WHEN FirstYearRate > 0 THEN 1 ELSE 0 END) AS with_first_year,
+      SUM(CASE WHEN RenewalRate > 0 THEN 1 ELSE 0 END) AS with_renewal,
+      AVG(CAST(FirstYearRate AS FLOAT)) AS avg_first_year_rate
+  FROM [poc_etl2].[stg_schedule_rates];
+
+  -- Sample schedules with rate counts
+  SELECT TOP 10 s.Id, s.Name, s.ExternalId, COUNT(sr.Id) AS rate_count
+  FROM [poc_etl2].[stg_schedules] s
+  LEFT JOIN [poc_etl2].[stg_schedule_rates] sr ON sr.ScheduleId = s.Id
+  GROUP BY s.Id, s.Name, s.ExternalId
+  ORDER BY rate_count DESC;
+
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Continue to next step? (y/n): y
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      FILES CREATED/UPDATED                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  NEW FILES:
+  ──────────────────────────────────────────────────────────────────────────────
+  ✅ STEP-BY-STEP-TEST-GUIDE.md
+     • 500+ lines of comprehensive testing documentation
+     • Covers all ingest and transform steps
+     • Ready-to-run SQL queries for every step
+     • Success criteria and troubleshooting
+
+  ✅ STEP-BY-STEP-ENHANCEMENTS-SUMMARY.md
+     • Complete summary of enhancements
+     • Example output screenshots (text)
+     • Usage instructions
+
+  ✅ YOUR-STEP-BY-STEP-MODE-IS-READY.txt (this file)
+     • Quick overview of what you got
+
+
+  UPDATED FILES:
+  ──────────────────────────────────────────────────────────────────────────────
+  ✅ scripts/run-transforms-step-by-step.ts
+     • Enhanced TypeScript interface for steps
+     • Added purpose, expectedResults, testQueries fields
+     • Display function shows all rich information
+     • Test queries section after each step
+
+  ✅ scripts/run-ingest-step-by-step.ts
+     • Updated header to reference test guide
+
+  ✅ QUICK-REFERENCE.md
+     • Added section about step-by-step testing guide
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       TRY IT NOW!                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  # Run transforms step-by-step with poc_etl2 schema
+  cd /Users/kennpalm/Downloads/source/APL/apl-commissions-etl
+
+  npx tsx scripts/run-transforms-step-by-step.ts \
+    --config appsettings.poc2.json
+
+  # Or full pipeline
+  npx tsx scripts/run-pipeline.ts \
+    --config appsettings.poc2.json \
+    --step-by-step
+
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    WHAT YOU CAN DO NOW                                      │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ✅ Run ETL with rich, contextual descriptions for every step
+  ✅ See exactly what each step does and why it matters
+  ✅ Get specific expected results (row counts, percentages)
+  ✅ Copy/paste test queries directly from output
+  ✅ Verify data quality after each step
+  ✅ Stop at any step to investigate issues
+  ✅ Reference comprehensive testing guide for troubleshooting
+  ✅ Know which steps are critical (⚠️ indicators)
+  ✅ Get alerts if critical data is missing
+  ✅ Compare actual vs expected results easily
+
+
+═══════════════════════════════════════════════════════════════════════════════
+                         ✅ YOU'RE ALL SET!
+═══════════════════════════════════════════════════════════════════════════════
+
+Your step-by-step mode now has:
+  • Rich descriptions for EVERY step
+  • Ready-to-run test queries
+  • Expected results with specific metrics
+  • Critical step indicators
+  • Comprehensive testing guide
+
+Everything you asked for is ready to use!
+
+═══════════════════════════════════════════════════════════════════════════════
