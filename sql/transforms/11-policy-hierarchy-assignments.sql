@@ -45,11 +45,11 @@ SELECT
         WHEN p.GroupId = 'G00000' THEN 'DTC-NoGroup'
         WHEN g.IsNonConformant = 1 THEN 'NonConformant-SplitMismatch'
         WHEN EXISTS (
-            SELECT 1 FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] psv
+            SELECT 1 FROM [etl].[stg_premium_split_versions] psv
             WHERE psv.GroupId = p.GroupId AND psv.TotalSplitPercent <> 100
         ) THEN 'NonConformant-SplitMismatch'
         WHEN EXISTS (
-            SELECT 1 FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
+            SELECT 1 FROM [etl].[input_certificate_info] ci
             WHERE TRY_CAST(ci.CertificateId AS BIGINT) = TRY_CAST(p.Id AS BIGINT)
               AND ci.RecStatus = 'A'
             GROUP BY ci.CertificateId
@@ -59,17 +59,17 @@ SELECT
         ELSE 'Unknown'
     END AS NonConformantReason
 INTO #tmp_nonconformant_policies
-FROM [$(ETL_SCHEMA)].[stg_policies] p
-LEFT JOIN [$(ETL_SCHEMA)].[stg_groups] g ON g.Id = p.GroupId
+FROM [etl].[stg_policies] p
+LEFT JOIN [etl].[stg_groups] g ON g.Id = p.GroupId
 WHERE p.GroupId = 'G00000'  -- DTC policies (always)
    OR p.ProposalId IS NULL  -- Policies without proposal (always - self-regulating)
    OR (@UseNonConformantFlag = 1 AND g.IsNonConformant = 1)  -- Non-conformant groups (optional via feature flag)
    OR EXISTS (
-       SELECT 1 FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] psv
+       SELECT 1 FROM [etl].[stg_premium_split_versions] psv
        WHERE psv.GroupId = p.GroupId AND psv.TotalSplitPercent <> 100
    )  -- Groups with TotalSplitPercent != 100 (always)
    OR EXISTS (
-       SELECT 1 FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
+       SELECT 1 FROM [etl].[input_certificate_info] ci
        WHERE TRY_CAST(ci.CertificateId AS BIGINT) = TRY_CAST(p.Id AS BIGINT)
          AND ci.RecStatus = 'A'
        GROUP BY ci.CertificateId
@@ -97,7 +97,7 @@ SELECT DISTINCT
     TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) AS WritingBrokerId,
     ncp.NonConformantReason
 INTO #tmp_hierarchy_assignments
-FROM [$(ETL_SCHEMA)].[input_certificate_info] ci
+FROM [etl].[input_certificate_info] ci
 INNER JOIN #tmp_nonconformant_policies ncp ON ncp.CertificateId = TRY_CAST(ci.CertificateId AS BIGINT)
 WHERE ci.SplitBrokerSeq = 1  -- Get the assignment level (level 1 participant defines the assignment)
   AND ci.WritingBrokerID IS NOT NULL 
@@ -114,7 +114,7 @@ PRINT 'Hierarchy assignments extracted: ' + CAST(@assign_count AS VARCHAR);
 PRINT '';
 PRINT 'Step 3: Populating stg_policy_hierarchy_assignments...';
 
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments];
+TRUNCATE TABLE [etl].[stg_policy_hierarchy_assignments];
 
 -- Use CTE to deduplicate and pick best matching hierarchy
 ;WITH assignments_with_hierarchy AS (
@@ -129,10 +129,10 @@ TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments];
         ha.NonConformantReason,
         ROW_NUMBER() OVER (PARTITION BY ha.Id ORDER BY h.Id) AS rn
     FROM #tmp_hierarchy_assignments ha
-    LEFT JOIN [$(ETL_SCHEMA)].[stg_policies] p ON p.Id = ha.PolicyId
-    LEFT JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h ON h.GroupId = p.GroupId AND h.BrokerId = ha.WritingBrokerId
+    LEFT JOIN [etl].[stg_policies] p ON p.Id = ha.PolicyId
+    LEFT JOIN [etl].[stg_hierarchies] h ON h.GroupId = p.GroupId AND h.BrokerId = ha.WritingBrokerId
 )
-INSERT INTO [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] (
+INSERT INTO [etl].[stg_policy_hierarchy_assignments] (
     Id, PolicyId, CertificateId, HierarchyId, SplitPercent, WritingBrokerId,
     SplitSequence, IsNonConforming, NonConformantReason, CreationTime, IsDeleted
 )
@@ -174,13 +174,13 @@ SELECT
     ci.ReassignedType,
     TRY_CAST(REPLACE(ci.PaidBrokerId, 'P', '') AS BIGINT) AS PaidBrokerId
 INTO #tmp_participants
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
-INNER JOIN [$(ETL_SCHEMA)].[input_certificate_info] ci 
+FROM [etl].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [etl].[input_certificate_info] ci 
     ON TRY_CAST(ci.CertificateId AS BIGINT) = pha.CertificateId
     AND ci.CertSplitSeq = pha.SplitSequence
     AND TRY_CAST(REPLACE(ci.WritingBrokerID, 'P', '') AS BIGINT) = pha.WritingBrokerId
-LEFT JOIN [$(ETL_SCHEMA)].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(ci.SplitBrokerId, 'P', '') AS BIGINT)
-LEFT JOIN [$(ETL_SCHEMA)].[input_commission_details] cd 
+LEFT JOIN [etl].[stg_brokers] b ON b.Id = TRY_CAST(REPLACE(ci.SplitBrokerId, 'P', '') AS BIGINT)
+LEFT JOIN [etl].[input_commission_details] cd 
     ON cd.CertificateId = ci.CertificateId
     AND cd.SplitBrokerId = ci.SplitBrokerId
 WHERE ci.SplitBrokerId IS NOT NULL 
@@ -196,7 +196,7 @@ PRINT 'Participants extracted: ' + CAST(@part_count AS VARCHAR);
 PRINT '';
 PRINT 'Step 5: Populating stg_policy_hierarchy_participants...';
 
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants];
+TRUNCATE TABLE [etl].[stg_policy_hierarchy_participants];
 
 -- Deduplicate participants (same broker can appear in multiple commission detail rows)
 -- First aggregate, then deduplicate
@@ -220,7 +220,7 @@ deduped_participants AS (
         ROW_NUMBER() OVER (PARTITION BY Id ORDER BY CommissionRate DESC) AS rn
     FROM aggregated_participants
 )
-INSERT INTO [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants] (
+INSERT INTO [etl].[stg_policy_hierarchy_participants] (
     Id, PolicyHierarchyAssignmentId, BrokerId, BrokerName, [Level],
     CommissionRate, ScheduleCode, ScheduleId, ReassignedType, PaidBrokerId,
     CreationTime, IsDeleted
@@ -239,7 +239,7 @@ SELECT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM deduped_participants dp
-LEFT JOIN [$(ETL_SCHEMA)].[stg_schedules] s ON s.ExternalId = dp.ScheduleCode
+LEFT JOIN [etl].[stg_schedules] s ON s.ExternalId = dp.ScheduleCode
 WHERE dp.rn = 1;
 
 PRINT 'Policy hierarchy participants staged: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -262,10 +262,10 @@ SELECT DISTINCT
     p.[State] AS PolicyState,
     ci.CommissionsSchedule AS ScheduleCode
 INTO #tmp_pha_products
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
-INNER JOIN [$(ETL_SCHEMA)].[stg_policies] p ON p.Id = pha.PolicyId
-INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv ON hv.HierarchyId = pha.HierarchyId
-INNER JOIN [$(ETL_SCHEMA)].[input_certificate_info] ci 
+FROM [etl].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [etl].[stg_policies] p ON p.Id = pha.PolicyId
+INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.HierarchyId = pha.HierarchyId
+INNER JOIN [etl].[input_certificate_info] ci 
     ON ci.CertificateId = pha.PolicyId
     AND ci.CertSplitSeq = pha.SplitSequence
 WHERE pha.HierarchyId IS NOT NULL
@@ -274,7 +274,7 @@ WHERE pha.HierarchyId IS NOT NULL
 
 -- Create hierarchy splits ONLY for catch-all "ALL" state rules (Type=1)
 -- This ensures products are linked to the catch-all rule, not per-state rules
-INSERT INTO [$(ETL_SCHEMA)].[stg_hierarchy_splits] (
+INSERT INTO [etl].[stg_hierarchy_splits] (
     Id, StateRuleId, ProductId, ProductCode, ProductName, 
     SortOrder, CreationTime, IsDeleted
 )
@@ -288,12 +288,12 @@ SELECT DISTINCT
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #tmp_pha_products pp
-INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] sr 
+INNER JOIN [etl].[stg_state_rules] sr 
     ON sr.HierarchyVersionId = pp.HierarchyVersionId
     AND sr.[Type] = 1  -- Only catch-all rules (Type=1), NOT per-state rules (Type=0)
-LEFT JOIN [$(ETL_SCHEMA)].[stg_products] prod ON prod.ProductCode = pp.ProductCode
+LEFT JOIN [etl].[stg_products] prod ON prod.ProductCode = pp.ProductCode
 WHERE NOT EXISTS (
-    SELECT 1 FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
+    SELECT 1 FROM [etl].[stg_hierarchy_splits] hs
     WHERE hs.Id = CONCAT(sr.Id, '-', pp.ProductCode)
 );
 
@@ -312,14 +312,14 @@ PRINT 'VERIFICATION';
 PRINT '============================================================';
 
 SELECT 'Policy Hierarchy Assignments' AS entity, COUNT(*) AS cnt 
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments];
+FROM [etl].[stg_policy_hierarchy_assignments];
 
 SELECT 'Policy Hierarchy Participants' AS entity, COUNT(*) AS cnt 
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants];
+FROM [etl].[stg_policy_hierarchy_participants];
 
 -- Breakdown by non-conformant reason
 SELECT 'Assignments by reason' AS metric, NonConformantReason, COUNT(*) AS cnt
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments]
+FROM [etl].[stg_policy_hierarchy_assignments]
 GROUP BY NonConformantReason
 ORDER BY cnt DESC;
 
@@ -327,24 +327,24 @@ ORDER BY cnt DESC;
 SELECT 'Assignments with linked hierarchy' AS metric,
     SUM(CASE WHEN HierarchyId IS NOT NULL THEN 1 ELSE 0 END) AS with_hierarchy,
     SUM(CASE WHEN HierarchyId IS NULL THEN 1 ELSE 0 END) AS without_hierarchy
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments];
+FROM [etl].[stg_policy_hierarchy_assignments];
 
 -- Participants with schedules
 SELECT 'Participants with schedule' AS metric,
     SUM(CASE WHEN ScheduleId IS NOT NULL THEN 1 ELSE 0 END) AS with_schedule,
     SUM(CASE WHEN ScheduleId IS NULL THEN 1 ELSE 0 END) AS without_schedule
-FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_participants];
+FROM [etl].[stg_policy_hierarchy_participants];
 
 -- Hierarchy splits count (should only be on catch-all "ALL" rules)
 SELECT 'Total Hierarchy Splits' AS metric, COUNT(*) AS cnt
-FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits];
+FROM [etl].[stg_hierarchy_splits];
 
 -- Catch-all vs per-state splits breakdown
 SELECT 'Hierarchy Splits by rule type' AS metric,
     CASE WHEN sr.[Type] = 1 THEN 'Catch-all (ALL)' ELSE 'Per-state' END AS rule_type,
     COUNT(*) AS split_count
-FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
-INNER JOIN [$(ETL_SCHEMA)].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+FROM [etl].[stg_hierarchy_splits] hs
+INNER JOIN [etl].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
 GROUP BY CASE WHEN sr.[Type] = 1 THEN 'Catch-all (ALL)' ELSE 'Per-state' END;
 
 -- Cleanup temp tables

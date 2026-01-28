@@ -60,17 +60,18 @@ SELECT
     GroupId,
     MAX(TRY_CAST(SUBSTRING(Id, CHARINDEX('-', Id, 4) + 1, 10) AS INT)) AS MaxNum
 INTO #max_proposal_num
-FROM [$(ETL_SCHEMA)].[stg_proposals]
+FROM [prestage].[prestage_proposals]
 WHERE Id LIKE 'P-G%'
 GROUP BY GroupId;
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_proposals] (
+INSERT INTO [prestage].[prestage_proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
     SpecialCase, SpecialCaseCode, SitusState,
     BrokerUniquePartyId, BrokerName, GroupId, GroupName, Notes,
     ProductCodes, PlanCodes, SplitConfigHash, DateRangeFrom, DateRangeTo,
     EnableEffectiveDateFiltering, EffectiveDateFrom, EffectiveDateTo,
     EnablePlanCodeFiltering, PlanCodeConstraints,
+    SplitConfigurationJSON, SplitConfigurationMD5, IsRetained, ConsumedByProposalId, ConsolidationReason,
     CreationTime, IsDeleted
 )
 SELECT
@@ -105,6 +106,11 @@ SELECT
     CASE WHEN gk.MaxEffDate <> gk.MinEffDate THEN gk.MaxEffDate ELSE NULL END AS EffectiveDateTo,
     CASE WHEN gk.PlanCode = '*' THEN 0 ELSE 1 END AS EnablePlanCodeFiltering,
     CASE WHEN gk.PlanCode = '*' THEN NULL ELSE CONCAT('["', gk.PlanCode, '"]') END AS PlanCodeConstraints,
+    NULL AS SplitConfigurationJSON,    -- Populated later
+    NULL AS SplitConfigurationMD5,     -- Populated later
+    0 AS IsRetained,                   -- Default 0
+    NULL AS ConsumedByProposalId,      -- Default NULL
+    NULL AS ConsolidationReason,       -- Default NULL
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[granular_keys] gk
@@ -132,7 +138,7 @@ SELECT DISTINCT
     p.Id AS ProposalId,
     p.SplitConfigHash
 FROM [$(ETL_SCHEMA)].[cert_split_configs_remainder3] csc
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p 
+INNER JOIN [prestage].[prestage_proposals] p 
     ON p.GroupId = CONCAT('G', csc.GroupId)
     AND p.ProductCodes = CONCAT('["', csc.ProductCode, '"]')
     AND (p.PlanCodes = CONCAT('["', csc.PlanCode, '"]') OR (p.PlanCodes = '*' AND csc.PlanCode = '*'))

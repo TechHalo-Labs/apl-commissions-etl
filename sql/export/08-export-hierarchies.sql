@@ -1,11 +1,12 @@
 -- =====================================================
 -- Export Hierarchies, HierarchyVersions, HierarchyParticipants
--- Only exports records that don't already exist
+-- Only exports hierarchies for CONFORMANT and NEARLY CONFORMANT groups
+-- Filters using GroupConformanceStatistics
 -- Fixed column mappings for production schema:
 -- - HierarchyVersions: uses Version/EffectiveFrom/EffectiveTo (not VersionNumber/EffectiveDate/EndDate/ApprovedBy/ApprovedAt)
 -- =====================================================
 
-PRINT 'Exporting missing Hierarchies...';
+PRINT 'Exporting missing Hierarchies (conformant + nearly conformant groups only)...';
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[Hierarchies] (
     Id, Name, [Description], [Type], [Status], ProposalId, ProposalNumber,
@@ -37,6 +38,10 @@ SELECT
     COALESCE(sh.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sh.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_hierarchies] sh
+-- NEW: Filter by conformance (only export hierarchies for conformant + nearly conformant groups)
+INNER JOIN [$(ETL_SCHEMA)].[GroupConformanceStatistics] gcs
+    ON gcs.GroupId = sh.GroupId
+    AND gcs.GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
 WHERE sh.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]);
 
 DECLARE @hCount INT;

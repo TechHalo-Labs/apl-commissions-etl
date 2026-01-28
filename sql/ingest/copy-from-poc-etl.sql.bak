@@ -1,0 +1,219 @@
+-- =============================================================================
+-- INGEST: Copy Raw Data from poc_etl to ETL Working Schema
+-- =============================================================================
+-- Copies all raw data tables from source schema (poc_etl) to ETL working schema
+-- This is Phase 1 of the data ingest process
+-- =============================================================================
+
+SET NOCOUNT ON;
+
+PRINT '============================================================';
+PRINT 'INGEST: Copy Raw Data (poc_etl → etl)';
+PRINT '============================================================';
+PRINT '';
+
+-- =============================================================================
+-- 1. raw_certificate_info (Largest table)
+-- =============================================================================
+DECLARE @cert_count BIGINT;
+SELECT @cert_count = COUNT(*) FROM [poc_etl].[raw_certificate_info];
+
+PRINT '1. raw_certificate_info: ' + FORMAT(@cert_count, 'N0') + ' rows';
+
+IF @cert_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_certificate_info];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_certificate_info]
+    SELECT * FROM [poc_etl].[raw_certificate_info];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 2. raw_schedule_rates (Critical for commission calculations)
+-- =============================================================================
+PRINT '';
+DECLARE @sched_count BIGINT;
+SELECT @sched_count = COUNT(*) FROM [poc_etl].[raw_schedule_rates];
+
+PRINT '2. raw_schedule_rates: ' + FORMAT(@sched_count, 'N0') + ' rows';
+
+IF @sched_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_schedule_rates];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_schedule_rates]
+    SELECT * FROM [poc_etl].[raw_schedule_rates];
+    
+    DECLARE @unique_schedules INT;
+    SELECT @unique_schedules = COUNT(DISTINCT ScheduleName) FROM [$(ETL_SCHEMA)].[raw_schedule_rates];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+    PRINT '   📊 Unique schedules: ' + FORMAT(@unique_schedules, 'N0');
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 3. raw_perf_groups (Broker and group relationships)
+-- =============================================================================
+PRINT '';
+DECLARE @perf_count BIGINT;
+SELECT @perf_count = COUNT(*) FROM [poc_etl].[raw_perf_groups];
+
+PRINT '3. raw_perf_groups: ' + FORMAT(@perf_count, 'N0') + ' rows';
+
+IF @perf_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_perf_groups];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_perf_groups]
+    SELECT * FROM [poc_etl].[raw_perf_groups];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 4. raw_premiums
+-- =============================================================================
+PRINT '';
+DECLARE @prem_count BIGINT;
+SELECT @prem_count = COUNT(*) FROM [poc_etl].[raw_premiums];
+
+PRINT '4. raw_premiums: ' + FORMAT(@prem_count, 'N0') + ' rows';
+
+IF @prem_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_premiums];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_premiums]
+    SELECT * FROM [poc_etl].[raw_premiums];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 5. raw_individual_brokers
+-- =============================================================================
+PRINT '';
+DECLARE @ind_broker_count BIGINT;
+SELECT @ind_broker_count = COUNT(*) FROM [poc_etl].[raw_individual_brokers];
+
+PRINT '5. raw_individual_brokers: ' + FORMAT(@ind_broker_count, 'N0') + ' rows';
+
+IF @ind_broker_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_individual_brokers];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_individual_brokers]
+    SELECT * FROM [poc_etl].[raw_individual_brokers];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 6. raw_org_brokers
+-- =============================================================================
+PRINT '';
+DECLARE @org_broker_count BIGINT;
+SELECT @org_broker_count = COUNT(*) FROM [poc_etl].[raw_org_brokers];
+
+PRINT '6. raw_org_brokers: ' + FORMAT(@org_broker_count, 'N0') + ' rows';
+
+IF @org_broker_count > 0
+BEGIN
+    TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_org_brokers];
+    
+    INSERT INTO [$(ETL_SCHEMA)].[raw_org_brokers]
+    SELECT * FROM [poc_etl].[raw_org_brokers];
+    
+    PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+END
+ELSE
+    PRINT '   ⏭️  Source empty, skipping';
+
+-- =============================================================================
+-- 7. raw_licenses (Optional)
+-- =============================================================================
+PRINT '';
+BEGIN TRY
+    DECLARE @lic_count BIGINT;
+    SELECT @lic_count = COUNT(*) FROM [poc_etl].[raw_licenses];
+    
+    PRINT '7. raw_licenses: ' + FORMAT(@lic_count, 'N0') + ' rows';
+    
+    IF @lic_count > 0
+    BEGIN
+        TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_licenses];
+        
+        INSERT INTO [$(ETL_SCHEMA)].[raw_licenses]
+        SELECT * FROM [poc_etl].[raw_licenses];
+        
+        PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+    END
+    ELSE
+        PRINT '   ⏭️  Source empty, skipping';
+END TRY
+BEGIN CATCH
+    PRINT '   ⚠️  raw_licenses not found or schema mismatch, skipping';
+END CATCH
+
+-- =============================================================================
+-- 8. raw_eo_insurance (Optional)
+-- =============================================================================
+PRINT '';
+BEGIN TRY
+    DECLARE @eo_count BIGINT;
+    SELECT @eo_count = COUNT(*) FROM [poc_etl].[raw_eo_insurance];
+    
+    PRINT '8. raw_eo_insurance: ' + FORMAT(@eo_count, 'N0') + ' rows';
+    
+    IF @eo_count > 0
+    BEGIN
+        TRUNCATE TABLE [$(ETL_SCHEMA)].[raw_eo_insurance];
+        
+        INSERT INTO [$(ETL_SCHEMA)].[raw_eo_insurance]
+        SELECT * FROM [poc_etl].[raw_eo_insurance];
+        
+        PRINT '   ✅ Copied: ' + FORMAT(@@ROWCOUNT, 'N0') + ' rows';
+    END
+    ELSE
+        PRINT '   ⏭️  Source empty, skipping';
+END TRY
+BEGIN CATCH
+    PRINT '   ⚠️  raw_eo_insurance not found or schema mismatch, skipping';
+END CATCH
+
+-- =============================================================================
+-- Verification
+-- =============================================================================
+PRINT '';
+PRINT '============================================================';
+PRINT 'VERIFICATION - Raw Tables in ETL Schema';
+PRINT '============================================================';
+
+SELECT 'raw_certificate_info' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_certificate_info];
+SELECT 'raw_schedule_rates' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_schedule_rates];
+SELECT 'raw_perf_groups' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_perf_groups];
+SELECT 'raw_premiums' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_premiums];
+SELECT 'raw_individual_brokers' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_individual_brokers];
+SELECT 'raw_org_brokers' AS [table], COUNT(*) AS row_count FROM [$(ETL_SCHEMA)].[raw_org_brokers];
+
+PRINT '';
+PRINT '============================================================';
+PRINT 'RAW DATA COPY COMPLETED';
+PRINT '============================================================';
+PRINT '';
+PRINT 'Next: Populate input tables from raw data';
+PRINT '';
+
+GO

@@ -21,14 +21,16 @@ CREATE TABLE #tmp_group_names (
     GroupNumber NVARCHAR(100) NOT NULL,
     Name NVARCHAR(500),
     [State] NVARCHAR(10),
+    BrokerUniqueId NVARCHAR(50),  -- NEW: Capture BrokerUniqueId for PrimaryBrokerId lookup
     PRIMARY KEY (GroupNumber)
 );
 
-INSERT INTO #tmp_group_names (GroupNumber, Name, [State])
+INSERT INTO #tmp_group_names (GroupNumber, Name, [State], BrokerUniqueId)
 SELECT 
     LTRIM(RTRIM(GroupNum)) AS GroupNumber,
     MAX(CASE WHEN LTRIM(RTRIM(GroupName)) <> '' THEN LTRIM(RTRIM(GroupName)) ELSE NULL END) AS Name,
-    MAX(CASE WHEN LTRIM(RTRIM(StateAbbreviation)) <> '' THEN LTRIM(RTRIM(StateAbbreviation)) ELSE NULL END) AS [State]
+    MAX(CASE WHEN LTRIM(RTRIM(StateAbbreviation)) <> '' THEN LTRIM(RTRIM(StateAbbreviation)) ELSE NULL END) AS [State],
+    MAX(CASE WHEN LTRIM(RTRIM(BrokerUniqueId)) <> '' THEN LTRIM(RTRIM(BrokerUniqueId)) ELSE NULL END) AS BrokerUniqueId  -- NEW
 FROM [$(ETL_SCHEMA)].[raw_perf_groups]
 WHERE LTRIM(RTRIM(GroupNum)) <> ''
 GROUP BY LTRIM(RTRIM(GroupNum));
@@ -98,7 +100,7 @@ WHERE LTRIM(RTRIM(StateIssued)) <> ''
 GROUP BY LTRIM(RTRIM(GroupNumber));
 
 INSERT INTO [$(ETL_SCHEMA)].[stg_groups] (
-    Id, Name, [Description], Code, [State], IsActive, [Status], [Type], CreationTime, IsDeleted
+    Id, Name, [Description], Code, [State], IsActive, [Status], [Type], PrimaryBrokerId, CreationTime, IsDeleted
 )
 SELECT
     -- Canonical Group ID: G{GroupNumber}
@@ -120,6 +122,10 @@ SELECT
     1 AS IsActive,  -- All groups from certificates are considered active
     0 AS [Status],
     0 AS [Type],
+    -- NEW: Lookup PrimaryBrokerId from BrokerUniqueId
+    (SELECT TOP 1 b.Id 
+     FROM [$(ETL_SCHEMA)].[stg_brokers] b 
+     WHERE b.ExternalPartyId = gn.BrokerUniqueId) AS PrimaryBrokerId,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM #tmp_all_groups ag

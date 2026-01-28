@@ -126,6 +126,11 @@ SELECT
     CASE WHEN pdk.MaxEffDate <> pdk.MinEffDate THEN pdk.MaxEffDate ELSE NULL END AS EffectiveDateTo,
     1 AS EnablePlanCodeFiltering,
     CONCAT('["', pdk.PlanCode, '"]') AS PlanCodeConstraints,
+    NULL AS SplitConfigurationJSON,    -- Populated later
+    NULL AS SplitConfigurationMD5,     -- Populated later
+    0 AS IsRetained,                   -- Default 0
+    NULL AS ConsumedByProposalId,      -- Default NULL
+    NULL AS ConsolidationReason,       -- Default NULL
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[plan_differentiated_keys] pdk
@@ -158,7 +163,7 @@ INNER JOIN [$(ETL_SCHEMA)].[plan_differentiated_keys] pdk
     AND YEAR(csc.EffectiveDate) = pdk.EffYear
     AND csc.ProductCode = pdk.ProductCode
     AND csc.PlanCode = pdk.PlanCode
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposals] p 
+INNER JOIN [prestage].[prestage_proposals] p 
     ON p.GroupId = CONCAT('G', csc.GroupId)
     AND p.ProductCodes = CONCAT('["', csc.ProductCode, '"]')
     AND p.PlanCodes = CONCAT('["', csc.PlanCode, '"]')
@@ -174,7 +179,7 @@ PRINT 'Key mappings created: ' + CAST(@mappings_created AS VARCHAR);
 PRINT '';
 PRINT 'Step 4: Creating PremiumSplitVersions for plan-differentiated proposals...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_versions] (
+INSERT INTO [prestage].[prestage_premium_split_versions] (
     Id, GroupId, GroupName, ProposalId, ProposalNumber,
     VersionNumber, EffectiveFrom, EffectiveTo,
     TotalSplitPercent, [Status], [Source], CreationTime, IsDeleted
@@ -217,7 +222,7 @@ PRINT '';
 PRINT 'Step 5: Creating PremiumSplitParticipants for plan-differentiated proposals...';
 
 -- Note: HierarchyId will be set later in 07-hierarchies.sql via stg_splitseq_hierarchy_map
-INSERT INTO [$(ETL_SCHEMA)].[stg_premium_split_participants] (
+INSERT INTO [prestage].[prestage_premium_split_participants] (
     Id, VersionId, BrokerId, BrokerUniquePartyId, BrokerName, SplitPercent, IsWritingAgent,
     HierarchyId, HierarchyName, Sequence, WritingBrokerId, GroupId,
     EffectiveFrom, CreationTime, IsDeleted

@@ -1,0 +1,203 @@
+/**
+ * Run Ingest Phase Step-by-Step with Verification Pauses
+ * 
+ * Executes each ingest script individually and waits for user confirmation
+ * before proceeding to the next step. Allows verification of results between steps.
+ * 
+ * Usage:
+ *   npx tsx scripts/run-ingest-step-by-step.ts
+ *   npx tsx scripts/run-ingest-step-by-step.ts --config appsettings.poc2.json
+ * 
+ * Features:
+ * - Executes one script at a time
+ * - Shows verification results after each step
+ * - Pauses for user confirmation before continuing
+ * - Can abort at any step
+ * - Shows detailed row counts and data samples
+ */
+
+import * as sql from 'mssql';
+import * as path from 'path';
+import * as readline from 'readline';
+import { loadConfig, getSqlConfig } from './lib/config-loader';
+import { executeSQLScript } from './lib/sql-executor';
+
+const scriptsDir = path.join(__dirname, '../sql');
+
+const ingestSteps = [
+  {
+    name: 'Step 1: Copy Raw Data',
+    script: path.join(scriptsDir, 'ingest/copy-from-poc-etl.sql'),
+    description: 'Copies raw data from poc_etl to etl schema',
+    verification: `
+      -- Verify raw data copied successfully
+      SELECT 'raw_certificate_info' AS [table], COUNT(*) AS row_count FROM [etl].[raw_certificate_info];
+      SELECT 'raw_schedule_rates' AS [table], COUNT(*) AS row_count FROM [etl].[raw_schedule_rates];
+      SELECT 'raw_perf_groups' AS [table], COUNT(*) AS row_count FROM [etl].[raw_perf_groups];
+      SELECT 'raw_premiums' AS [table], COUNT(*) AS row_count FROM [etl].[raw_premiums];
+      SELECT 'raw_individual_brokers' AS [table], COUNT(*) AS row_count FROM [etl].[raw_individual_brokers];
+      SELECT 'raw_org_brokers' AS [table], COUNT(*) AS row_count FROM [etl].[raw_org_brokers];
+      
+      -- Sample data check
+      SELECT TOP 3 CertificateId, GroupId, CommissionsSchedule, WritingBrokerID 
+      FROM [etl].[raw_certificate_info] 
+      WHERE CommissionsSchedule IS NOT NULL
+      ORDER BY CertificateId;
+    `
+  },
+  {
+    name: 'Step 2: Populate Input Tables',
+    script: path.join(scriptsDir, 'ingest/populate-input-tables.sql'),
+    description: 'Populates input_certificate_info from raw_certificate_info',
+    verification: `
+      -- Verify input tables populated
+      SELECT 
+        'input_certificate_info' AS [table],
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT GroupId) AS unique_groups,
+        COUNT(DISTINCT CommissionsSchedule) AS unique_schedules,
+        COUNT(DISTINCT WritingBrokerID) AS unique_brokers
+      FROM [etl].[input_certificate_info];
+      
+      -- Verify schedules are referenced
+      SELECT TOP 5
+        CommissionsSchedule,
+        COUNT(*) AS certificate_count
+      FROM [etl].[input_certificate_info]
+      WHERE CommissionsSchedule IS NOT NULL AND CommissionsSchedule != ''
+      GROUP BY CommissionsSchedule
+      ORDER BY COUNT(*) DESC;
+    `
+  }
+];
+
+/**
+ * Prompt user for confirmation
+ */
+function askToContinue(): Promise<boolean> {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout
+  });
+  
+  return new Promise((resolve) => {
+    rl.question('\nContinue to next step? (y/n): ', (answer) => {
+      rl.close();
+      resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+    });
+  });
+}
+
+/**
+ * Execute verification query and display results
+ */
+async function runVerification(pool: sql.ConnectionPool, verificationSQL: string) {
+  console.log('\n┌─────────────────────────────────────────────┐');
+  console.log('│         VERIFICATION RESULTS                │');
+  console.log('└─────────────────────────────────────────────┘\n');
+  
+  try {
+    const result = await pool.request().query(verificationSQL);
+    
+    // Display each recordset
+    if (Array.isArray(result.recordsets)) {
+      result.recordsets.forEach((recordset, index) => {
+        if (recordset.length > 0) {
+          console.log(`\nResult Set ${index + 1}:`);
+          console.table(recordset);
+        }
+      });
+    }
+  } catch (error: any) {
+    console.error('⚠️  Verification query failed:', error.message);
+  }
+}
+
+/**
+ * Main step-by-step execution
+ */
+async function main() {
+  const args = process.argv.slice(2);
+  const configFile = args.includes('--config') ? args[args.indexOf('--config') + 1] : undefined;
+  
+  const config = loadConfig(undefined, configFile);
+  const pool = await sql.connect(getSqlConfig(config));
+  
+  try {
+    console.log('\n════════════════════════════════════════════════════════');
+    console.log('        INGEST PHASE - STEP-BY-STEP EXECUTION          ');
+    console.log('════════════════════════════════════════════════════════\n');
+    console.log('This script will execute each ingest step individually.');
+    console.log('After each step, verification results will be shown.');
+    console.log('You can review the results before continuing.\n');
+    console.log(`📚 For detailed step descriptions and test queries, see:`);
+    console.log(`   STEP-BY-STEP-TEST-GUIDE.md`);
+    console.log(`\nTotal steps: ${ingestSteps.length}`);
+    console.log('════════════════════════════════════════════════════════\n');
+    
+    for (let i = 0; i < ingestSteps.length; i++) {
+      const step = ingestSteps[i];
+      
+      console.log('\n╔════════════════════════════════════════════════════════╗');
+      console.log(`║  ${step.name.padEnd(54)}║`);
+      console.log('╚════════════════════════════════════════════════════════╝');
+      console.log(`\n📋 Description: ${step.description}`);
+      console.log(`📄 Script: ${path.basename(step.script)}\n`);
+      
+      // Execute the script
+      console.log('⏳ Executing...\n');
+      const startTime = Date.now();
+      
+      try {
+        const result = await executeSQLScript({
+          config,
+          pool,
+          scriptPath: step.script,
+          stepId: `manual-step-${i + 1}`,
+          debugMode: false,
+          pocMode: config.database.pocMode === true
+        });
+        
+        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        console.log(`\n✅ Step completed in ${duration}s`);
+        console.log(`📊 Records affected: ${result.recordsAffected.toLocaleString()}`);
+        
+        // Run verification
+        if (step.verification) {
+          await runVerification(pool, step.verification);
+        }
+        
+        // Ask to continue (except after last step)
+        if (i < ingestSteps.length - 1) {
+          const shouldContinue = await askToContinue();
+          
+          if (!shouldContinue) {
+            console.log('\n⏸️  Execution paused by user.');
+            console.log('You can resume by running this script again (it will skip completed steps).\n');
+            process.exit(0);
+          }
+        }
+        
+      } catch (error: any) {
+        console.error(`\n❌ Step failed: ${error.message}`);
+        console.error('\nYou can:');
+        console.error('  1. Fix the issue');
+        console.error('  2. Re-run this script to retry from this step');
+        console.error('  3. Run individual SQL script: sqlcmd -i ' + step.script);
+        process.exit(1);
+      }
+    }
+    
+    console.log('\n════════════════════════════════════════════════════════');
+    console.log('         ✅ ALL INGEST STEPS COMPLETED!                ');
+    console.log('════════════════════════════════════════════════════════\n');
+    console.log('Next steps:');
+    console.log('  1. Run transforms: npx tsx scripts/run-pipeline.ts --skip-ingest');
+    console.log('  2. Or continue with full pipeline: npx tsx scripts/run-pipeline.ts --skip-ingest --skip-schema\n');
+    
+  } finally {
+    await pool.close();
+  }
+}
+
+main().catch(console.error);

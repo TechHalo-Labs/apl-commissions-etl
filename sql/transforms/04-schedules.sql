@@ -24,9 +24,12 @@ TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedules];
 -- =============================================================================
 PRINT 'Step 2: Identifying active schedules from certificates...';
 
-DROP TABLE IF EXISTS #active_schedules;
+-- Use permanent work table instead of temp table for batch persistence
+IF OBJECT_ID('[$(ETL_SCHEMA)].[work_active_schedules]', 'U') IS NOT NULL
+    DROP TABLE [$(ETL_SCHEMA)].[work_active_schedules];
+
 SELECT DISTINCT LTRIM(RTRIM(CommissionsSchedule)) AS ScheduleName
-INTO #active_schedules
+INTO [$(ETL_SCHEMA)].[work_active_schedules]
 FROM [$(ETL_SCHEMA)].[input_certificate_info]
 WHERE CommissionsSchedule IS NOT NULL 
   AND LTRIM(RTRIM(CommissionsSchedule)) <> '';
@@ -63,7 +66,7 @@ SELECT
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[raw_schedule_rates] r
 WHERE LTRIM(RTRIM(r.ScheduleName)) <> ''
-  AND EXISTS (SELECT 1 FROM #active_schedules a WHERE a.ScheduleName = LTRIM(RTRIM(r.ScheduleName)))
+  AND EXISTS (SELECT 1 FROM [$(ETL_SCHEMA)].[work_active_schedules] a WHERE a.ScheduleName = LTRIM(RTRIM(r.ScheduleName)))
 GROUP BY LTRIM(RTRIM(r.ScheduleName));
 
 DECLARE @sched_count INT = @@ROWCOUNT;
@@ -252,8 +255,9 @@ LEFT JOIN [$(ETL_SCHEMA)].[stg_schedule_rates] sr ON sr.ScheduleVersionId = sv.I
 GROUP BY s.Id, s.ExternalId, s.Name
 ORDER BY rate_count DESC;
 
--- Cleanup
-DROP TABLE IF EXISTS #active_schedules;
+-- Cleanup work table
+IF OBJECT_ID('[$(ETL_SCHEMA)].[work_active_schedules]', 'U') IS NOT NULL
+    DROP TABLE [$(ETL_SCHEMA)].[work_active_schedules];
 
 PRINT '';
 PRINT '============================================================';
