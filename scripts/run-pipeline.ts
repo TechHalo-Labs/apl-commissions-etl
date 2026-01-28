@@ -213,14 +213,7 @@ async function main() {
     
     // Start new run
     const runName = `ETL-${runType}-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    
-    try {
-      const runId = await stateManager.startRun(runName, runType, totalSteps, config);
-      console.log(`   Debug: Run ID created: ${runId}`);
-    } catch (error) {
-      console.error('   ❌ Failed to start run:', error);
-      throw error;
-    }
+    await stateManager.startRun(runName, runType, totalSteps, config);
     
     progress.logRunStart(runName, runType, totalSteps);
     
