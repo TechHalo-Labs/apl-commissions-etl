@@ -21,12 +21,12 @@ PRINT '';
 -- =============================================================================
 -- Brokers - ALL brokers from raw tables (for complete license/E&O coverage)
 -- =============================================================================
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_brokers];
+TRUNCATE TABLE [etl].[stg_brokers];
 
 -- Individual brokers (ALL, not just active)
 PRINT 'Loading ALL individual brokers...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+INSERT INTO [etl].[stg_brokers] (
     Id, ExternalPartyId, Name, FirstName, LastName, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
 )
 SELECT
@@ -46,7 +46,7 @@ SELECT
     TRY_CONVERT(DATE, ib.HireDate) AS HireDate,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[raw_individual_brokers] ib
+FROM [etl].[raw_individual_brokers] ib
 WHERE ib.PartyUniqueId IS NOT NULL AND ib.PartyUniqueId <> '';
 
 PRINT 'Individual brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -54,7 +54,7 @@ PRINT 'Individual brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Organization brokers (ALL, not just active)
 PRINT 'Loading ALL organization brokers...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+INSERT INTO [etl].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
 )
 SELECT
@@ -72,9 +72,9 @@ SELECT
     TRY_CONVERT(DATE, ob.HireDate) AS HireDate,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[raw_org_brokers] ob
+FROM [etl].[raw_org_brokers] ob
 WHERE ob.PartyUniqueId IS NOT NULL AND ob.PartyUniqueId <> ''
-  AND ob.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [$(ETL_SCHEMA)].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
+  AND ob.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [etl].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
 
 PRINT 'Organization brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
@@ -83,7 +83,7 @@ PRINT 'Loading brokers from legacy individual roster...';
 
 IF OBJECT_ID('etl.raw_individual_brokers_legacy', 'U') IS NOT NULL
 BEGIN
-    INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+    INSERT INTO [etl].[stg_brokers] (
         Id, ExternalPartyId, Name, FirstName, LastName, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
     )
     SELECT
@@ -103,9 +103,9 @@ BEGIN
         TRY_CONVERT(DATE, ib.HireDate) AS HireDate,
         GETUTCDATE() AS CreationTime,
         0 AS IsDeleted
-    FROM [$(ETL_SCHEMA)].[raw_individual_brokers_legacy] ib
+    FROM [etl].[raw_individual_brokers_legacy] ib
     WHERE ib.PartyUniqueId IS NOT NULL AND ib.PartyUniqueId <> ''
-      AND ib.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [$(ETL_SCHEMA)].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
+      AND ib.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [etl].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
     
     PRINT 'Legacy individual brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 END
@@ -119,7 +119,7 @@ PRINT 'Loading brokers from legacy organization roster...';
 
 IF OBJECT_ID('etl.raw_org_brokers_legacy', 'U') IS NOT NULL
 BEGIN
-    INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+    INSERT INTO [etl].[stg_brokers] (
         Id, ExternalPartyId, Name, [Type], [Status], Email, HireDate, CreationTime, IsDeleted
     )
     SELECT
@@ -137,9 +137,9 @@ BEGIN
         TRY_CONVERT(DATE, ob.HireDate) AS HireDate,
         GETUTCDATE() AS CreationTime,
         0 AS IsDeleted
-    FROM [$(ETL_SCHEMA)].[raw_org_brokers_legacy] ob
+    FROM [etl].[raw_org_brokers_legacy] ob
     WHERE ob.PartyUniqueId IS NOT NULL AND ob.PartyUniqueId <> ''
-      AND ob.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [$(ETL_SCHEMA)].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
+      AND ob.PartyUniqueId NOT IN (SELECT ExternalPartyId FROM [etl].[stg_brokers] WHERE ExternalPartyId IS NOT NULL);
     
     PRINT 'Legacy organization brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 END
@@ -151,7 +151,7 @@ END
 -- Finally, insert PLACEHOLDER brokers for any still-missing references
 PRINT 'Loading placeholder brokers for remaining missing references...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+INSERT INTO [etl].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], CreationTime, IsDeleted
 )
 SELECT
@@ -162,8 +162,8 @@ SELECT
     'Active' AS [Status],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[ref_active_brokers] ab
-WHERE ab.BrokerId NOT IN (SELECT ExternalPartyId FROM [$(ETL_SCHEMA)].[stg_brokers] WHERE ExternalPartyId IS NOT NULL)
+FROM [etl].[ref_active_brokers] ab
+WHERE ab.BrokerId NOT IN (SELECT ExternalPartyId FROM [etl].[stg_brokers] WHERE ExternalPartyId IS NOT NULL)
   AND TRY_CAST(REPLACE(ab.BrokerId, 'P', '') AS BIGINT) IS NOT NULL
 GROUP BY ab.BrokerId;
 
@@ -172,7 +172,7 @@ PRINT 'Placeholder brokers loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 -- Also insert ALL brokers from certificates (for referential integrity with all policies)
 PRINT 'Loading additional brokers from certificates...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_brokers] (
+INSERT INTO [etl].[stg_brokers] (
     Id, ExternalPartyId, Name, [Type], [Status], CreationTime, IsDeleted
 )
 SELECT DISTINCT
@@ -183,14 +183,14 @@ SELECT DISTINCT
     'Active' AS [Status],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[input_certificate_info]
+FROM [etl].[input_certificate_info]
 WHERE WritingBrokerID IS NOT NULL AND WritingBrokerID <> ''
   AND TRY_CAST(REPLACE(WritingBrokerID, 'P', '') AS BIGINT) IS NOT NULL
-  AND TRY_CAST(REPLACE(WritingBrokerID, 'P', '') AS BIGINT) NOT IN (SELECT Id FROM [$(ETL_SCHEMA)].[stg_brokers]);
+  AND TRY_CAST(REPLACE(WritingBrokerID, 'P', '') AS BIGINT) NOT IN (SELECT Id FROM [etl].[stg_brokers]);
 
 PRINT 'Additional brokers from certificates loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
-SELECT COUNT(*) AS brokers_staged FROM [$(ETL_SCHEMA)].[stg_brokers];
+SELECT COUNT(*) AS brokers_staged FROM [etl].[stg_brokers];
 
 GO
 
@@ -201,12 +201,12 @@ GO
 --   2. If ExpirationDate is NULL or in the past, set to 2027-01-01 for Active licenses
 --   3. Trust CurrentStatus over date validation (Active = valid license)
 -- =============================================================================
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_broker_licenses];
+TRUNCATE TABLE [etl].[stg_broker_licenses];
 
 PRINT '';
 PRINT 'Loading ALL broker licenses with date corrections...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_broker_licenses] (
+INSERT INTO [etl].[stg_broker_licenses] (
     Id, BrokerId, [State], LicenseNumber, [Type], [Status], EffectiveDate, ExpirationDate,
     LicenseCode, IsResidentLicense, ApplicableCounty, CreationTime, IsDeleted
 )
@@ -242,38 +242,38 @@ SELECT
     l.ApplicableCounty,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[raw_licenses] l
+FROM [etl].[raw_licenses] l
 WHERE l.PartyUniqueId IS NOT NULL AND l.PartyUniqueId <> '';
 
 PRINT 'Broker licenses loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 -- Report date corrections made
 DECLARE @nullEffectiveFixed INT;
-SELECT @nullEffectiveFixed = COUNT(*) FROM [$(ETL_SCHEMA)].[raw_licenses] 
+SELECT @nullEffectiveFixed = COUNT(*) FROM [etl].[raw_licenses] 
 WHERE LicenseEffectiveDate IS NULL AND PartyUniqueId IS NOT NULL AND PartyUniqueId <> '';
 PRINT 'Licenses with NULL EffectiveDate (corrected): ' + CAST(@nullEffectiveFixed AS VARCHAR);
 
 DECLARE @expiredActiveFixed INT;
-SELECT @expiredActiveFixed = COUNT(*) FROM [$(ETL_SCHEMA)].[raw_licenses] 
+SELECT @expiredActiveFixed = COUNT(*) FROM [etl].[raw_licenses] 
 WHERE CurrentStatus = 'Active' 
   AND LicenseExpirationDate IS NOT NULL 
   AND TRY_CONVERT(DATETIME2, LicenseExpirationDate) < GETUTCDATE()
   AND PartyUniqueId IS NOT NULL AND PartyUniqueId <> '';
 PRINT 'Active licenses with expired dates (corrected to 2027-01-01): ' + CAST(@expiredActiveFixed AS VARCHAR);
 
-SELECT COUNT(*) AS licenses_staged FROM [$(ETL_SCHEMA)].[stg_broker_licenses];
+SELECT COUNT(*) AS licenses_staged FROM [etl].[stg_broker_licenses];
 
 GO
 
 -- =============================================================================
 -- Broker E&O Insurance - ALL E&O records (not filtered to active brokers only)
 -- =============================================================================
-TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_broker_eo_insurances];
+TRUNCATE TABLE [etl].[stg_broker_eo_insurances];
 
 PRINT '';
 PRINT 'Loading ALL broker E&O insurance...';
 
-INSERT INTO [$(ETL_SCHEMA)].[stg_broker_eo_insurances] (
+INSERT INTO [etl].[stg_broker_eo_insurances] (
     Id, BrokerId, PolicyNumber, Carrier, CoverageAmount, DeductibleAmount, ClaimMaxAmount,
     AnnualMaxAmount, PolicyMaxAmount, LiabilityLimit, EffectiveDate, ExpirationDate,
     [Status], CreationTime, IsDeleted
@@ -294,12 +294,12 @@ SELECT
     0 AS [Status],
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
-FROM [$(ETL_SCHEMA)].[raw_eo_insurance] e
+FROM [etl].[raw_eo_insurance] e
 WHERE e.PartyUniqueId IS NOT NULL AND e.PartyUniqueId <> '';
 
 PRINT 'Broker E&O insurance loaded: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
-SELECT COUNT(*) AS eo_staged FROM [$(ETL_SCHEMA)].[stg_broker_eo_insurances];
+SELECT COUNT(*) AS eo_staged FROM [etl].[stg_broker_eo_insurances];
 
 PRINT '';
 PRINT '============================================================';

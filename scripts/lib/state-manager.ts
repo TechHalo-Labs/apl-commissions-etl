@@ -58,18 +58,18 @@ export class ETLStateManager {
     config?: any
   ): Promise<string> {
     const request = this.pool.request();
-    request.output('RunId', sql.UniqueIdentifier);
     
     const configSnapshot = config ? JSON.stringify(config) : null;
     
-    await request
+    const result = await request
       .input('RunName', sql.NVarChar(200), runName)
       .input('RunType', sql.NVarChar(50), runType)
       .input('TotalSteps', sql.Int, totalSteps)
       .input('ConfigSnapshot', sql.NVarChar(sql.MAX), configSnapshot)
+      .output('RunId', sql.UniqueIdentifier)
       .execute('[etl].[sp_start_run]');
     
-    this.currentRunId = request.parameters.RunId.value as string;
+    this.currentRunId = result.output.RunId as string;
     return this.currentRunId;
   }
 
@@ -143,17 +143,17 @@ export class ETLStateManager {
     }
 
     const request = this.pool.request();
-    request.output('StepId', sql.UniqueIdentifier);
     
-    await request
+    const result = await request
       .input('RunId', sql.UniqueIdentifier, this.currentRunId)
       .input('StepNumber', sql.Int, stepNumber)
       .input('ScriptPath', sql.NVarChar(500), scriptPath)
       .input('ScriptName', sql.NVarChar(200), scriptName)
       .input('Phase', sql.NVarChar(100), phase)
+      .output('StepId', sql.UniqueIdentifier)
       .execute('[etl].[sp_start_step]');
     
-    this.currentStepId = request.parameters.StepId.value as string;
+    this.currentStepId = result.output.StepId as string;
     return this.currentStepId;
   }
 
