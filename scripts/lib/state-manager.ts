@@ -43,9 +43,13 @@ export class ETLStateManager {
   private pool: sql.ConnectionPool;
   private currentRunId: string | null = null;
   private currentStepId: string | null = null;
+  private schemaName: string = 'etl';
 
-  constructor(pool: sql.ConnectionPool) {
+  constructor(pool: sql.ConnectionPool, schemaName?: string) {
     this.pool = pool;
+    if (schemaName) {
+      this.schemaName = schemaName;
+    }
   }
 
   /**
@@ -67,7 +71,7 @@ export class ETLStateManager {
       .input('TotalSteps', sql.Int, totalSteps)
       .input('ConfigSnapshot', sql.NVarChar(sql.MAX), configSnapshot)
       .output('RunId', sql.UniqueIdentifier)
-      .execute('[etl].[sp_start_run]');
+      .execute(`[${this.schemaName}].[sp_start_run]`);
     
     this.currentRunId = result.output.RunId as string;
     return this.currentRunId;
@@ -92,7 +96,7 @@ export class ETLStateManager {
       .input('CurrentStep', sql.NVarChar(200), step)
       .input('CurrentScript', sql.NVarChar(500), script)
       .input('CompletedSteps', sql.Int, completedSteps)
-      .execute('[etl].[sp_update_run_progress]');
+      .execute(`[${this.schemaName}].[sp_update_run_progress]`);
   }
 
   /**
@@ -105,7 +109,7 @@ export class ETLStateManager {
 
     await this.pool.request()
       .input('RunId', sql.UniqueIdentifier, this.currentRunId)
-      .execute('[etl].[sp_complete_run]');
+      .execute(`[${this.schemaName}].[sp_complete_run]`);
     
     this.currentRunId = null;
   }
@@ -124,7 +128,7 @@ export class ETLStateManager {
       .input('RunId', sql.UniqueIdentifier, this.currentRunId)
       .input('ErrorMessage', sql.NVarChar(sql.MAX), errorMessage)
       .input('CanResume', sql.Bit, canResume)
-      .execute('[etl].[sp_fail_run]');
+      .execute(`[${this.schemaName}].[sp_fail_run]`);
     
     this.currentRunId = null;
   }
@@ -151,7 +155,7 @@ export class ETLStateManager {
       .input('ScriptName', sql.NVarChar(200), scriptName)
       .input('Phase', sql.NVarChar(100), phase)
       .output('StepId', sql.UniqueIdentifier)
-      .execute('[etl].[sp_start_step]');
+      .execute(`[${this.schemaName}].[sp_start_step]`);
     
     this.currentStepId = result.output.StepId as string;
     return this.currentStepId;
@@ -169,7 +173,7 @@ export class ETLStateManager {
     await this.pool.request()
       .input('StepId', sql.UniqueIdentifier, id)
       .input('RecordsProcessed', sql.BigInt, recordsProcessed)
-      .execute('[etl].[sp_complete_step]');
+      .execute(`[${this.schemaName}].[sp_complete_step]`);
     
     if (!stepId) {
       this.currentStepId = null;
@@ -190,7 +194,7 @@ export class ETLStateManager {
     await this.pool.request()
       .input('StepId', sql.UniqueIdentifier, id)
       .input('ErrorMessage', sql.NVarChar(sql.MAX), errorMessage)
-      .execute('[etl].[sp_fail_step]');
+      .execute(`[${this.schemaName}].[sp_fail_step]`);
     
     if (!stepId) {
       this.currentStepId = null;
@@ -209,7 +213,7 @@ export class ETLStateManager {
       .input('StepId', sql.UniqueIdentifier, stepId)
       .input('RecordsProcessed', sql.BigInt, recordsProcessed)
       .input('TotalRecords', sql.BigInt, totalRecords)
-      .execute('[etl].[sp_update_step_progress]');
+      .execute(`[${this.schemaName}].[sp_update_step_progress]`);
   }
 
   /**
@@ -217,7 +221,7 @@ export class ETLStateManager {
    */
   async getLastRun(): Promise<RunState | null> {
     const result = await this.pool.request()
-      .execute('[etl].[sp_get_last_run]');
+      .execute(`[${this.schemaName}].[sp_get_last_run]`);
     
     if (result.recordset.length === 0) {
       return null;
@@ -252,7 +256,7 @@ export class ETLStateManager {
       .input('RunId', sql.UniqueIdentifier, runId)
       .query(`
         SELECT CanResume, Status
-        FROM [etl].[etl_run_state]
+        FROM [${this.schemaName}].[etl_run_state]
         WHERE RunId = @RunId
       `);
     
@@ -270,7 +274,7 @@ export class ETLStateManager {
   async getIncompleteSteps(runId: string): Promise<StepState[]> {
     const result = await this.pool.request()
       .input('RunId', sql.UniqueIdentifier, runId)
-      .execute('[etl].[sp_get_incomplete_steps]');
+      .execute(`[${this.schemaName}].[sp_get_incomplete_steps]`);
     
     return result.recordset.map(row => ({
       stepId: row.StepId,

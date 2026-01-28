@@ -78,9 +78,12 @@ function parseConnectionString(connStr: string): Partial<sql.config> {
  * @param overrides Optional partial config to override loaded settings
  * @returns Complete ETL configuration
  */
-export function loadConfig(overrides?: Partial<ETLConfig>): ETLConfig {
-  // Try to load appsettings.json
-  const configPath = path.join(process.cwd(), 'appsettings.json');
+export function loadConfig(overrides?: Partial<ETLConfig>, configFile?: string): ETLConfig {
+  // Try to load appsettings.json or custom config file
+  const configPath = configFile 
+    ? path.join(process.cwd(), configFile)
+    : path.join(process.cwd(), 'appsettings.json');
+  
   let fileConfig: Partial<ETLConfig> = {};
   
   if (fs.existsSync(configPath)) {
@@ -88,7 +91,7 @@ export function loadConfig(overrides?: Partial<ETLConfig>): ETLConfig {
       const fileContent = fs.readFileSync(configPath, 'utf-8');
       fileConfig = JSON.parse(fileContent);
     } catch (error) {
-      console.warn(`⚠️  Warning: Failed to parse appsettings.json: ${error}`);
+      console.warn(`⚠️  Warning: Failed to parse ${configPath}: ${error}`);
     }
   }
 

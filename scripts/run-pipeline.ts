@@ -48,6 +48,7 @@ const flags = {
   skipExport: args.includes('--skip-export'),
   transformsOnly: args.includes('--transforms-only'),
   exportOnly: args.includes('--export-only'),
+  config: args.includes('--config') ? args[args.indexOf('--config') + 1] : undefined,
 };
 
 // Apply composite flags
@@ -86,7 +87,7 @@ if (flags.debug) {
   };
 }
 
-const config = loadConfig(configOverrides);
+const config = loadConfig(configOverrides, flags.config);
 
 // Validate configuration
 const validation = validateConfig(config);
@@ -166,7 +167,7 @@ async function main() {
   const sqlConfig = getSqlConfig(config);
   const pool = await sql.connect(sqlConfig);
   
-  const stateManager = new ETLStateManager(pool);
+  const stateManager = new ETLStateManager(pool, config.database.schemas.processing);
   const progress = new ProgressReporter();
   
   try {
