@@ -245,7 +245,8 @@ async function main() {
             pool,
             scriptPath,
             stepId,
-            debugMode: config.debugMode.enabled
+            debugMode: config.debugMode.enabled,
+            pocMode: (config.database as any).pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);
@@ -289,7 +290,8 @@ async function main() {
             pool,
             scriptPath,
             stepId,
-            debugMode: config.debugMode.enabled
+            debugMode: config.debugMode.enabled,
+            pocMode: (config.database as any).pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);
@@ -333,7 +335,8 @@ async function main() {
             pool,
             scriptPath,
             stepId,
-            debugMode: config.debugMode.enabled
+            debugMode: config.debugMode.enabled,
+            pocMode: (config.database as any).pocMode === true
           });
           
           await stateManager.completeStep(stepId, result.recordsAffected);
