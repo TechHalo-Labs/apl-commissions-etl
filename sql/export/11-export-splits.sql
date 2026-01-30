@@ -2,7 +2,10 @@
 -- Export PremiumSplitVersions and PremiumSplitParticipants
 -- Only exports records that don't already exist
 -- Handles schema differences between staging and production:
--- - GroupId: staging is nvarchar with 'G' prefix, production is bigint
+-- - GroupId: staging is nvarchar, production is bigint
+--   * Numeric GroupIds: direct cast
+--   * Alphanumeric GroupIds: normalized with state prefix encoding
+--     (LA0146 -> 50000146, MS0059 -> 60000059, AL9999 -> 40009999)
 -- - TotalSplitPercent: production is decimal(5,2), max 999.99
 -- - PremiumSplitParticipants: production doesn't have Sequence, 
 --   WritingBrokerId, CreationTime, IsDeleted columns
@@ -19,19 +22,12 @@ INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions] (
 )
 SELECT 
     spsv.Id,
-    -- Extract only numeric characters from GroupId
-    TRY_CAST(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-            spsv.GroupId,
-            'A',''),'B',''),'C',''),'D',''),'E',''),'F',''),'G',''),
-            'H',''),'I',''),'J',''),'K',''),'L',''),'M',''),'N',''),
-            'O',''),'P',''),'Q',''),'R',''),'S',''),'T',''),'U',''),
-            'V',''),'W',''),'X',''),'Y',''),'Z','')
-        AS BIGINT
-    ) AS GroupId,
+    -- Normalize GroupId: use function for alphanumeric, direct cast for numeric
+    CASE 
+        WHEN TRY_CAST(spsv.GroupId AS BIGINT) IS NOT NULL 
+            THEN CAST(spsv.GroupId AS BIGINT)
+        ELSE dbo.NormalizeAlphanumericGroupId(spsv.GroupId)
+    END AS GroupId,
     spsv.GroupName,
     spsv.ProposalId,
     spsv.VersionNumber,
@@ -50,19 +46,15 @@ SELECT
     COALESCE(spsv.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv
 WHERE spsv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions])
-  -- Extract only numeric characters and ensure it's a valid number
-  AND TRY_CAST(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-        REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
-            spsv.GroupId,
-            'A',''),'B',''),'C',''),'D',''),'E',''),'F',''),'G',''),
-            'H',''),'I',''),'J',''),'K',''),'L',''),'M',''),'N',''),
-            'O',''),'P',''),'Q',''),'R',''),'S',''),'T',''),'U',''),
-            'V',''),'W',''),'X',''),'Y',''),'Z','')
-        AS BIGINT
-      ) IS NOT NULL
+  -- Exclude groups flagged in stg_excluded_groups
+  AND spsv.GroupId NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
+  -- REFERENTIAL INTEGRITY: Only export splits for exported proposals
+  AND spsv.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
+  -- Accept both numeric and alphanumeric GroupIds (now normalized)
+  AND (
+    TRY_CAST(spsv.GroupId AS BIGINT) IS NOT NULL 
+    OR dbo.NormalizeAlphanumericGroupId(spsv.GroupId) IS NOT NULL
+  )
   -- EXCLUDE broken split versions: versions that have participants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 
@@ -83,14 +75,14 @@ PRINT 'Exporting missing PremiumSplitParticipants...';
 -- These columns exist in staging but not in production
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants] (
-    Id, VersionId, BrokerUniquePartyId, BrokerName, BrokerNPN, SplitPercent,
+    Id, VersionId, BrokerId, BrokerName, BrokerNPN, SplitPercent,
     IsWritingAgent, HierarchyId, HierarchyName, TemplateId, TemplateName,
     EffectiveFrom, EffectiveTo, Notes
 )
 SELECT 
     spsp.Id,
     spsp.VersionId,
-    spsp.BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
+    spsp.BrokerId,  -- Use BrokerId from staging (maps to production BrokerId)
     spsp.BrokerName,
     spsp.BrokerNPN,
     spsp.SplitPercent,
@@ -103,8 +95,12 @@ SELECT
     spsp.EffectiveTo,
     spsp.Notes
 FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
+INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv ON spsv.Id = spsp.VersionId
 WHERE spsp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitParticipants])
+  -- REFERENTIAL INTEGRITY: Only export participants for exported split versions
   AND spsp.VersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[PremiumSplitVersions])
+  -- REFERENTIAL INTEGRITY: Only export if hierarchy exists in production
+  AND (spsp.HierarchyId IS NULL OR spsp.HierarchyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]))
   AND spsp.BrokerUniquePartyId IS NOT NULL  -- Only export if broker reference is valid
   AND spsp.HierarchyId IS NOT NULL;  -- EXCLUDE broken participants: only export participants with HierarchyId
 

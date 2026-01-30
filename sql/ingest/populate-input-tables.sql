@@ -20,8 +20,58 @@ PRINT '1. Populating input_certificate_info from raw_certificate_info...';
 
 TRUNCATE TABLE [$(ETL_SCHEMA)].[input_certificate_info];
 
-INSERT INTO [$(ETL_SCHEMA)].[input_certificate_info]
-SELECT * FROM [$(ETL_SCHEMA)].[raw_certificate_info];
+INSERT INTO [$(ETL_SCHEMA)].[input_certificate_info] (
+    Company,
+    ProductMasterCategory,
+    ProductCategory,
+    GroupId,
+    Product,
+    PlanCode,
+    CertificateId,
+    CertEffectiveDate,
+    CertIssuedState,
+    CertStatus,
+    CertPremium,
+    CertSplitSeq,
+    CertSplitPercent,
+    CustomerId,
+    RecStatus,
+    HierDriver,
+    HierVersion,
+    CommissionsSchedule,
+    CommissionType,
+    WritingBrokerID,
+    SplitBrokerId,
+    SplitBrokerSeq,
+    ReassignedType,
+    PaidBrokerId
+)
+SELECT 
+    Company,
+    ProductMasterCategory,
+    ProductCategory,
+    GroupId,
+    Product,
+    PlanCode,
+    TRY_CAST(NULLIF(CertificateId, 'NULL') AS BIGINT),
+    TRY_CAST(NULLIF(CertEffectiveDate, 'NULL') AS DATE),
+    CertIssuedState,
+    CertStatus,
+    TRY_CAST(NULLIF(CertPremium, 'NULL') AS DECIMAL(18,4)),
+    TRY_CAST(NULLIF(CertSplitSeq, 'NULL') AS INT),
+    TRY_CAST(NULLIF(CertSplitPercent, 'NULL') AS DECIMAL(18,4)),
+    CustomerId,
+    RecStatus,
+    HierDriver,
+    HierVersion,
+    CommissionsSchedule,
+    CommissionType,
+    WritingBrokerID,
+    SplitBrokerId,
+    COALESCE(TRY_CAST(NULLIF(SplitBrokerSeq, 'NULL') AS INT), 1),
+    ReassignedType,
+    PaidBrokerId
+FROM [$(ETL_SCHEMA)].[raw_certificate_info];
 
 DECLARE @cert_rows INT = @@ROWCOUNT;
 PRINT '   ✅ Populated: ' + FORMAT(@cert_rows, 'N0') + ' rows';

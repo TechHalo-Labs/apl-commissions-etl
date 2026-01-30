@@ -31,7 +31,12 @@ async function executeSqlFile(pool: sql.ConnectionPool, filePath: string): Promi
   const fileName = path.basename(filePath);
   console.log(`\n📋 Executing ${fileName}...`);
   
-  const sqlContent = fs.readFileSync(filePath, 'utf8');
+  let sqlContent = fs.readFileSync(filePath, 'utf8');
+  
+  // Replace SQLCMD variables
+  sqlContent = sqlContent.replace(/\$\(PRODUCTION_SCHEMA\)/g, 'dbo');
+  sqlContent = sqlContent.replace(/\$\(ETL_SCHEMA\)/g, 'etl');
+  
   const batches = sqlContent.split(/^\s*GO\s*$/im).filter(b => b.trim().length > 0);
   
   console.log(`   ${batches.length} batch(es) found`);
@@ -78,6 +83,8 @@ async function main() {
     
     const deletions = [
       // Children first (FK dependencies - most dependent to least dependent)
+      { table: 'CommissionAssignmentRecipients', sql: 'DELETE FROM [dbo].[CommissionAssignmentRecipients];' },
+      { table: 'CommissionAssignmentVersions', sql: 'DELETE FROM [dbo].[CommissionAssignmentVersions];' },
       { table: 'PolicyHierarchyAssignments', sql: 'DELETE FROM [dbo].[PolicyHierarchyAssignments];' },
       { table: 'PremiumTransactions', sql: 'DELETE FROM [dbo].[PremiumTransactions];' },
       { table: 'Policies', sql: 'DELETE FROM [dbo].[Policies];' },
@@ -140,7 +147,7 @@ async function main() {
       'sql/export/02-export-brokers.sql',
       'sql/export/13-export-licenses.sql',
       'sql/export/16-export-broker-banking-infos.sql',
-      'sql/export/05-export-groups-fixed.sql',
+      'sql/export/05-export-groups-simple.sql',  // Use simple export (no conformance columns)
       'sql/export/06-export-products.sql',
       'sql/export/06a-export-plans.sql',
       'sql/export/01-export-schedules.sql',
@@ -164,20 +171,27 @@ async function main() {
       }
     }
     
+    console.log('\n📋 NOTE: Commission Assignments');
+    console.log('   Commission assignments are written directly by the proposal builder');
+    console.log('   They were already populated during proposal generation');
+    console.log('   No separate export needed - already in production tables');
+    
     // Step 3: Verify counts
     console.log('\n\n📋 STEP 3: Verifying export counts');
     console.log('='.repeat(60));
     
     const verification = await pool.request().query(`
       SELECT 'Brokers' as Entity, COUNT(*) as [Production Count] FROM [dbo].[Brokers]
+      UNION ALL SELECT 'Commission Assignment Versions', COUNT(*) FROM [dbo].[CommissionAssignmentVersions]
+      UNION ALL SELECT 'Commission Assignment Recipients', COUNT(*) FROM [dbo].[CommissionAssignmentRecipients]
       UNION ALL SELECT 'Groups', COUNT(*) FROM [dbo].[EmployerGroups]
-      UNION ALL SELECT 'Products', COUNT(*) FROM [dbo].[Products]
-      UNION ALL SELECT 'Schedules', COUNT(*) FROM [dbo].[Schedules]
-      UNION ALL SELECT 'Proposals', COUNT(*) FROM [dbo].[Proposals]
       UNION ALL SELECT 'Hierarchies', COUNT(*) FROM [dbo].[Hierarchies]
-      UNION ALL SELECT 'Premium Split Versions', COUNT(*) FROM [dbo].[PremiumSplitVersions]
       UNION ALL SELECT 'Policies', COUNT(*) FROM [dbo].[Policies]
+      UNION ALL SELECT 'Premium Split Versions', COUNT(*) FROM [dbo].[PremiumSplitVersions]
       UNION ALL SELECT 'Premium Transactions', COUNT(*) FROM [dbo].[PremiumTransactions]
+      UNION ALL SELECT 'Products', COUNT(*) FROM [dbo].[Products]
+      UNION ALL SELECT 'Proposals', COUNT(*) FROM [dbo].[Proposals]
+      UNION ALL SELECT 'Schedules', COUNT(*) FROM [dbo].[Schedules]
       ORDER BY 1
     `);
     

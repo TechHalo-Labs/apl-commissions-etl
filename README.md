@@ -5,16 +5,108 @@ SQL Server-based ETL pipeline for APL Commissions calculation, replacing the pre
 ## Architecture
 
 ```
-CSV Files → SQL Server [etl] Schema → Pre-Stage → Consolidation → Stage → 8-Stage Calculation → [dbo] Production
+CSV Files → SQL Server [etl] Schema → TypeScript Builder → Stage → 8-Stage Calculation → [dbo] Production
 ```
 
 ### Key Features
 - **No intermediate database**: All processing happens in SQL Server
-- **Pre-stage with audit trail**: Unconsolidated proposals retained for full transparency
-- **TypeScript consolidation**: In-memory algorithm with explicit rules (no complex SQL)
+- **TypeScript proposal builder**: Generates all 9 staging entities from certificates (NEW)
+- **Full SHA256 hashing**: 64-char hashes with collision detection for data integrity
+- **Batched processing**: Handle 400K+ certificates efficiently with configurable batch sizes
+- **Certificate resolution validation**: Random sampling to verify correctness against source data
 - **8-stage cascading calculation pipeline**: Each stage is a simple `INSERT INTO...SELECT FROM`
 - **Transferee bug fix**: Correctly handles self-payments (`BrokerId === PaidBrokerId`)
 - **Full traceability**: One traceability report per premium, one broker traceability per GL entry
+
+## TypeScript Proposal Builder (Recommended)
+
+The new TypeScript-based proposal builder replaces the complex SQL scripts (06a-06e) with a clean, maintainable TypeScript implementation that generates all 9 staging entity types.
+
+### Quick Start
+
+```bash
+# Run pipeline with TypeScript builder
+npm run pipeline:ts
+
+# Or with explicit flag
+npx tsx scripts/run-pipeline.ts --use-ts-builder
+
+# Run builder standalone
+npm run build-proposals
+
+# Dry run mode (no database writes)
+npm run build-proposals:dry
+
+# With certificate limit for testing
+npx tsx scripts/proposal-builder.ts --limit 100 --verbose
+```
+
+### What It Generates
+
+The TypeScript builder generates all 9 staging entity types from `input_certificate_info`:
+
+1. **stg_proposals** - Commission agreements (deduplicated by GroupId + ConfigHash)
+2. **stg_proposal_key_mapping** - Lookup table for certificate → proposal resolution
+3. **stg_premium_split_versions** - Premium split configurations
+4. **stg_premium_split_participants** - Split participants (links to hierarchies)
+5. **stg_hierarchies** - Hierarchy containers (deduplicated by hierarchy hash)
+6. **stg_hierarchy_versions** - Time-versioned hierarchy structures
+7. **stg_hierarchy_participants** - Brokers in hierarchy chains
+8. **stg_policy_hierarchy_assignments** - Non-conformant policy assignments (invalid groups)
+9. **stg_policy_hierarchy_participants** - Embedded participants for PHA
+
+### Features
+
+- **Active Certificate Filter**: Only processes `CertStatus='A' AND RecStatus='A'` (~150K certificates)
+- **Full SHA256 Hashing**: Uses complete 64-character hashes (not truncated) for ConfigHash
+- **Collision Detection**: Built-in collision detection prevents silent data corruption
+- **Batched Processing**: Optional batching for memory efficiency with large datasets
+- **Audit Logging**: Structured JSON logs for operation tracking
+- **Dry Run Mode**: Test without writing to database
+- **Verbose Mode**: Detailed progress reporting
+
+### CLI Options
+
+```bash
+--limit <n>         # Process only first N certificates (for testing)
+--batch-size <n>    # Enable batched mode with batch size (default: process all)
+--dry-run           # Simulate without database writes
+--verbose           # Show detailed progress
+--schema <name>     # Target schema (default: 'etl')
+```
+
+### Validation
+
+After running the builder, validate certificate resolution:
+
+```bash
+# Small sample (20 certificates, quick check)
+npm run validate-certificates -- --sample small
+
+# Medium sample (200 certificates, comprehensive)
+npm run validate-certificates -- --sample medium
+
+# Large sample (1000 certificates, statistical confidence)
+npm run validate-certificates -- --sample large
+```
+
+**Success Criteria:** Pass rate >= 95%
+
+See `docs/TESTING-GUIDE.md` for complete testing instructions.
+
+### SQL Builder (Legacy)
+
+The original SQL-based proposal generation (scripts 06a-06e) is still available as a fallback:
+
+```bash
+# Run pipeline with SQL builder (default)
+npm run pipeline
+
+# Or explicitly without TypeScript builder
+npx tsx scripts/run-pipeline.ts
+```
+
+**Note:** The SQL builder will be deprecated after the TypeScript builder is validated in production.
 
 ## Proposal Consolidation
 

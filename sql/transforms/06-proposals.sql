@@ -250,7 +250,7 @@ SELECT
     p.ProposalNumber,
     '1.0' AS VersionNumber,
     p.EffectiveDateFrom AS EffectiveFrom,
-    NULL AS EffectiveTo,
+    CAST('2099-01-01' AS DATETIME2) AS EffectiveTo,
     gp.TotalSplitPercent,
     1 AS [Status],  -- Active
     0 AS [Source],

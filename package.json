@@ -5,6 +5,10 @@
   "main": "scripts/run-pipeline.ts",
   "scripts": {
     "pipeline": "npx tsx scripts/run-pipeline.ts",
+    "pipeline:ts": "npx tsx scripts/run-pipeline.ts --use-ts-builder",
+    "build-proposals": "npx tsx scripts/proposal-builder.ts",
+    "build-proposals:dry": "npx tsx scripts/proposal-builder.ts --dry-run --verbose",
+    "validate-certificates": "npx tsx scripts/validate-certificate-resolution.ts",
     "ingest": "npx tsx scripts/ingest-csv.ts",
     "transform": "npx tsx scripts/run-transforms.ts",
     "calculate": "npx tsx scripts/run-calculation.ts",

@@ -53,11 +53,14 @@ SELECT
 FROM [$(ETL_SCHEMA)].[stg_proposals] sp
 LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- Join on ExternalPartyId
 -- NEW: Filter by conformance (only export proposals for conformant + nearly conformant groups)
-INNER JOIN [$(ETL_SCHEMA)].[GroupConformanceStatistics] gcs
+-- Use poc_etl schema for conformance statistics (has correct data)
+INNER JOIN [poc_etl].[GroupConformanceStatistics] gcs
     ON gcs.GroupId = sp.GroupId
     AND gcs.GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
 WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
   AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
+  -- Exclude groups flagged in stg_excluded_groups
+  AND sp.GroupId NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
   -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 

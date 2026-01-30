@@ -38,11 +38,24 @@ SELECT
     COALESCE(sh.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(sh.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_hierarchies] sh
--- NEW: Filter by conformance (only export hierarchies for conformant + nearly conformant groups)
-INNER JOIN [$(ETL_SCHEMA)].[GroupConformanceStatistics] gcs
-    ON gcs.GroupId = sh.GroupId
-    AND gcs.GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
-WHERE sh.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]);
+WHERE sh.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies])
+  -- Exclude groups flagged in stg_excluded_groups
+  AND sh.GroupId NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
+  -- REFERENTIAL INTEGRITY: Export hierarchies if they're referenced by exported proposals
+  AND (
+    -- Option 1: Hierarchy is linked to an exported proposal
+    sh.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
+    -- Option 2: Hierarchy's group has exported proposals (export all hierarchies for that group)
+    OR sh.GroupId IN (SELECT DISTINCT GroupId FROM [$(PRODUCTION_SCHEMA)].[Proposals] WHERE GroupId IS NOT NULL)
+    -- Option 3: Hierarchy is referenced by premium split participants (via HierarchyId)
+    OR sh.Id IN (
+      SELECT DISTINCT spsp.HierarchyId 
+      FROM [$(ETL_SCHEMA)].[stg_premium_split_participants] spsp
+      INNER JOIN [$(ETL_SCHEMA)].[stg_premium_split_versions] spsv ON spsv.Id = spsp.VersionId
+      WHERE spsv.ProposalId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
+        AND spsp.HierarchyId IS NOT NULL
+    )
+  );
 
 DECLARE @hCount INT;
 SELECT @hCount = @@ROWCOUNT;
@@ -69,7 +82,9 @@ SELECT
     COALESCE(shv.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(shv.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_hierarchy_versions] shv
-WHERE shv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
+WHERE shv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions])
+  -- REFERENTIAL INTEGRITY: Only export versions for exported hierarchies
+  AND shv.HierarchyId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]);
 
 DECLARE @hvCount INT;
 SELECT @hvCount = @@ROWCOUNT;
@@ -95,7 +110,9 @@ SELECT
     COALESCE(shp.CreationTime, GETUTCDATE()) AS CreationTime,
     COALESCE(shp.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_hierarchy_participants] shp
-WHERE shp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants]);
+WHERE shp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants])
+  -- REFERENTIAL INTEGRITY: Only export participants for exported hierarchy versions
+  AND shp.HierarchyVersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
 
 DECLARE @hpCount INT;
 SELECT @hpCount = @@ROWCOUNT;
@@ -120,6 +137,7 @@ SELECT
     COALESCE(sr.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
 WHERE sr.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules])
+  -- REFERENTIAL INTEGRITY: Only export state rules for exported hierarchy versions
   AND sr.HierarchyVersionId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
 
 DECLARE @srCount INT;
@@ -203,6 +221,7 @@ SELECT
     COALESCE(hs.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
 WHERE hs.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchySplits])
+  -- REFERENTIAL INTEGRITY: Only export splits for exported state rules
   AND hs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules]);
 
 DECLARE @hsCount INT;
@@ -228,6 +247,7 @@ SELECT
     COALESCE(sd.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_split_distributions] sd
 WHERE sd.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[SplitDistributions])
+  -- REFERENTIAL INTEGRITY: Only export distributions for exported splits and participants
   AND sd.HierarchySplitId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchySplits])
   AND sd.HierarchyParticipantId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants]);
 

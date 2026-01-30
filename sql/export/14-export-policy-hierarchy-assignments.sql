@@ -33,9 +33,16 @@ PRINT 'Step 1: Exporting PolicyHierarchyAssignments (aggregated by unique key)..
         SUM(SplitPercent) AS SplitPercent,
         TRY_CAST(WritingBrokerId AS BIGINT) AS WritingBrokerId,
         MAX(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS IsNonConforming
-    FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments]
-    WHERE HierarchyId IS NOT NULL
-    GROUP BY PolicyId, HierarchyId, WritingBrokerId
+    FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+    INNER JOIN [$(ETL_SCHEMA)].[stg_policies] p ON p.Id = pha.PolicyId
+    WHERE pha.HierarchyId IS NOT NULL
+      -- Exclude groups flagged in stg_excluded_groups
+      AND (
+        p.GroupId IS NULL 
+        OR p.GroupId = ''
+        OR CONCAT('G', p.GroupId) NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
+      )
+    GROUP BY pha.PolicyId, pha.HierarchyId, pha.WritingBrokerId
 )
 INSERT INTO [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] (
     Id,

@@ -94,7 +94,7 @@ SELECT
         ELSE 0
     END AS [Status],
     WritingBrokerId AS BrokerId,
-    CONCAT('G', GroupId) AS GroupId,  -- Canonical G-prefixed GroupId
+    GroupId AS GroupId,  -- Keep original format (no G-prefix) to match key mapping
     COALESCE(NULLIF(LTRIM(RTRIM(Company)), ''), 'APL') AS CarrierName,  -- Default to 'APL' if NULL
     Product AS ProductCode,
     CONCAT(COALESCE(ProductCategory, ''), ' - ', COALESCE(Product, '')) AS ProductName,
@@ -247,10 +247,10 @@ WHERE ProposalAssignmentSource IS NOT NULL
 GROUP BY ProposalAssignmentSource
 ORDER BY cnt DESC;
 
--- Report unlinked policies (excluding Direct-to-Consumer G00000)
+-- Report unlinked policies (excluding Direct-to-Consumer 00000)
 DECLARE @unlinked_count INT = (
     SELECT COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policies] 
-    WHERE ProposalId IS NULL AND GroupId <> 'G00000'
+    WHERE ProposalId IS NULL AND GroupId <> '00000'
 );
 IF @unlinked_count > 0
     PRINT 'WARNING: ' + CAST(@unlinked_count AS VARCHAR) + ' policies have no proposal (excluding DTC)';
@@ -277,9 +277,9 @@ SELECT 'Policies with NULL BrokerId' AS metric, COUNT(*) AS cnt
 FROM [$(ETL_SCHEMA)].[stg_policies]
 WHERE BrokerId IS NULL OR BrokerId = 0;
 
-SELECT 'Policies with G00000 (Direct)' AS metric, COUNT(*) AS cnt
+SELECT 'Policies with 00000 (Direct)' AS metric, COUNT(*) AS cnt
 FROM [$(ETL_SCHEMA)].[stg_policies]
-WHERE GroupId = 'G00000';
+WHERE GroupId = '00000';
 
 -- Cleanup
 DROP TABLE IF EXISTS #tmp_min_seq;

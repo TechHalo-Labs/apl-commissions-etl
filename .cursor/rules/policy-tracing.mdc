@@ -1,0 +1,436 @@
+---
+description: Step-by-step process for tracing policies through the ETL system to products, brokers, split participants, and hierarchy tiers
+alwaysApply: true
+---
+
+# Policy Tracing Guide
+
+## Overview
+This guide documents the process for tracing policies through the APL Commissions ETL system. Policies can be traced to products, brokers, split participants, and hierarchy tiers with their associated schedules.
+
+## Key Components
+
+### Proposal Builder (`scripts/proposal-builder.ts`)
+- **Dual responsibility**: Creates proposals AND identifies Policy Hierarchy Assignments (PHA)
+- **PHA Creation**: Generates `stg_policy_hierarchy_assignments` and `stg_policy_hierarchy_participants`
+- **Enhanced Non-Conformant Detection**: Routes policies to PHA when:
+  - `isInvalidGroup(groupId)` returns true (null/empty/all zeros)
+  - DTC policies (GroupId = '00000')
+  - Non-conformant groups (IsNonConformant = 1 in database)
+  - Certificate split percent != 100%
+- **Integration**: Called from pipeline when `--use-ts-builder` flag is used
+- **Process Flow**: `loadCertificates()` → `extractSelectionCriteria()` → `identifyNonConformantCases()` → `buildProposals()`
+
+### SQL Transforms
+- Transform 11 is **DEPRECATED** - PHA logic moved to `scripts/proposal-builder.ts`
+- **File renamed**: `11-policy-hierarchy-assignments.sql` → `11-policy-hierarchy-assignments-deprecated-by-proposal-builder-dot-ts.sql`
+- **Pipeline updated**: Removed from transform execution sequence
+
+## Data Flow Architecture
+
+### Proposal-Builder Enhanced Flow:
+```
+loadCertificates() → extractSelectionCriteria() → identifyNonConformantCases() → buildProposals()
+```
+
+### Policy Routing Decision Tree:
+```
+Policy Certificate
+    │
+    ├─→ Non-Conformant Check (identifyNonConformantCases)
+    │   │
+    │   ├─→ DTC Policy (GroupId = '00000') → PHA
+    │   ├─→ Non-Conformant Group → PHA
+    │   ├─→ Split % != 100% → PHA
+    │   └─→ Invalid Group → PHA (legacy check in buildProposals)
+    │
+    └─→ Conformant → Group by (GroupId, ConfigHash) → Proposal Creation
+                    │
+                    └─→ [stg_proposals] → [stg_premium_split_versions]
+                                            └─→ [stg_premium_split_participants]
+                                                    └─→ [stg_hierarchy_participants]
+                                                            └─→ ScheduleCode → [stg_schedules]
+
+PHA Path: [stg_policy_hierarchy_assignments] → [stg_policy_hierarchy_participants]
+```
+
+## Step-by-Step Tracing Process
+
+### Step 1: Find the Policy
+
+```sql
+-- Check if policy exists and get its key attributes
+SELECT
+    Id AS PolicyId,
+    PolicyNumber,
+    GroupId,
+    ProductCode,
+    PlanCode,
+    EffectiveDate,
+    YEAR(EffectiveDate) AS EffectiveYear,
+    ProposalId,
+    ProposalAssignmentSource,
+    BrokerId,
+    [State]
+FROM [etl].[stg_policies]
+WHERE Id = '1331168' OR PolicyNumber = '1331168';
+```
+
+### Step 2A: Trace via Proposal (if ProposalId exists)
+
+#### 2A.1: Verify Proposal Link
+
+```sql
+-- Check how policy was linked to proposal
+SELECT
+    p.Id AS PolicyId,
+    p.GroupId,
+    p.ProductCode,
+    p.PlanCode,
+    YEAR(p.EffectiveDate) AS EffectiveYear,
+    p.ProposalId,
+    p.ProposalAssignmentSource,
+    pkm.GroupId AS MappingGroupId,
+    pkm.EffectiveYear AS MappingYear,
+    pkm.ProductCode AS MappingProduct,
+    pkm.PlanCode AS MappingPlan
+FROM [etl].[stg_policies] p
+LEFT JOIN [etl].[stg_proposal_key_mapping] pkm
+    ON pkm.ProposalId = p.ProposalId
+WHERE p.Id = '1331168';
+```
+
+#### 2A.2: Get Proposal Details
+
+```sql
+-- Get proposal information
+SELECT
+    pr.Id AS ProposalId,
+    pr.ProposalNumber,
+    pr.GroupId,
+    pr.GroupName,
+    pr.EffectiveDateFrom,
+    pr.EffectiveDateTo,
+    pr.ProductCodes,
+    pr.PlanCodes
+FROM [etl].[stg_proposals] pr
+INNER JOIN [etl].[stg_policies] p ON p.ProposalId = pr.Id
+WHERE p.Id = '1331168';
+```
+
+#### 2A.3: Find Hierarchies Linked to Proposal
+
+```sql
+-- Find hierarchies via premium split participants
+SELECT DISTINCT
+    psp.HierarchyId,
+    h.Name AS HierarchyName,
+    h.GroupId,
+    h.BrokerId,
+    h.BrokerName,
+    psp.Sequence AS SplitSequence,
+    psp.SplitPercent
+FROM [etl].[stg_premium_split_participants] psp
+INNER JOIN [etl].[stg_premium_split_versions] psv
+    ON psv.Id = psp.VersionId
+INNER JOIN [etl].[stg_proposals] pr
+    ON pr.Id = psv.ProposalId
+INNER JOIN [etl].[stg_policies] p
+    ON p.ProposalId = pr.Id
+LEFT JOIN [etl].[stg_hierarchies] h
+    ON h.Id = psp.HierarchyId
+WHERE p.Id = '1331168';
+```
+
+#### 2A.4: Find Schedules in Hierarchies
+
+```sql
+-- Find all schedules used in the hierarchies linked to this policy
+SELECT DISTINCT
+    hp.HierarchyId,
+    h.Name AS HierarchyName,
+    hp.ScheduleCode,
+    hp.ScheduleId,
+    s.Name AS ScheduleName,
+    hp.EntityId AS BrokerId,
+    hp.EntityName AS BrokerName,
+    hp.[Level],
+    hp.SplitPercent
+FROM [etl].[stg_hierarchy_participants] hp
+INNER JOIN [etl].[stg_hierarchies] h
+    ON h.Id = hp.HierarchyId
+INNER JOIN [etl].[stg_premium_split_participants] psp
+    ON psp.HierarchyId = h.Id
+INNER JOIN [etl].[stg_premium_split_versions] psv
+    ON psv.Id = psp.VersionId
+INNER JOIN [etl].[stg_proposals] pr
+    ON pr.Id = psv.ProposalId
+INNER JOIN [etl].[stg_policies] p
+    ON p.ProposalId = pr.Id
+LEFT JOIN [etl].[stg_schedules] s
+    ON s.Id = hp.ScheduleId
+WHERE p.Id = '1331168'
+ORDER BY hp.HierarchyId, hp.[Level];
+```
+
+### Step 2B: Trace via Policy Hierarchy Assignments (if ProposalId is NULL)
+
+**IMPORTANT**: PolicyHierarchyAssignments are created by `scripts/proposal-builder.ts`, NOT by SQL transforms.
+The proposal-builder identifies non-conformant policies during proposal building and routes them to PHA.
+
+#### When Policies Get PHA Records:
+- **Invalid Groups**: GroupId is null, empty, or all zeros (`isInvalidGroup()`)
+- **DTC Policies**: GroupId = '00000' (Direct-to-Consumer)
+- **Non-Conformant Groups**: Groups flagged as IsNonConformant = 1 in database
+- **Split Mismatches**: Certificates with total split percent != 100%
+
+**Enhanced Logic**: The proposal-builder now handles these cases BEFORE proposal creation,
+preventing non-conformant policies from being grouped into proposals and routing them directly to PHA.
+
+#### 2B.1: Check for Direct Hierarchy Assignment
+
+```sql
+-- Check if policy has direct hierarchy assignment (non-conformant path)
+-- NOTE: These records are created by proposal-builder.ts, not SQL transforms
+SELECT
+    pha.Id AS AssignmentId,
+    pha.PolicyId,
+    pha.HierarchyId,
+    pha.SplitSequence,
+    pha.SplitPercent,
+    pha.WritingBrokerId,
+    pha.IsNonConforming,
+    pha.NonConformantReason,
+    h.Name AS HierarchyName,
+    h.GroupId,
+    h.BrokerId,
+    h.BrokerName
+FROM [etl].[stg_policy_hierarchy_assignments] pha
+LEFT JOIN [etl].[stg_hierarchies] h
+    ON h.Id = pha.HierarchyId
+WHERE pha.PolicyId = '1331168';
+```
+
+#### 2B.2: Find Schedules via Policy Hierarchy Participants
+
+```sql
+-- Find schedules directly from policy hierarchy participants
+SELECT DISTINCT
+    pha.Id AS AssignmentId,
+    pha.PolicyId,
+    pha.HierarchyId,
+    php.ScheduleCode,
+    php.ScheduleId,
+    s.Name AS ScheduleName,
+    php.BrokerId,
+    php.BrokerName,
+    php.[Level],
+    php.CommissionRate
+FROM [etl].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [etl].[stg_policy_hierarchy_participants] php
+    ON php.PolicyHierarchyAssignmentId = pha.Id
+LEFT JOIN [etl].[stg_schedules] s
+    ON s.Id = php.ScheduleId
+WHERE pha.PolicyId = '1331168'
+ORDER BY php.[Level];
+```
+
+### Step 3: Complete Trace Query (All Paths Combined)
+
+```sql
+-- COMPREHENSIVE TRACE: Policy 1331168 → Schedule GLBHI10
+-- This query checks both paths and shows the complete trace
+
+WITH PolicyInfo AS (
+    SELECT
+        Id AS PolicyId,
+        GroupId,
+        ProductCode,
+        PlanCode,
+        EffectiveDate,
+        ProposalId,
+        ProposalAssignmentSource
+    FROM [etl].[stg_policies]
+    WHERE Id = '1331168'
+),
+-- Path 1: Via Proposal
+ProposalPath AS (
+    SELECT DISTINCT
+        pi.PolicyId,
+        pr.Id AS ProposalId,
+        psp.HierarchyId,
+        hp.ScheduleCode,
+        hp.ScheduleId,
+        s.ExternalId AS ScheduleExternalId,
+        s.Name AS ScheduleName,
+        hp.EntityId AS BrokerId,
+        hp.EntityName AS BrokerName,
+        hp.[Level],
+        'Proposal Path' AS TracePath
+    FROM PolicyInfo pi
+    INNER JOIN [etl].[stg_proposals] pr ON pr.Id = pi.ProposalId
+    INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = pr.Id
+    INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+    INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = CONCAT(psp.HierarchyId, '-V1')
+    LEFT JOIN [etl].[stg_schedules] s ON s.Id = hp.ScheduleId
+    WHERE pi.ProposalId IS NOT NULL
+),
+-- Path 2: Via Policy Hierarchy Assignment
+DirectPath AS (
+    SELECT DISTINCT
+        pi.PolicyId,
+        NULL AS ProposalId,
+        pha.HierarchyId,
+        php.ScheduleCode,
+        php.ScheduleId,
+        s.ExternalId AS ScheduleExternalId,
+        s.Name AS ScheduleName,
+        php.BrokerId,
+        php.BrokerName,
+        php.[Level],
+        'Direct Assignment Path' AS TracePath
+    FROM PolicyInfo pi
+    INNER JOIN [etl].[stg_policy_hierarchy_assignments] pha ON pha.PolicyId = pi.PolicyId
+    INNER JOIN [etl].[stg_policy_hierarchy_participants] php ON php.PolicyHierarchyAssignmentId = pha.Id
+    LEFT JOIN [etl].[stg_schedules] s ON s.Id = php.ScheduleId
+)
+-- Combine both paths
+SELECT
+    PolicyId,
+    ProposalId,
+    HierarchyId,
+    ScheduleCode,
+    ScheduleId,
+    ScheduleExternalId,
+    ScheduleName,
+    BrokerId,
+    BrokerName,
+    [Level],
+    TracePath,
+    CASE
+        WHEN ScheduleCode = 'GLBHI10' OR ScheduleExternalId = 'GLBHI10'
+        THEN '✓ FOUND'
+        ELSE '✗ Not Found'
+    END AS MatchStatus
+FROM (
+    SELECT * FROM ProposalPath
+    UNION ALL
+    SELECT * FROM DirectPath
+) Combined
+WHERE ScheduleCode = 'GLBHI10' OR ScheduleExternalId = 'GLBHI10'
+ORDER BY TracePath, [Level];
+```
+
+## Quick Reference Commands
+
+### Trace Policy to Products
+```sql
+SELECT DISTINCT p.ProductCode, pr.ProductCodes
+FROM [etl].[stg_policies] p
+LEFT JOIN [etl].[stg_proposals] pr ON pr.Id = p.ProposalId
+WHERE p.Id = '1331168';
+```
+
+### Trace Policy to Brokers
+```sql
+-- Via proposal path
+SELECT DISTINCT hp.EntityId AS BrokerId, hp.EntityName AS BrokerName, hp.[Level]
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_proposals] pr ON pr.Id = p.ProposalId
+INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = pr.Id
+INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = CONCAT(psp.HierarchyId, '-V1')
+WHERE p.Id = '1331168'
+ORDER BY hp.[Level];
+
+-- Via direct assignment path
+SELECT DISTINCT php.BrokerId, php.BrokerName, php.[Level]
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_policy_hierarchy_assignments] pha ON pha.PolicyId = p.Id
+INNER JOIN [etl].[stg_policy_hierarchy_participants] php ON php.PolicyHierarchyAssignmentId = pha.Id
+WHERE p.Id = '1331168'
+ORDER BY php.[Level];
+```
+
+### Trace Policy to Split Participants
+```sql
+-- Via proposal path
+SELECT DISTINCT psp.Sequence, psp.SplitPercent, psp.BrokerId, psp.BrokerName, psp.IsWritingAgent
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_proposals] pr ON pr.Id = p.ProposalId
+INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = pr.Id
+INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+WHERE p.Id = '1331168'
+ORDER BY psp.Sequence;
+
+-- Via direct assignment path
+SELECT DISTINCT pha.SplitSequence, pha.SplitPercent, pha.WritingBrokerId, pha.NonConformantReason
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_policy_hierarchy_assignments] pha ON pha.PolicyId = p.Id
+WHERE p.Id = '1331168'
+ORDER BY pha.SplitSequence;
+```
+
+### Trace Policy to Hierarchy Tiers with Broker and Schedule
+```sql
+-- Via proposal path
+SELECT DISTINCT
+    hp.HierarchyId,
+    h.Name AS HierarchyName,
+    hp.[Level],
+    hp.EntityId AS BrokerId,
+    hp.EntityName AS BrokerName,
+    hp.ScheduleCode,
+    s.Name AS ScheduleName
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_proposals] pr ON pr.Id = p.ProposalId
+INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = pr.Id
+INNER JOIN [etl].[stg_premium_split_participants] psp ON psp.VersionId = psv.Id
+INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = CONCAT(psp.HierarchyId, '-V1')
+LEFT JOIN [etl].[stg_hierarchies] h ON h.Id = hp.HierarchyId
+LEFT JOIN [etl].[stg_schedules] s ON s.Id = hp.ScheduleId
+WHERE p.Id = '1331168'
+ORDER BY hp.HierarchyId, hp.[Level];
+
+-- Via direct assignment path
+SELECT DISTINCT
+    pha.HierarchyId,
+    h.Name AS HierarchyName,
+    php.[Level],
+    php.BrokerId,
+    php.BrokerName,
+    php.ScheduleCode,
+    s.Name AS ScheduleName
+FROM [etl].[stg_policies] p
+INNER JOIN [etl].[stg_policy_hierarchy_assignments] pha ON pha.PolicyId = p.Id
+INNER JOIN [etl].[stg_policy_hierarchy_participants] php ON php.PolicyHierarchyAssignmentId = pha.Id
+LEFT JOIN [etl].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+LEFT JOIN [etl].[stg_schedules] s ON s.Id = php.ScheduleId
+WHERE p.Id = '1331168'
+ORDER BY pha.HierarchyId, php.[Level];
+```
+
+## Usage Instructions
+
+1. Start with Step 1 to confirm the policy exists.
+2. If `ProposalId` is not NULL, use Step 2A (Proposal Path).
+3. If `ProposalId` is NULL, use Step 2B (Direct Assignment Path).
+4. Use Step 3 (Complete Trace Query) to check both paths at once.
+5. Use Quick Reference commands for specific trace types.
+
+## Common Issues
+
+- **Policy not found**: Check if policy ID is correct and exists in stg_policies
+- **No proposal link**: Policy may be non-conformant and use direct hierarchy assignments
+- **Missing schedules**: Check stg_schedules table for schedule existence
+- **Hierarchy not found**: May indicate data quality issues in the ETL process
+
+## Example Usage
+
+To trace policy 1331168 to schedule GLBHI10:
+
+1. Run Step 1 to verify policy exists
+2. If ProposalId exists, run Step 2A queries
+3. If ProposalId is NULL, run Step 2B queries
+4. Use Step 3 for comprehensive trace checking both paths
+5. Look for '✓ FOUND' in MatchStatus column

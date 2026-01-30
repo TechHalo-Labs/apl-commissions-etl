@@ -20,21 +20,24 @@ TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedule_versions];
 TRUNCATE TABLE [$(ETL_SCHEMA)].[stg_schedules];
 
 -- =============================================================================
--- Step 2: Get active schedules (used in certificate info)
+-- Step 2: Import ALL schedules (FILTER REMOVED)
 -- =============================================================================
-PRINT 'Step 2: Identifying active schedules from certificates...';
+-- ⚠️ CRITICAL FIX: Previous logic filtered schedules to only those used by certificates
+-- 
+-- Problem: This excluded 35-68% of schedules per product (e.g., GA508 LEVB: 45 → 29)
+-- Impact:
+--   1. Cannot assign certificates to unused schedules
+--   2. No complete schedule library for reference
+--   3. Missing rates for future assignments
+-- 
+-- Fix: Import ALL schedules from source (no filtering by certificate usage)
+-- =============================================================================
+PRINT 'Step 2: Importing ALL schedules (no filtering)...';
+PRINT '  NOTE: Previous logic filtered to only schedules used by certificates';
+PRINT '  NOTE: Now importing ALL schedules for complete rate library';
 
--- Use permanent work table instead of temp table for batch persistence
-IF OBJECT_ID('[$(ETL_SCHEMA)].[work_active_schedules]', 'U') IS NOT NULL
-    DROP TABLE [$(ETL_SCHEMA)].[work_active_schedules];
-
-SELECT DISTINCT LTRIM(RTRIM(CommissionsSchedule)) AS ScheduleName
-INTO [$(ETL_SCHEMA)].[work_active_schedules]
-FROM [$(ETL_SCHEMA)].[input_certificate_info]
-WHERE CommissionsSchedule IS NOT NULL 
-  AND LTRIM(RTRIM(CommissionsSchedule)) <> '';
-
-PRINT 'Active schedules from certificates: ' + CAST(@@ROWCOUNT AS VARCHAR);
+-- No work table needed - we're importing everything
+PRINT 'All schedules will be imported from raw_schedule_rates';
 
 -- =============================================================================
 -- Step 3: Create schedules from unique ScheduleName values
@@ -66,7 +69,7 @@ SELECT
     0 AS IsDeleted
 FROM [$(ETL_SCHEMA)].[raw_schedule_rates] r
 WHERE LTRIM(RTRIM(r.ScheduleName)) <> ''
-  AND EXISTS (SELECT 1 FROM [$(ETL_SCHEMA)].[work_active_schedules] a WHERE a.ScheduleName = LTRIM(RTRIM(r.ScheduleName)))
+  AND LTRIM(RTRIM(r.ScheduleName)) IS NOT NULL
 GROUP BY LTRIM(RTRIM(r.ScheduleName));
 
 DECLARE @sched_count INT = @@ROWCOUNT;
@@ -155,13 +158,30 @@ WHERE LTRIM(RTRIM(r.ProductCode)) <> '';
 PRINT 'Schedule rates created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 -- =============================================================================
--- Step 6: Consolidate to catch-all format where applicable
--- If a product has the same rate for ALL states, consolidate to a single row with State = NULL
+-- Step 6: Consolidate to catch-all format where applicable (DISABLED)
+-- ⚠️ CRITICAL FIX: This consolidation logic was DESTROYING state data!
+-- 
+-- Original logic:
+-- - If a product has the same rate for ALL states, consolidate to a single row with State = NULL
+-- 
+-- Problem: This deleted 68% of schedule rate data (e.g., GAO21HSF: 48 records → 15)
+-- Impact: 
+--   1. Rate lookups by state FAIL (State = NULL in production)
+--   2. Cannot apply state-specific MAC caps
+--   3. Breaks regulatory compliance & reporting
+--   4. Destroys audit trails
+-- 
+-- Fix: DISABLED consolidation - preserve ALL state-specific rate rows
 -- =============================================================================
 PRINT '';
-PRINT 'Step 6: Converting uniform-rate schedules to catch-all format...';
+PRINT 'Step 6: Catch-all consolidation DISABLED (preserving state data)...';
+PRINT 'All state-specific rate rows will be preserved';
 
--- Identify schedules where each product has only ONE distinct rate across all states
+/*
+-- ===== DISABLED CONSOLIDATION LOGIC =====
+-- This logic has been disabled to preserve critical state data
+-- If re-enabled, it will delete state-specific rows and break rate lookups
+
 DROP TABLE IF EXISTS #uniform_rate_products;
 
 SELECT sr.ScheduleVersionId, sr.ProductCode, 
@@ -175,12 +195,11 @@ FROM [$(ETL_SCHEMA)].[stg_schedule_rates] sr
 WHERE sr.[State] IS NOT NULL AND sr.[State] <> ''
 GROUP BY sr.ScheduleVersionId, sr.ProductCode
 HAVING COUNT(DISTINCT CONCAT(sr.[Level], '|', sr.FirstYearRate, '|', sr.RenewalRate)) = 1
-   AND COUNT(DISTINCT sr.[State]) > 1;  -- Must have multiple states with same rate
+   AND COUNT(DISTINCT sr.[State]) > 1;
 
 DECLARE @uniform_products INT = @@ROWCOUNT;
 PRINT 'Products with uniform rates across multiple states: ' + CAST(@uniform_products AS VARCHAR);
 
--- Delete the state-specific rows for uniform products
 DELETE sr
 FROM [$(ETL_SCHEMA)].[stg_schedule_rates] sr
 INNER JOIN #uniform_rate_products urp 
@@ -190,7 +209,6 @@ WHERE sr.[State] IS NOT NULL AND sr.[State] <> '';
 
 PRINT 'State-specific rate rows deleted: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
--- Insert a single catch-all row for each uniform product
 INSERT INTO [$(ETL_SCHEMA)].[stg_schedule_rates] (
     Id, ScheduleVersionId, CoverageType, ProductCode, ProductName, 
     RateValue, FirstYearRate, RenewalRate, RateType, RateTypeString,
@@ -213,7 +231,7 @@ SELECT
     NULL AS GroupSizeFrom,
     NULL AS GroupSizeTo,
     urp.[Level],
-    NULL AS [State],  -- Catch-all: NULL state applies to all states
+    NULL AS [State],
     NULL AS OffGroupLetterDescription,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
@@ -222,6 +240,8 @@ FROM #uniform_rate_products urp;
 PRINT 'Catch-all rate rows created: ' + CAST(@@ROWCOUNT AS VARCHAR);
 
 DROP TABLE IF EXISTS #uniform_rate_products;
+-- ===== END DISABLED CONSOLIDATION LOGIC =====
+*/
 
 -- =============================================================================
 -- Verification
@@ -254,10 +274,6 @@ LEFT JOIN [$(ETL_SCHEMA)].[stg_schedule_versions] sv ON sv.ScheduleId = s.Id
 LEFT JOIN [$(ETL_SCHEMA)].[stg_schedule_rates] sr ON sr.ScheduleVersionId = sv.Id
 GROUP BY s.Id, s.ExternalId, s.Name
 ORDER BY rate_count DESC;
-
--- Cleanup work table
-IF OBJECT_ID('[$(ETL_SCHEMA)].[work_active_schedules]', 'U') IS NOT NULL
-    DROP TABLE [$(ETL_SCHEMA)].[work_active_schedules];
 
 PRINT '';
 PRINT '============================================================';

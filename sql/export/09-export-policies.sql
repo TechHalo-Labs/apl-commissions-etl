@@ -1,10 +1,9 @@
 -- =====================================================
 -- Export Policies from etl staging to dbo
--- Only exports policies for CONFORMANT and NEARLY CONFORMANT groups
--- Also exports Direct-to-Consumer (DTC) policies (NULL/empty GroupId)
+-- Exports ALL policies (conformance filtering disabled)
 -- =====================================================
 
-PRINT 'Exporting missing Policies to dbo.Policies (conformant + nearly conformant groups + DTC)...';
+PRINT 'Exporting missing Policies to dbo.Policies (all policies)...';
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[Policies] (
     Id, PolicyNumber, CertificateNumber, OldPolicyNumber, PolicyType, [Status],
@@ -27,7 +26,11 @@ SELECT
     sp.StatusDate,
     COALESCE(sp.BrokerId, 0) AS BrokerId,
     sp.ContractId,
-    sp.GroupId,
+    -- Add G-prefix to ALL GroupIds (including DTC 00000 → G00000)
+    CASE 
+        WHEN sp.GroupId IS NULL OR sp.GroupId = '' THEN NULL
+        ELSE CONCAT('G', sp.GroupId)
+    END AS GroupId,
     COALESCE(sp.CarrierName, 'APL') AS CarrierName,
     sp.CarrierId,
     COALESCE(sp.ProductCode, 'UNKNOWN') AS ProductCode,
@@ -59,17 +62,14 @@ SELECT
     COALESCE(sp.IsDeleted, 0) AS IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_policies] sp
 WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Policies])
+  -- Exclude groups flagged in stg_excluded_groups
   AND (
-    -- Export policies for conformant + nearly conformant groups
-    sp.GroupId IN (
-      SELECT GroupId 
-      FROM [$(ETL_SCHEMA)].[GroupConformanceStatistics]
-      WHERE GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
-    )
-    -- Also export Direct-to-Consumer (DTC) policies with NULL/empty GroupId
-    OR sp.GroupId IS NULL 
+    sp.GroupId IS NULL 
     OR sp.GroupId = ''
+    OR CONCAT('G', sp.GroupId) NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
   )
+  -- Export ALL policies (conformance analysis disabled - all staging data validated)
+
 
 DECLARE @policyCount INT;
 SELECT @policyCount = @@ROWCOUNT;

@@ -263,7 +263,7 @@ SELECT
     1 AS [Version],
     1 AS [Status],
     h.EffectiveDate AS EffectiveFrom,
-    NULL AS EffectiveTo,
+    CAST('2099-01-01' AS DATETIME2) AS EffectiveTo,
     'Initial migration' AS ChangeReason,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted

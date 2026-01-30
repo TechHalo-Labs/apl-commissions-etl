@@ -18,6 +18,7 @@
  *   --resume-from <id>    Resume from specific run ID
  *   --debug               Enable debug mode with record limits
  *   --step-by-step        Enable manual verification mode (pauses between steps)
+ *   --use-ts-builder      Use TypeScript proposal builder (replaces SQL 06a-06e scripts)
  *   --skip-schema         Skip schema setup
  *   --skip-ingest         Skip data ingestion
  *   --skip-transform      Skip transforms
@@ -58,6 +59,7 @@ const flags = {
   exportOnly: args.includes('--export-only'),
   config: args.includes('--config') ? args[args.indexOf('--config') + 1] : undefined,
   stepByStep: args.includes('--step-by-step'),  // NEW: Step-by-step mode with verification pauses
+  useTsBuilder: args.includes('--use-ts-builder'),  // NEW: Use TypeScript proposal builder instead of SQL
 };
 
 // Apply composite flags
@@ -104,9 +106,9 @@ if (!validation.valid) {
   console.error('\n❌ Configuration validation failed:');
   validation.errors.forEach(err => console.error(`   - ${err}`));
   console.error('\nPlease check appsettings.json or set environment variables.\n');
-  process.exit(1);
-}
-
+    process.exit(1);
+  }
+  
 // Print configuration (masked)
 if (!flags.resume && !flags.resumeFrom) {
   printConfig(config);
@@ -147,27 +149,33 @@ const schemaScripts = config.database.pocMode === true
       path.join(scriptsDir, '03b-conformance-table.sql'),  // NEW: Conformance statistics table
     ];
 
+// Conditional transform scripts: TypeScript builder OR SQL scripts
+const proposalScripts = flags.useTsBuilder 
+  ? [] // Skip SQL proposal scripts when using TypeScript builder
+  : [
+      path.join(scriptsDir, 'transforms/06a-proposals-simple-groups.sql'),
+      path.join(scriptsDir, 'transforms/06b-proposals-non-conformant.sql'),
+      path.join(scriptsDir, 'transforms/06c-proposals-plan-differentiated.sql'),
+      path.join(scriptsDir, 'transforms/06d-proposals-year-differentiated.sql'),
+      path.join(scriptsDir, 'transforms/06e-proposals-granular.sql'),
+      path.join(scriptsDir, 'transforms/06f-populate-prestage-split-configs.sql'),  // Pre-stage split config JSON
+      path.join(scriptsDir, 'transforms/06g-normalize-proposal-date-ranges.sql'),
+      path.join(scriptsDir, 'transforms/06z-update-proposal-broker-names.sql'),
+    ];
+
 const transformScripts = [
   path.join(scriptsDir, 'transforms/00-references.sql'),
   path.join(scriptsDir, 'transforms/01-brokers.sql'),
   path.join(scriptsDir, 'transforms/02-groups.sql'),
   path.join(scriptsDir, 'transforms/03-products.sql'),
   path.join(scriptsDir, 'transforms/04-schedules.sql'),
-  path.join(scriptsDir, 'transforms/06a-proposals-simple-groups.sql'),
-  path.join(scriptsDir, 'transforms/06b-proposals-non-conformant.sql'),
-  path.join(scriptsDir, 'transforms/06c-proposals-plan-differentiated.sql'),
-  path.join(scriptsDir, 'transforms/06d-proposals-year-differentiated.sql'),
-  path.join(scriptsDir, 'transforms/06e-proposals-granular.sql'),
-  // REMOVED: path.join(scriptsDir, 'transforms/06f-consolidate-proposals.sql'),  // OLD SQL consolidation
-  path.join(scriptsDir, 'transforms/06f-populate-prestage-split-configs.sql'),  // NEW: Pre-stage split config JSON
-  path.join(scriptsDir, 'transforms/06g-normalize-proposal-date-ranges.sql'),
-  path.join(scriptsDir, 'transforms/06z-update-proposal-broker-names.sql'),
+  ...proposalScripts,  // Conditionally include proposal scripts
   path.join(scriptsDir, 'transforms/07-hierarchies.sql'),
   path.join(scriptsDir, 'transforms/08-analyze-conformance.sql'),  // NEW: Analyze group conformance (guides export filtering)
   path.join(scriptsDir, 'transforms/08-hierarchy-splits.sql'),
   path.join(scriptsDir, 'transforms/09-policies.sql'),
   path.join(scriptsDir, 'transforms/10-premium-transactions.sql'),
-  path.join(scriptsDir, 'transforms/11-policy-hierarchy-assignments.sql'),
+  // DEPRECATED: 11-policy-hierarchy-assignments.sql - PHA logic now in proposal-builder.ts
   path.join(scriptsDir, 'transforms/99-audit-and-cleanup.sql'),  // NEW: Post-transform audit and data fixes
 ];
 
@@ -460,6 +468,33 @@ async function main() {
         
         progress.logStep(scriptName, currentStep, totalSteps);
         
+        // Check if we should run TypeScript builder after 04-schedules.sql
+        if (flags.useTsBuilder && scriptName === '07-hierarchies.sql') {
+          // Run TypeScript proposal builder before 07-hierarchies.sql
+          console.log('\n' + '='.repeat(70));
+          console.log('🚀 Running TypeScript Proposal Builder');
+          console.log('='.repeat(70));
+          
+          try {
+            const { runProposalBuilder } = require('./proposal-builder');
+            
+            // Use the same SQL config that the pipeline uses
+            const dbConfig = getSqlConfig(config);
+            
+            const builderOptions = {
+              verbose: true,
+              schema: config.database.schemas.processing || 'etl'
+            };
+            
+            await runProposalBuilder(dbConfig, builderOptions);
+            
+            console.log('✅ TypeScript Proposal Builder completed successfully\n');
+  } catch (err: any) {
+            console.error('❌ TypeScript Proposal Builder failed:', err.message);
+    throw err;
+  }
+}
+
         const stepId = await stateManager.startStep(
           currentStep,
           scriptPath,
@@ -503,29 +538,13 @@ async function main() {
       const phaseTime = (Date.now() - phaseStartTime) / 1000;
       progress.logPhaseComplete('Data Transforms', phaseTime);
       
-      // NEW: Run TypeScript consolidation after transforms
-      console.log('\n🔄 Running proposal consolidation...');
-      const consolidationStartTime = Date.now();
-      const { consolidateProposals } = await import('./transforms/consolidate-proposals');
-      await consolidateProposals(pool, config.database.schemas.processing);
-      const consolidationTime = (Date.now() - consolidationStartTime) / 1000;
-      console.log(`✓ Consolidation completed in ${consolidationTime.toFixed(2)}s\n`);
+      // NOTE: Consolidation step disabled - not needed when using TypeScript builder
+      // The TypeScript builder already creates deduplicated proposals
+      // Consolidation was only needed for the SQL-based approach
     }
     
     // Phase 4: Export
     if (!flags.skipExport) {
-      // ⛔ SAFETY LOCK: Export temporarily disabled during consolidation testing
-      throw new Error(
-        '⛔ EXPORT PHASE BLOCKED FOR SAFETY\n\n' +
-        'Export has been temporarily disabled to prevent accidental production writes\n' +
-        'during consolidation testing.\n\n' +
-        'To re-enable exports:\n' +
-        '1. Open scripts/run-pipeline.ts\n' +
-        '2. Remove or comment out the safety lock at line ~515\n' +
-        '3. Verify consolidation audit results first!\n\n' +
-        'For now, use: npx tsx scripts/run-pipeline.ts --skip-export'
-      );
-      
       const phaseStartTime = Date.now();
       progress.logPhase('Export to Production', 4, 6);
       
@@ -585,7 +604,7 @@ async function main() {
     
     process.exit(1);
   } finally {
-    await pool.close();
+      await pool.close();
   }
 }
 
