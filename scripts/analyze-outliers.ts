@@ -75,44 +75,29 @@ async function analyzeGroupOutliers(
   const groupIdNumeric = groupId.replace(/^[A-Za-z]+/, '');
   const groupIdWithPrefix = `G${groupIdNumeric}`;
 
-  // Get config distribution for this group based on the split hierarchy
-  // Group by the broker chain (SplitBrokerId sequence per certificate)
+  // Get config distribution based on PRODUCT (simpler and more reliable)
+  // Different products often indicate different commission structures
   const configQuery = await pool.request().query(`
-    WITH CertHierarchy AS (
+    WITH ProductCounts AS (
       SELECT 
-        ci.CertificateId,
         ci.Product,
-        ci.PlanCode,
-        -- Create a signature from the broker hierarchy
-        STRING_AGG(
-          CONCAT(ISNULL(ci.SplitBrokerId,'NULL'), ':', ISNULL(ci.CommissionsSchedule,'NULL')),
-          '|'
-        ) AS HierarchySignature
+        COUNT(DISTINCT ci.CertificateId) AS CertCount,
+        STRING_AGG(DISTINCT ci.PlanCode, ',') AS PlanCodes
       FROM [etl].[input_certificate_info] ci
       WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
         AND ci.CertStatus = 'A'
         AND ci.RecStatus = 'A'
-      GROUP BY ci.CertificateId, ci.Product, ci.PlanCode
-    ),
-    -- Count by hierarchy signature
-    HierarchyCounts AS (
-      SELECT 
-        HierarchySignature,
-        COUNT(DISTINCT CertificateId) AS CertCount,
-        (SELECT STRING_AGG(p, ',') FROM (SELECT DISTINCT Product AS p FROM CertHierarchy ch2 WHERE ch2.HierarchySignature = ch.HierarchySignature) x) AS Products,
-        (SELECT STRING_AGG(p, ',') FROM (SELECT DISTINCT PlanCode AS p FROM CertHierarchy ch2 WHERE ch2.HierarchySignature = ch.HierarchySignature) x) AS PlanCodes
-      FROM CertHierarchy ch
-      GROUP BY HierarchySignature
+      GROUP BY ci.Product
     )
     SELECT 
-      CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', HierarchySignature), 2) AS ConfigHash,
-      HierarchySignature AS ConfigSignature,
+      Product AS ConfigHash,
+      Product AS ConfigSignature,
       CertCount,
-      Products,
+      Product AS Products,
       PlanCodes,
       SUM(CertCount) OVER () AS TotalCerts,
       CAST(CertCount AS FLOAT) / NULLIF(CAST(SUM(CertCount) OVER () AS FLOAT), 0) * 100 AS Percentage
-    FROM HierarchyCounts
+    FROM ProductCounts
     ORDER BY CertCount DESC
   `);
 
