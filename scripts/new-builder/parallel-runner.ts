@@ -9,6 +9,7 @@
  *   --workers <n>         Number of parallel workers (default: 4)
  *   --batch-size <n>      Groups per worker (default: auto-calculated)
  *   --spawn-delay <s>     Seconds to wait between spawning workers (default: 5)
+ *   --verify-only         Run validation only, no database writes (fastest)
  *   --dry-run             Show what would be run without executing
  */
 
@@ -54,14 +55,18 @@ function spawnWorker(
   offset: number,
   limit: number,
   experiment: string,
-  logDir: string
+  logDir: string,
+  verifyOnly: boolean = false
 ): ChildProcess {
   const logPath = path.join(logDir, `runner-${runnerId}.log`);
   const logStream = fs.createWriteStream(logPath);
   
+  // Use validate mode if verify-only, otherwise transform
+  const mode = verifyOnly ? 'validate' : 'transform';
+  
   const args = [
     'scripts/new-builder/v2.ts',
-    '--mode', 'transform',
+    '--mode', mode,
     '--all',
     '--offset', String(offset),
     '--limit-groups', String(limit),
@@ -69,7 +74,12 @@ function spawnWorker(
     '--experiment', experiment
   ];
   
-  console.log(`[Runner ${runnerId}] Starting: offset=${offset}, limit=${limit}`);
+  // Add --deep for more thorough validation
+  if (verifyOnly) {
+    args.push('--deep');
+  }
+  
+  console.log(`[Runner ${runnerId}] Starting: mode=${mode}, offset=${offset}, limit=${limit}`);
   console.log(`[Runner ${runnerId}] Log: ${logPath}`);
   
   const child = spawn('npx', ['tsx', ...args], {
@@ -99,6 +109,7 @@ async function main() {
     : undefined;
   
   const dryRun = args.includes('--dry-run');
+  const verifyOnly = args.includes('--verify-only');
   
   // Delay between spawning workers (in seconds) to avoid DB connection storms
   const spawnDelay = args.includes('--spawn-delay')
@@ -116,6 +127,7 @@ async function main() {
   console.log('PARALLEL RUNNER');
   console.log('='.repeat(70));
   console.log(`Experiment: ${experiment}`);
+  console.log(`Mode: ${verifyOnly ? 'VERIFY ONLY (no DB writes)' : 'TRANSFORM (with DB writes)'}`);
   console.log(`Workers: ${numWorkers}`);
   console.log(`Spawn delay: ${spawnDelay}s between workers`);
   console.log('');
@@ -176,7 +188,7 @@ async function main() {
       await new Promise(resolve => setTimeout(resolve, spawnDelay * 1000));
     }
     
-    const child = spawnWorker(w.runnerId, w.offset, w.limit, experiment, logDir);
+    const child = spawnWorker(w.runnerId, w.offset, w.limit, experiment, logDir, verifyOnly);
     processes.push(child);
     
     const status: WorkerStatus = {

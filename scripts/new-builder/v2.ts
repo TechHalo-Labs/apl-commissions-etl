@@ -896,10 +896,14 @@ if (require.main === module) {
         process.exit(1);
       }
       
-      // Apply offset if specified
+      // Apply offset and limit for parallel execution
       if (offsetArg > 0 && offsetArg < groupsToValidate.length) {
         console.log(`Skipping first ${offsetArg} groups (--offset)`);
         groupsToValidate = groupsToValidate.slice(offsetArg);
+      }
+      if (limitGroupsArg && limitGroupsArg < groupsToValidate.length) {
+        console.log(`Limiting to ${limitGroupsArg} groups (--limit-groups)`);
+        groupsToValidate = groupsToValidate.slice(0, limitGroupsArg);
       }
       
       console.log(`Validating ${groupsToValidate.length} group(s)${deepValidation ? ' (with chain validation)' : ''}`);
@@ -939,6 +943,32 @@ if (require.main === module) {
         } else {
           console.log(`\n✓ All chain validations passed`);
         }
+      }
+      
+      // If runner-id specified, write summary to log file
+      if (runnerIdArg && experimentArg) {
+        const fs = await import('fs');
+        const path = await import('path');
+        const logDir = path.join(process.cwd(), 'logs', experimentArg);
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        const logPath = path.join(logDir, `runner-${runnerIdArg}.json`);
+        const summary = {
+          runnerId: runnerIdArg,
+          experiment: experimentArg,
+          mode: 'validate',
+          offset: offsetArg,
+          limit: limitGroupsArg,
+          groupsValidated: groupsToValidate.length,
+          passed: results.length - failed.length,
+          failed: failed.length,
+          unmatched: unmatched.length,
+          overlapping: overlapping.length,
+          completedAt: new Date().toISOString()
+        };
+        fs.writeFileSync(logPath, JSON.stringify(summary, null, 2));
+        console.log(`Summary written to: ${logPath}`);
       }
       
       if (failed.length > 0) {
