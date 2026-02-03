@@ -28,6 +28,13 @@ interface AppSettings {
     phaClusterSizeThreshold?: number;
     logEntropyByGroup?: boolean;
   };
+  BlobBulk?: {
+    containerUrl?: string;
+    endpoint?: string;
+    container?: string;
+    token?: string;
+    bulkPrefix?: string;
+  };
 }
 
 interface ValidationResult {
@@ -36,8 +43,8 @@ interface ValidationResult {
   unmatchedRows: number;
 }
 
-function loadEntropyOptions(): EntropyOptions {
-  const appSettingsPath = path.join(process.cwd(), 'appsettings.json');
+function loadEntropyOptions(configPath?: string): EntropyOptions {
+  const appSettingsPath = configPath || path.join(process.cwd(), 'appsettings.json');
   if (!fs.existsSync(appSettingsPath)) {
     throw new Error(`appsettings.json not found at ${appSettingsPath}`);
   }
@@ -68,6 +75,15 @@ function loadEntropyOptions(): EntropyOptions {
     phaClusterSizeThreshold: cfg.phaClusterSizeThreshold!,
     logEntropyByGroup: cfg.logEntropyByGroup ?? false
   };
+}
+
+function loadBlobBulkConfig(configPath?: string): AppSettings['BlobBulk'] {
+  const appSettingsPath = configPath || path.join(process.cwd(), 'appsettings.json');
+  if (!fs.existsSync(appSettingsPath)) {
+    return undefined;
+  }
+  const settings = JSON.parse(fs.readFileSync(appSettingsPath, 'utf8')) as AppSettings;
+  return settings.BlobBulk;
 }
 
 interface DatabaseConfig {
@@ -127,12 +143,16 @@ async function loadDistinctGroups(config: DatabaseConfig, options: BuilderOption
 async function validateGroups(config: DatabaseConfig, groups: string[]): Promise<ValidationResult[]> {
   if (groups.length === 0) return [];
   const pool = await sql.connect(config);
+  const total = groups.length;
   try {
     const results: ValidationResult[] = [];
-    for (const rawGroupId of groups) {
+    for (let idx = 0; idx < groups.length; idx++) {
+      const rawGroupId = groups[idx];
       const trimmed = rawGroupId.trim();
       const groupIdNumeric = trimmed.replace(/^[A-Za-z]+/, '');
       const groupIdWithPrefix = `G${groupIdNumeric}`;
+      
+      process.stdout.write(`  [${idx + 1}/${total}] Validating ${groupIdWithPrefix}... `);
 
       const counts = await pool.request().query(`
         WITH Raw AS (
@@ -191,13 +211,25 @@ async function validateGroups(config: DatabaseConfig, groups: string[]): Promise
            WHERE m.ProposalId IS NULL) AS UnmatchedRows;
       `);
 
+      const nonPhaRows = counts.recordset[0]?.NonPhaRows || 0;
+      const unmatchedRows = counts.recordset[0]?.UnmatchedRows || 0;
+      
       results.push({
         groupId: groupIdWithPrefix,
-        nonPhaRows: counts.recordset[0]?.NonPhaRows || 0,
-        unmatchedRows: counts.recordset[0]?.UnmatchedRows || 0
+        nonPhaRows,
+        unmatchedRows
       });
 
-      if ((counts.recordset[0]?.UnmatchedRows || 0) > 0) {
+      // Log result immediately for this group
+      if (unmatchedRows > 0) {
+        console.log(`❌ non-PHA=${nonPhaRows}, unmatched=${unmatchedRows}`);
+      } else if (nonPhaRows > 0) {
+        console.log(`✓ non-PHA=${nonPhaRows}, all matched`);
+      } else {
+        console.log(`✓ all routed to PHA`);
+      }
+
+      if (unmatchedRows > 0) {
         const sample = await pool.request().query(`
           WITH Raw AS (
             SELECT
@@ -305,15 +337,32 @@ async function runProposalBuilderV2(
   config: DatabaseConfig,
   options: BuilderOptions,
   validateGroupsArg: string[],
-  validateAllFlag: boolean
+  validateAllFlag: boolean,
+  configPath?: string
 ): Promise<void> {
-  const entropyOptions = loadEntropyOptions();
+  const entropyOptions = loadEntropyOptions(configPath);
   if (options.verbose) {
     entropyOptions.logEntropyByGroup = true;
     entropyOptions.verbose = true;
   }
 
-  const schedulePool = await sql.connect(config);
+  if (options.bulkMode === 'blob') {
+    const blobConfig = loadBlobBulkConfig(configPath);
+    if (blobConfig) {
+      options.blobConfig = {
+        containerUrl: blobConfig.containerUrl,
+        endpoint: blobConfig.endpoint,
+        container: blobConfig.container,
+        token: blobConfig.token
+      };
+      if (!options.bulkPrefix && blobConfig.bulkPrefix) {
+        options.bulkPrefix = blobConfig.bulkPrefix;
+      }
+    }
+  }
+
+  const schedulePool = new sql.ConnectionPool(config);
+  await schedulePool.connect();
   try {
     const processedGroups: string[] = [];
 
@@ -370,10 +419,10 @@ async function runProposalBuilderV2(
       console.log(`\nValidation: checking ${groupsToValidate.length} group(s)`);
       const results = await validateGroups(config, groupsToValidate);
       const failed = results.filter(r => r.unmatchedRows > 0);
-      for (const r of results) {
-        console.log(`  ${r.groupId}: non-PHA rows=${r.nonPhaRows}, unmatched=${r.unmatchedRows}`);
-      }
+      const passed = results.length - failed.length;
+      console.log(`\nValidation summary: ${passed}/${results.length} passed`);
       if (failed.length > 0) {
+        console.log(`Failed groups: ${failed.map(r => r.groupId).join(', ')}`);
         throw new Error(`Validation failed for ${failed.length} group(s)`);
       }
     }
@@ -423,6 +472,10 @@ if (require.main === module) {
     idx += 1;
   }
 
+  const configPath = args.includes('--config')
+    ? args[args.indexOf('--config') + 1]
+    : undefined;
+
   const options: BuilderOptions = {
     mode: modeArg,
     batchSize: args.includes('--batch-size')
@@ -442,6 +495,10 @@ if (require.main === module) {
     productionSchema: args.includes('--production-schema')
       ? args[args.indexOf('--production-schema') + 1]
       : 'dbo',
+    bulkMode: args.includes('--bulk-blob') ? 'blob' : 'db',
+    bulkPrefix: args.includes('--bulk-prefix')
+      ? args[args.indexOf('--bulk-prefix') + 1]
+      : undefined,
     groups
   };
 
@@ -464,7 +521,7 @@ if (require.main === module) {
     console.log('');
 
     if (mode === 'transform' || mode === 'full') {
-      await runProposalBuilderV2(config, options, validateGroupsArg, validateAllFlag);
+      await runProposalBuilderV2(config, options, validateGroupsArg, validateAllFlag, configPath);
     }
 
     if (mode === 'export' || mode === 'full') {

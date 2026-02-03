@@ -24,6 +24,7 @@
     "verify:consolidation": "npx tsx scripts/verify-consolidation.ts"
   },
   "dependencies": {
+    "@azure/storage-blob": "^12.30.0",
     "csv-parse": "^5.6.0",
     "dotenv": "^17.2.3",
     "mssql": "^10.0.1",

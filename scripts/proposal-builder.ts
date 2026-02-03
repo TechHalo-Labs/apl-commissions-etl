@@ -33,6 +33,8 @@ import * as crypto from 'crypto';
 import * as sql from 'mssql';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { BlobServiceClient, ContainerClient } from '@azure/storage-blob';
 
 // =============================================================================
 // Type Definitions
@@ -154,6 +156,7 @@ interface Proposal {
   situsState: string | null;
   planCodes: string[];
   productCodes: string[];
+  productPlanPairs: Set<string>;
   configHash: string;
   effectiveDateFrom: Date;
   effectiveDateTo: Date;
@@ -409,6 +412,14 @@ export interface BuilderOptions {
   referenceSchema?: string;   // Schema for reference tables like Schedules (default: 'dbo')
   productionSchema?: string;  // Production schema for export (default: 'dbo')
   groups?: string[];          // Optional: Only process these group IDs (e.g., ['26683', '12345'])
+  bulkMode?: 'db' | 'blob';   // Default: 'db' (direct inserts) or 'blob' (bulk insert from Blob)
+  bulkPrefix?: string;        // Optional: Blob folder prefix for bulk files
+  blobConfig?: {
+    containerUrl?: string;
+    endpoint?: string;
+    container?: string;
+    token?: string;
+  };
 }
 
 export interface EntropyOptions {
@@ -904,6 +915,8 @@ export class ProposalBuilder {
         continue;
       }
 
+      const productPlanKey = `${criteria.productCode}||${criteria.planCode}`;
+
       if (!proposalMap.has(key)) {
         this.proposalCounter++;
         // NOTE: Assignments are now tracked at broker level via brokerAssignments map
@@ -930,6 +943,7 @@ export class ProposalBuilder {
           situsState: criteria.situsState,
           planCodes: [criteria.planCode],
           productCodes: [criteria.productCode],
+          productPlanPairs: new Set([productPlanKey]),
           configHash: criteria.configHash,
           effectiveDateFrom: criteria.effectiveDate,
           effectiveDateTo: criteria.effectiveDate,
@@ -949,6 +963,9 @@ export class ProposalBuilder {
         if (!proposal.productCodes.includes(criteria.productCode)) {
           proposal.productCodes.push(criteria.productCode);
         }
+
+        // Track product+plan pairs
+        proposal.productPlanPairs.add(productPlanKey);
         
         // Expand date range
         if (criteria.effectiveDate < proposal.effectiveDateFrom) {
@@ -1097,7 +1114,7 @@ export class ProposalBuilder {
           p.groupId,
           p.groupName,
           p.id,
-          p.effectiveDateFrom,
+          subtractOneDay(p.effectiveDateFrom),
           p.situsState,
           output
         );
@@ -1146,7 +1163,7 @@ export class ProposalBuilder {
         HierarchyVersionId: null,
         HierarchyParticipantId: null,
         VersionNumber: '1',
-        EffectiveFrom: assignment.effectiveDate,
+        EffectiveFrom: subtractOneDay(assignment.effectiveDate),
         EffectiveTo: new Date('2099-01-01'),  // Far-future = open-ended
         Status: 3, // AssignmentStatus.Active (Draft=0, Future=1, Historical=2, Active=3)
         Type: 1, // Full assignment
@@ -1188,6 +1205,7 @@ export class ProposalBuilder {
         const writingBrokerId = brokerExternalToInternal(split.writingBrokerId);
         const writingBrokerName = split.tiers[0]?.brokerName || null;
         const groupId = `G${pha.groupId}`;
+        const phaEffectiveFrom = subtractOneDay(pha.effectiveDate);
         
         // Create hierarchy for PHA
         output.hierarchies.push({
@@ -1199,7 +1217,7 @@ export class ProposalBuilder {
           BrokerName: writingBrokerName,
           ProposalId: null,  // PHA hierarchies don't have proposals
           CurrentVersionId: phaHierarchyVersionId,
-          EffectiveDate: pha.effectiveDate,
+          EffectiveDate: phaEffectiveFrom,
           SitusState: null,
           Status: 0  // HierarchyStatus.Active (Active=0, Inactive=1)
         });
@@ -1209,7 +1227,7 @@ export class ProposalBuilder {
           Id: phaHierarchyVersionId,
           HierarchyId: phaHierarchyId,
           VersionNumber: 'V1',
-          EffectiveFrom: pha.effectiveDate,
+          EffectiveFrom: phaEffectiveFrom,
           EffectiveTo: new Date('2099-01-01'),
           Status: 1  // HierarchyVersionStatus.Active (Draft=0, Active=1)
         });
@@ -1468,10 +1486,10 @@ export class ProposalBuilder {
   // ==========================================================================
   // Helper: Fix Overlapping Date Ranges
   // ==========================================================================
-  // When multiple proposals exist for the same group, we need to handle product overlap:
+  // When multiple proposals exist for the same group, we need to handle product+plan overlap:
   // 
-  // - Products that EXIST in the next proposal: truncate (superseded by new schedules)
-  // - Products that DON'T EXIST in next proposal: create CONTINUATION proposal
+  // - Product+plan pairs that EXIST in the next proposal: truncate (superseded by new schedules)
+  // - Product+plan pairs that DON'T EXIST in next proposal: create CONTINUATION proposal
   // 
   // Example: Group G26683 has:
   //   - PROP-26683-1 (2024-10-01): GAO21HFM, GC14 CL1, GCI21HFM, MEDLINK9CM with AF01/AF02
@@ -1483,6 +1501,16 @@ export class ProposalBuilder {
   //   - PROP-26683-1-CONT: MEDLINK9CM only (2025-09-30 → 2099-01-01) AF01/AF02 [NEW]
 
   private fixOverlappingDateRanges(output: StagingOutput): void {
+    const parsePairKey = (pairKey: string): { productCode: string; planCode: string } => {
+      const [productCode, planCode] = pairKey.split('||');
+      return { productCode, planCode };
+    };
+
+    const proposalPairsById = new Map<string, Set<string>>();
+    for (const proposal of this.proposals) {
+      proposalPairsById.set(proposal.id, new Set(proposal.productPlanPairs));
+    }
+
     // Group proposals by GroupId
     const proposalsByGroup = new Map<string, StagingProposal[]>();
     for (const proposal of output.proposals) {
@@ -1506,46 +1534,49 @@ export class ProposalBuilder {
         const current = proposals[i];
         const next = proposals[i + 1];
 
-        // Parse product lists
-        const currentProducts = new Set(
-          current.ProductCodes.split(',').map(p => p.trim()).filter(p => p)
-        );
-        const nextProducts = new Set(
-          next.ProductCodes.split(',').map(p => p.trim()).filter(p => p)
-        );
+        const currentPairs = proposalPairsById.get(current.Id) || new Set<string>();
+        const nextPairs = proposalPairsById.get(next.Id) || new Set<string>();
 
-        // Find overlapping vs non-overlapping products
-        const overlapping = [...currentProducts].filter(p => nextProducts.has(p));
-        const onlyInCurrent = [...currentProducts].filter(p => !nextProducts.has(p));
+        // Find overlapping vs non-overlapping product+plan pairs
+        const overlappingPairs = [...currentPairs].filter(p => nextPairs.has(p));
+        const onlyInCurrentPairs = [...currentPairs].filter(p => !nextPairs.has(p));
+
+        if (overlappingPairs.length === 0) {
+          // No overlap by product+plan pairs; keep current open-ended and skip continuation
+          continue;
+        }
 
         const dayBefore = new Date(next.EffectiveDateFrom);
         dayBefore.setDate(dayBefore.getDate() - 1);
 
-        if (overlapping.length > 0) {
-          // Truncate current proposal's date range (overlapping products superseded)
-          current.EffectiveDateTo = dayBefore;
+        // Truncate current proposal's date range (overlapping pairs superseded)
+        current.EffectiveDateTo = dayBefore;
 
-          // Update corresponding PremiumSplitVersions and Participants
-          const psv = output.premiumSplitVersions.find(v => v.ProposalId === current.Id);
-          if (psv) {
-            psv.EffectiveTo = dayBefore;
-            for (const psp of output.premiumSplitParticipants) {
-              if (psp.VersionId === psv.Id) {
-                psp.EffectiveTo = dayBefore;
-              }
+        // Update corresponding PremiumSplitVersions and Participants
+        const psv = output.premiumSplitVersions.find(v => v.ProposalId === current.Id);
+        if (psv) {
+          psv.EffectiveTo = dayBefore;
+          for (const psp of output.premiumSplitParticipants) {
+            if (psp.VersionId === psv.Id) {
+              psp.EffectiveTo = dayBefore;
             }
           }
-          
-          console.log(`  ✓ Truncated ${current.Id} to ${dayBefore.toISOString().split('T')[0]} (${overlapping.length} products superseded by ${next.Id})`);
         }
+        
+        console.log(`  ✓ Truncated ${current.Id} to ${dayBefore.toISOString().split('T')[0]} (${overlappingPairs.length} product+plan pairs superseded by ${next.Id})`);
 
-        if (onlyInCurrent.length > 0) {
-          // These products need a CONTINUATION proposal
+        if (onlyInCurrentPairs.length > 0) {
+          const continuationPairs = onlyInCurrentPairs.map(parsePairKey);
+          const continuationProducts = Array.from(new Set(continuationPairs.map(pair => pair.productCode)));
+          const continuationPlans = Array.from(new Set(continuationPairs.map(pair => pair.planCode)));
+          const continuationLabel = continuationPairs.map(pair => `${pair.productCode}/${pair.planCode}`).join(', ');
+
+          // These product+plan pairs need a CONTINUATION proposal
           // They continue with current's hierarchy/schedules past the cutoff
           this.proposalCounter++;
           const contId = `${current.Id}-CONT`;
           
-          console.log(`  ✓ Creating continuation proposal ${contId} for products: ${onlyInCurrent.join(', ')}`);
+          console.log(`  ✓ Creating continuation proposal ${contId} for pairs: ${continuationLabel}`);
 
           // Create continuation proposal
           continuationProposals.push({
@@ -1560,21 +1591,21 @@ export class ProposalBuilder {
             BrokerId: current.BrokerId,
             BrokerName: current.BrokerName,
             BrokerUniquePartyId: current.BrokerUniquePartyId,
-            ProductCodes: onlyInCurrent.join(','),
-            PlanCodes: current.PlanCodes, // Keep all plan codes, runner will filter
+            ProductCodes: continuationProducts.join(','),
+            PlanCodes: continuationPlans.join(','),
             SplitConfigHash: current.SplitConfigHash, // Same hierarchy config
             DateRangeFrom: next.EffectiveDateFrom.getFullYear(),
             DateRangeTo: 2099,
             EffectiveDateFrom: next.EffectiveDateFrom,
             EffectiveDateTo: new Date('2099-01-01'),
-            Notes: `Continuation of ${current.Id} for products not in ${next.Id}`
+            Notes: `Continuation of ${current.Id} for product+plan pairs not in ${next.Id}`
           });
 
           // Create continuation hierarchy, PSV, PSP, key mappings
           this.createContinuationEntities(
             current, 
             contId, 
-            onlyInCurrent, 
+            continuationPairs, 
             next.EffectiveDateFrom, 
             output
           );
@@ -1594,10 +1625,12 @@ export class ProposalBuilder {
   private createContinuationEntities(
     sourceProposal: StagingProposal,
     contProposalId: string,
-    products: string[],
+    pairs: Array<{ productCode: string; planCode: string }>,
     effectiveFrom: Date,
     output: StagingOutput
   ): void {
+    const uniqueProducts = Array.from(new Set(pairs.map(pair => pair.productCode)));
+
     // Find source hierarchy via PSP -> Hierarchy chain
     const sourcePsv = output.premiumSplitVersions.find(v => v.ProposalId === sourceProposal.Id);
     if (!sourcePsv) return;
@@ -1699,18 +1732,18 @@ export class ProposalBuilder {
         Notes: `Continuation of ${sourcePsp.Id}`
       });
 
-      // Create state rules, hierarchy splits, split distributions for continuation
-      // (Copy from source, filtered to continuation products only)
+    // Create state rules, hierarchy splits, split distributions for continuation
+    // (Copy from source, filtered to continuation products only)
       this.createContinuationStateRulesAndSplits(
         sourceHv.Id,
         contHvId,
-        products,
+      uniqueProducts,
         output
       );
     }
 
     // Create proposal products for continuation
-    for (const product of products) {
+    for (const product of uniqueProducts) {
       this.proposalProductCounter++;
       output.proposalProducts.push({
         Id: this.proposalProductCounter,  // Must be numeric for database
@@ -1722,22 +1755,18 @@ export class ProposalBuilder {
       });
     }
 
-    // Create key mappings for continuation products
+    // Create key mappings for continuation product+plan pairs
     const years = this.getYearRange(effectiveFrom, new Date('2099-01-01'));
-    const planCodes = sourceProposal.PlanCodes.split(',').map(p => p.trim());
-    
     for (const year of years) {
-      for (const product of products) {
-        for (const planCode of planCodes) {
-          output.proposalKeyMappings.push({
-            GroupId: sourceProposal.GroupId,
-            EffectiveYear: year,
-            ProductCode: product,
-            PlanCode: planCode,
-            ProposalId: contProposalId,
-            SplitConfigHash: sourceProposal.SplitConfigHash
-          });
-        }
+      for (const pair of pairs) {
+        output.proposalKeyMappings.push({
+          GroupId: sourceProposal.GroupId,
+          EffectiveYear: year,
+          ProductCode: pair.productCode,
+          PlanCode: pair.planCode,
+          ProposalId: contProposalId,
+          SplitConfigHash: sourceProposal.SplitConfigHash
+        });
       }
     }
   }
@@ -2134,6 +2163,622 @@ export async function loadCertificatesFromDatabase(
   }
 }
 
+interface BlobBulkConfig {
+  containerUrl: string;
+  containerLocation: string;
+  sasToken: string;
+  containerName: string;
+}
+
+function formatDateForCsv(value: Date): string {
+  return value.toISOString().replace('T', ' ').replace('Z', '');
+}
+
+function escapeCsvValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  // Convert booleans to 1/0 for SQL Server BIT columns
+  if (typeof value === 'boolean') return value ? '1' : '0';
+  const raw = value instanceof Date ? formatDateForCsv(value) : String(value);
+  if (raw.includes('"')) {
+    return `"${raw.replace(/"/g, '""')}"`;
+  }
+  if (/[,\n\r]/.test(raw)) {
+    return `"${raw}"`;
+  }
+  return raw;
+}
+
+function writeCsvFile(
+  filePath: string,
+  headers: string[],
+  rows: unknown[][]
+): void {
+  const lines = [headers.join(',')];
+  for (const row of rows) {
+    lines.push(row.map(escapeCsvValue).join(','));
+  }
+  fs.writeFileSync(filePath, lines.join('\n'));
+}
+
+function parseBlobEndpoint(connectionString: string): string {
+  const parts = connectionString.split(';').reduce((acc, part) => {
+    const [key, value] = part.split('=');
+    if (key && value) acc[key.trim().toLowerCase()] = value.trim();
+    return acc;
+  }, {} as Record<string, string>);
+  return parts['blobendpoint'] || '';
+}
+
+function getBlobBulkConfig(options: BuilderOptions): BlobBulkConfig {
+  const blobConfig = options.blobConfig;
+  if (blobConfig?.containerUrl) {
+    const parsed = new URL(blobConfig.containerUrl);
+    const containerLocation = `${parsed.origin}${parsed.pathname}`;
+    const sasToken = parsed.search.startsWith('?') ? parsed.search.slice(1) : parsed.search;
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+    const containerName = pathParts[pathParts.length - 1] || '';
+    if (!containerName) {
+      throw new Error('Blob containerUrl must include the container path');
+    }
+    return {
+      containerUrl: blobConfig.containerUrl,
+      containerLocation,
+      sasToken,
+      containerName
+    };
+  }
+
+  if (blobConfig?.endpoint && blobConfig.container && blobConfig.token) {
+    const blobEndpoint = parseBlobEndpoint(blobConfig.endpoint);
+    const sasToken = blobConfig.token.replace(/^\?/, '');
+    const containerLocation = `${blobEndpoint}${blobConfig.container}`;
+    const containerUrl = `${containerLocation}?${sasToken}`;
+    return {
+      containerUrl,
+      containerLocation,
+      sasToken,
+      containerName: blobConfig.container
+    };
+  }
+
+  const containerUrlEnv = process.env.BLOB_CONTAINER_URL;
+  if (containerUrlEnv) {
+    const parsed = new URL(containerUrlEnv);
+    const containerLocation = `${parsed.origin}${parsed.pathname}`;
+    const sasToken = parsed.search.startsWith('?') ? parsed.search.slice(1) : parsed.search;
+    const pathParts = parsed.pathname.split('/').filter(Boolean);
+    const containerName = pathParts[pathParts.length - 1] || '';
+    if (!containerName) {
+      throw new Error('BLOB_CONTAINER_URL must include the container path');
+    }
+    return { containerUrl: containerUrlEnv, containerLocation, sasToken, containerName };
+  }
+
+  const endpoint = process.env.BLOB_ENDPOINT || '';
+  const containerName = process.env.BLOB_CONTAINER || process.env.BLOB_CONTAINER_NAME || '';
+  const sasToken = (process.env.BLOB_TOKEN || '').replace(/^\?/, '');
+
+  const blobEndpoint = endpoint ? parseBlobEndpoint(endpoint) : '';
+  if (!blobEndpoint || !containerName || !sasToken) {
+    throw new Error('Missing blob config. Set BLOB_CONTAINER_URL or BLOB_ENDPOINT + BLOB_CONTAINER + BLOB_TOKEN.');
+  }
+
+  const containerLocation = `${blobEndpoint}${containerName}`;
+  const containerUrl = `${containerLocation}?${sasToken}`;
+  return { containerUrl, containerLocation, sasToken, containerName };
+}
+
+async function ensureBlobExternalDataSource(
+  pool: sql.ConnectionPool,
+  containerLocation: string,
+  sasToken: string
+): Promise<void> {
+  const safeSas = sasToken.replace(/'/g, "''");
+  const safeLocation = containerLocation.replace(/'/g, "''");
+
+  console.log(`  Setting up External Data Source: ${containerLocation}`);
+  
+  // Update or create the credential
+  await pool.request().query(`
+    IF EXISTS (SELECT 1 FROM sys.database_scoped_credentials WHERE name = 'BlobSasCred')
+    BEGIN
+      EXEC('ALTER DATABASE SCOPED CREDENTIAL [BlobSasCred] WITH IDENTITY = ''SHARED ACCESS SIGNATURE'', SECRET = ''${safeSas}''');
+    END
+    ELSE
+    BEGIN
+      EXEC('CREATE DATABASE SCOPED CREDENTIAL [BlobSasCred] WITH IDENTITY = ''SHARED ACCESS SIGNATURE'', SECRET = ''${safeSas}''');
+    END
+  `);
+
+  // Drop and recreate the external data source to ensure correct location
+  await pool.request().query(`
+    IF EXISTS (SELECT 1 FROM sys.external_data_sources WHERE name = 'BlobStaging')
+    BEGIN
+      DROP EXTERNAL DATA SOURCE [BlobStaging];
+    END
+  `);
+  
+  await pool.request().query(`
+    CREATE EXTERNAL DATA SOURCE [BlobStaging] 
+    WITH (TYPE = BLOB_STORAGE, LOCATION = '${safeLocation}', CREDENTIAL = [BlobSasCred])
+  `);
+  
+  console.log(`    ✓ External Data Source ready`);
+}
+
+async function loadTableColumns(
+  pool: sql.ConnectionPool,
+  schema: string,
+  tableName: string
+): Promise<string[]> {
+  const result = await pool.request().query(`
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = '${schema}'
+      AND TABLE_NAME = '${tableName}'
+    ORDER BY ORDINAL_POSITION
+  `);
+  return result.recordset.map((row: any) => row.COLUMN_NAME);
+}
+
+function getColumnValue(
+  tableName: string,
+  row: any,
+  columnName: string,
+  creationTime: Date
+): unknown {
+  switch (tableName) {
+    case 'stg_proposals':
+      return ({
+        Id: row.Id,
+        ProposalNumber: row.ProposalNumber,
+        Status: row.Status,
+        SubmittedDate: row.SubmittedDate,
+        ProposedEffectiveDate: row.ProposedEffectiveDate,
+        SitusState: row.SitusState,
+        GroupId: row.GroupId,
+        GroupName: row.GroupName,
+        BrokerId: row.BrokerId,
+        BrokerName: row.BrokerName,
+        BrokerUniquePartyId: row.BrokerUniquePartyId,
+        ProductCodes: row.ProductCodes,
+        PlanCodes: row.PlanCodes,
+        SplitConfigHash: row.SplitConfigHash,
+        DateRangeFrom: row.DateRangeFrom,
+        DateRangeTo: row.DateRangeTo,
+        EffectiveDateFrom: row.EffectiveDateFrom,
+        EffectiveDateTo: row.EffectiveDateTo,
+        Notes: row.Notes,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_proposal_products':
+      return ({
+        Id: row.Id,
+        ProposalId: row.ProposalId,
+        ProductCode: row.ProductCode,
+        ProductName: row.ProductName,
+        CommissionStructure: row.CommissionStructure,
+        ResolvedScheduleId: row.ResolvedScheduleId,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_proposal_key_mapping':
+      return ({
+        GroupId: row.GroupId,
+        EffectiveYear: row.EffectiveYear,
+        ProductCode: row.ProductCode,
+        PlanCode: row.PlanCode,
+        ProposalId: row.ProposalId,
+        SplitConfigHash: row.SplitConfigHash,
+        CreationTime: creationTime
+      } as Record<string, unknown>)[columnName];
+    case 'stg_premium_split_versions':
+      return ({
+        Id: row.Id,
+        GroupId: row.GroupId,
+        GroupName: row.GroupName,
+        ProposalId: row.ProposalId,
+        ProposalNumber: row.ProposalNumber,
+        VersionNumber: row.VersionNumber,
+        EffectiveFrom: row.EffectiveFrom,
+        EffectiveTo: row.EffectiveTo,
+        TotalSplitPercent: row.TotalSplitPercent,
+        Status: row.Status,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_premium_split_participants':
+      return ({
+        Id: row.Id,
+        VersionId: row.VersionId,
+        BrokerId: row.BrokerId,
+        BrokerName: row.BrokerName,
+        BrokerNPN: row.BrokerNPN,
+        BrokerUniquePartyId: row.BrokerUniquePartyId,
+        SplitPercent: row.SplitPercent,
+        IsWritingAgent: row.IsWritingAgent,
+        HierarchyId: row.HierarchyId,
+        HierarchyName: row.HierarchyName,
+        TemplateId: row.TemplateId,
+        TemplateName: row.TemplateName,
+        Sequence: row.Sequence,
+        WritingBrokerId: row.WritingBrokerId,
+        GroupId: row.GroupId,
+        EffectiveFrom: row.EffectiveFrom,
+        EffectiveTo: row.EffectiveTo,
+        Notes: row.Notes,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_hierarchies':
+      return ({
+        Id: row.Id,
+        Name: row.Name,
+        GroupId: row.GroupId,
+        GroupName: row.GroupName,
+        BrokerId: row.BrokerId,
+        BrokerName: row.BrokerName,
+        ProposalId: row.ProposalId,
+        CurrentVersionId: row.CurrentVersionId,
+        EffectiveDate: row.EffectiveDate,
+        SitusState: row.SitusState,
+        Status: row.Status,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_hierarchy_versions':
+      return ({
+        Id: row.Id,
+        HierarchyId: row.HierarchyId,
+        VersionNumber: row.VersionNumber,
+        EffectiveFrom: row.EffectiveFrom,
+        EffectiveTo: row.EffectiveTo,
+        Status: row.Status,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_hierarchy_participants':
+      return ({
+        Id: row.Id,
+        HierarchyVersionId: row.HierarchyVersionId,
+        EntityId: brokerExternalToInternal(row.EntityId),  // Convert P12345 to 12345
+        EntityName: row.EntityName,
+        Level: row.Level,
+        SortOrder: row.Level,  // Use Level as SortOrder
+        SplitPercent: 0,
+        CommissionRate: row.CommissionRate,
+        ScheduleCode: row.ScheduleCode,
+        ScheduleId: row.ScheduleId,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_state_rules':
+      return ({
+        Id: row.Id,
+        HierarchyVersionId: row.HierarchyVersionId,
+        ShortName: row.ShortName,
+        Name: row.Name,
+        Description: row.Description,
+        Type: row.Type,
+        SortOrder: row.SortOrder,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_state_rule_states':
+      return ({
+        Id: row.Id,
+        StateRuleId: row.StateRuleId,
+        StateCode: row.StateCode,
+        StateName: row.StateName,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_hierarchy_splits':
+      return ({
+        Id: row.Id,
+        StateRuleId: row.StateRuleId,
+        ProductId: row.ProductId,
+        ProductCode: row.ProductCode,
+        ProductName: row.ProductName,
+        ScheduleCode: row.ScheduleCode,
+        ScheduleId: row.ScheduleId,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_split_distributions':
+      return ({
+        Id: row.Id,
+        HierarchySplitId: row.HierarchySplitId,
+        HierarchyParticipantId: row.HierarchyParticipantId,
+        ParticipantEntityId: row.ParticipantEntityId,
+        Percentage: row.Percentage,
+        ScheduleId: row.ScheduleId,
+        ScheduleName: row.ScheduleName,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_policy_hierarchy_assignments':
+      return ({
+        Id: row.Id,
+        PolicyId: row.PolicyId,
+        HierarchyId: row.HierarchyId,
+        WritingBrokerId: row.WritingBrokerId,
+        SplitSequence: row.SplitSequence,
+        SplitPercent: row.SplitPercent,
+        NonConformantReason: row.NonConformantReason,
+        EntryType: row.EntryType ?? 0,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_policy_hierarchy_participants':
+      return ({
+        Id: row.Id,
+        PolicyHierarchyAssignmentId: row.PolicyHierarchyAssignmentId,
+        BrokerId: brokerExternalToInternal(row.BrokerId),  // Convert P12345 to 12345
+        BrokerName: row.BrokerName,
+        Level: row.Level,
+        ScheduleCode: row.ScheduleCode,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_commission_assignment_versions':
+      return ({
+        Id: row.Id,
+        BrokerId: row.BrokerId,  // Already numeric from earlier code
+        BrokerName: row.BrokerName,
+        ProposalId: row.ProposalId,
+        GroupId: row.GroupId,
+        HierarchyId: row.HierarchyId,
+        HierarchyVersionId: row.HierarchyVersionId,
+        HierarchyParticipantId: row.HierarchyParticipantId,
+        VersionNumber: row.VersionNumber,
+        EffectiveFrom: row.EffectiveFrom,
+        EffectiveTo: row.EffectiveTo,
+        Status: row.Status,
+        Type: row.Type,
+        ChangeDescription: row.ChangeDescription,
+        TotalAssignedPercent: row.TotalAssignedPercent,
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    case 'stg_commission_assignment_recipients':
+      // Map code property names to actual schema column names
+      return ({
+        Id: row.Id,
+        AssignmentVersionId: row.VersionId,  // Schema column name differs from code
+        RecipientBrokerId: row.RecipientBrokerId,  // Already numeric from earlier code
+        RecipientBrokerName: row.RecipientName,  // Schema column name differs from code
+        Percent: row.Percentage,  // Schema column name differs from code
+        RecipientType: 1,  // Default to Broker type
+        CreationTime: creationTime,
+        IsDeleted: 0
+      } as Record<string, unknown>)[columnName];
+    default:
+      return null;
+  }
+}
+
+async function writeStagingOutputToBlob(
+  config: DatabaseConfig,
+  output: StagingOutput,
+  options: BuilderOptions
+): Promise<void> {
+  const schema = options.schema || 'etl';
+  const creationTime = new Date();
+  const runId = options.bulkPrefix || `etl-bulk-${Date.now()}`;
+  const { containerUrl, containerLocation, sasToken, containerName } = getBlobBulkConfig(options);
+
+  const tempDir = path.join(os.tmpdir(), runId);
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  const pool = await sql.connect(config);
+  // Use ContainerClient directly with full containerUrl (which includes container name + SAS token)
+  const storageAccountUrl = `https://${new URL(containerUrl).hostname}`;
+  const fullBlobUrl = `${storageAccountUrl}/${containerName}?${sasToken}`;
+  const blobClient = new ContainerClient(fullBlobUrl);
+
+  try {
+    await ensureBlobExternalDataSource(pool, containerLocation, sasToken);
+    await clearStagingData(pool, schema, output, options);
+
+    const tables: Array<{ name: string; rows: any[] }> = [
+      { name: 'stg_proposals', rows: output.proposals },
+      { name: 'stg_proposal_products', rows: output.proposalProducts },
+      { name: 'stg_proposal_key_mapping', rows: output.proposalKeyMappings },
+      { name: 'stg_premium_split_versions', rows: output.premiumSplitVersions },
+      { name: 'stg_premium_split_participants', rows: output.premiumSplitParticipants },
+      { name: 'stg_hierarchies', rows: output.hierarchies },
+      { name: 'stg_hierarchy_versions', rows: output.hierarchyVersions },
+      { name: 'stg_hierarchy_participants', rows: output.hierarchyParticipants },
+      { name: 'stg_state_rules', rows: output.stateRules },
+      { name: 'stg_state_rule_states', rows: output.stateRuleStates },
+      { name: 'stg_hierarchy_splits', rows: output.hierarchySplits },
+      { name: 'stg_split_distributions', rows: output.splitDistributions },
+      { name: 'stg_policy_hierarchy_assignments', rows: output.policyHierarchyAssignments },
+      { name: 'stg_policy_hierarchy_participants', rows: output.policyHierarchyParticipants },
+      { name: 'stg_commission_assignment_versions', rows: output.commissionAssignmentVersions },
+      { name: 'stg_commission_assignment_recipients', rows: output.commissionAssignmentRecipients }
+    ];
+
+    for (const table of tables) {
+      if (table.rows.length === 0) continue;
+      const columns = await loadTableColumns(pool, schema, table.name);
+      const csvRows = table.rows.map(row =>
+        columns.map(column => getColumnValue(table.name, row, column, creationTime))
+      );
+      const fileName = `${table.name}.csv`;
+      const localPath = path.join(tempDir, fileName);
+      writeCsvFile(localPath, columns, csvRows);
+
+      const blobPath = `${runId}/${fileName}`;
+      const blob = blobClient.getBlockBlobClient(blobPath);
+      console.log(`  Uploading ${fileName} to blob: ${blobPath}...`);
+      await blob.uploadFile(localPath);
+      console.log(`    ✓ Upload complete for ${fileName}`);
+
+      console.log(`  Running BULK INSERT for ${table.name}...`);
+      await pool.request().query(`
+        BULK INSERT [${schema}].[${table.name}]
+        FROM '${blobPath}'
+        WITH (
+          DATA_SOURCE = 'BlobStaging',
+          FORMAT = 'CSV',
+          FIRSTROW = 2,
+          FIELDTERMINATOR = ',',
+          ROWTERMINATOR = '0x0A',
+          KEEPNULLS,
+          CODEPAGE = '65001'
+        )
+      `);
+      console.log(`    ✓ Bulk insert complete for ${table.name}`);
+    }
+  } finally {
+    await pool.close();
+  }
+}
+
+async function clearStagingData(
+  pool: sql.ConnectionPool,
+  schema: string,
+  output: StagingOutput,
+  options: BuilderOptions
+): Promise<void> {
+  if (options.groups && options.groups.length > 0) {
+    const groupsWithPrefix = options.groups.map(g => {
+      const trimmed = g.trim();
+      return /^[A-Za-z]/.test(trimmed) ? trimmed : `G${trimmed}`;
+    });
+    const groupsWithNumericPrefix = options.groups.map(g => {
+      const trimmed = g.trim();
+      const numericPart = trimmed.replace(/^[A-Za-z]+/, '');
+      return `G${numericPart}`;
+    });
+    const groupsListString = Array.from(new Set([...groupsWithPrefix, ...groupsWithNumericPrefix]))
+      .map(g => `'${g}'`)
+      .join(',');
+    
+    console.log(`  SELECTIVE STAGING CLEAR for groups: ${groupsWithPrefix.join(', ')}`);
+    
+    await pool.request().query(`
+      DELETE car FROM [${schema}].[stg_commission_assignment_recipients] car
+      INNER JOIN [${schema}].[stg_commission_assignment_versions] cav ON cav.Id = car.AssignmentVersionId
+      INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
+      WHERE p.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE cav FROM [${schema}].[stg_commission_assignment_versions] cav
+      INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
+      WHERE p.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE php FROM [${schema}].[stg_policy_hierarchy_participants] php
+      INNER JOIN [${schema}].[stg_policy_hierarchy_assignments] pha ON pha.Id = php.PolicyHierarchyAssignmentId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE pha FROM [${schema}].[stg_policy_hierarchy_assignments] pha
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE sd FROM [${schema}].[stg_split_distributions] sd
+      INNER JOIN [${schema}].[stg_hierarchy_splits] hs ON hs.Id = sd.HierarchySplitId
+      INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+      INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE hs FROM [${schema}].[stg_hierarchy_splits] hs
+      INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+      INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE srs FROM [${schema}].[stg_state_rule_states] srs
+      INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = srs.StateRuleId
+      INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE sr FROM [${schema}].[stg_state_rules] sr
+      INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE hp FROM [${schema}].[stg_hierarchy_participants] hp
+      INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE hv FROM [${schema}].[stg_hierarchy_versions] hv
+      INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+      WHERE h.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE psp FROM [${schema}].[stg_premium_split_participants] psp
+      INNER JOIN [${schema}].[stg_premium_split_versions] psv ON psv.Id = psp.VersionId
+      INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
+      WHERE p.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`
+      DELETE psv FROM [${schema}].[stg_premium_split_versions] psv
+      INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
+      WHERE p.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`DELETE FROM [${schema}].[stg_hierarchies] WHERE GroupId IN (${groupsListString})`);
+    await pool.request().query(`
+      DELETE pp FROM [${schema}].[stg_proposal_products] pp
+      INNER JOIN [${schema}].[stg_proposals] p ON p.Id = pp.ProposalId
+      WHERE p.GroupId IN (${groupsListString})
+    `);
+    await pool.request().query(`DELETE FROM [${schema}].[stg_proposal_key_mapping] WHERE GroupId IN (${groupsListString})`);
+    await pool.request().query(`DELETE FROM [${schema}].[stg_proposals] WHERE GroupId IN (${groupsListString})`);
+    
+    console.log(`  ✅ Cleared staging data for groups: ${groupsWithPrefix.join(', ')}`);
+
+    if (output.commissionAssignmentVersions.length > 0) {
+      const cavIds = output.commissionAssignmentVersions.map(c => `'${String(c.Id).replace(/'/g, "''")}'`);
+      const batchSize = 500;
+      for (let i = 0; i < cavIds.length; i += batchSize) {
+        const batch = cavIds.slice(i, i + batchSize).join(',');
+        await pool.request().query(`
+          DELETE FROM [${schema}].[stg_commission_assignment_recipients]
+          WHERE AssignmentVersionId IN (${batch})
+        `);
+        await pool.request().query(`
+          DELETE FROM [${schema}].[stg_commission_assignment_versions]
+          WHERE Id IN (${batch})
+        `);
+      }
+    }
+  } else {
+    console.log('  FULL STAGING CLEAR (truncating all staging tables)');
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposals]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_products]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_key_mapping]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_versions]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_participants]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchies]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_versions]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_participants]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rules]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rule_states]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_splits]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_split_distributions]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_assignments]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_participants]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_versions]`);
+    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_recipients]`);
+  }
+}
+
 export async function writeStagingOutput(
   config: DatabaseConfig,
   output: StagingOutput,
@@ -2162,6 +2807,11 @@ export async function writeStagingOutput(
     return;
   }
 
+  if (options.bulkMode === 'blob') {
+    await writeStagingOutputToBlob(config, output, options);
+    return;
+  }
+
   const pool = await sql.connect(config);
 
   try {
@@ -2170,162 +2820,7 @@ export async function writeStagingOutput(
     }
     const startTime = Date.now();
 
-    // Clear existing data - SELECTIVE if groups specified, FULL otherwise
-    if (options.groups && options.groups.length > 0) {
-      // SELECTIVE DELETE: Only clear staging data for specified groups
-      // This preserves other groups' staging data for targeted corrections
-      const groupsWithPrefix = options.groups.map(g => {
-        const trimmed = g.trim();
-        return /^[A-Za-z]/.test(trimmed) ? trimmed : `G${trimmed}`;
-      });
-      const groupsWithNumericPrefix = options.groups.map(g => {
-        const trimmed = g.trim();
-        const numericPart = trimmed.replace(/^[A-Za-z]+/, '');
-        return `G${numericPart}`;
-      });
-      const groupsListString = Array.from(new Set([...groupsWithPrefix, ...groupsWithNumericPrefix]))
-        .map(g => `'${g}'`)
-        .join(',');
-      
-      console.log(`  SELECTIVE STAGING CLEAR for groups: ${groupsWithPrefix.join(', ')}`);
-      
-      // Delete in FK dependency order (children first)
-      // 1. Commission assignment recipients (via versions -> proposals)
-      await pool.request().query(`
-        DELETE car FROM [${schema}].[stg_commission_assignment_recipients] car
-        INNER JOIN [${schema}].[stg_commission_assignment_versions] cav ON cav.Id = car.AssignmentVersionId
-        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
-        WHERE p.GroupId IN (${groupsListString})
-      `);
-      // 2. Commission assignment versions (via proposals)
-      await pool.request().query(`
-        DELETE cav FROM [${schema}].[stg_commission_assignment_versions] cav
-        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
-        WHERE p.GroupId IN (${groupsListString})
-      `);
-      // 3. Policy hierarchy participants (via assignments -> hierarchies)
-      await pool.request().query(`
-        DELETE php FROM [${schema}].[stg_policy_hierarchy_participants] php
-        INNER JOIN [${schema}].[stg_policy_hierarchy_assignments] pha ON pha.Id = php.PolicyHierarchyAssignmentId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 4. Policy hierarchy assignments (via hierarchies)
-      await pool.request().query(`
-        DELETE pha FROM [${schema}].[stg_policy_hierarchy_assignments] pha
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 5. Split distributions (via hierarchy splits -> state rules -> hierarchy versions -> hierarchies)
-      await pool.request().query(`
-        DELETE sd FROM [${schema}].[stg_split_distributions] sd
-        INNER JOIN [${schema}].[stg_hierarchy_splits] hs ON hs.Id = sd.HierarchySplitId
-        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
-        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 6. Hierarchy splits (via state rules -> hierarchy versions -> hierarchies)
-      await pool.request().query(`
-        DELETE hs FROM [${schema}].[stg_hierarchy_splits] hs
-        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
-        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 7. State rule states (via state rules -> hierarchy versions -> hierarchies)
-      await pool.request().query(`
-        DELETE srs FROM [${schema}].[stg_state_rule_states] srs
-        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = srs.StateRuleId
-        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 8. State rules (via hierarchy versions -> hierarchies)
-      await pool.request().query(`
-        DELETE sr FROM [${schema}].[stg_state_rules] sr
-        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 9. Hierarchy participants (via hierarchy versions -> hierarchies)
-      await pool.request().query(`
-        DELETE hp FROM [${schema}].[stg_hierarchy_participants] hp
-        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 10. Hierarchy versions (via hierarchies)
-      await pool.request().query(`
-        DELETE hv FROM [${schema}].[stg_hierarchy_versions] hv
-        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-        WHERE h.GroupId IN (${groupsListString})
-      `);
-      // 11. Premium split participants (via premium split versions -> proposals)
-      await pool.request().query(`
-        DELETE psp FROM [${schema}].[stg_premium_split_participants] psp
-        INNER JOIN [${schema}].[stg_premium_split_versions] psv ON psv.Id = psp.VersionId
-        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
-        WHERE p.GroupId IN (${groupsListString})
-      `);
-      // 12. Premium split versions (via proposals)
-      await pool.request().query(`
-        DELETE psv FROM [${schema}].[stg_premium_split_versions] psv
-        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
-        WHERE p.GroupId IN (${groupsListString})
-      `);
-      // 13. Hierarchies (direct)
-      await pool.request().query(`DELETE FROM [${schema}].[stg_hierarchies] WHERE GroupId IN (${groupsListString})`);
-      // 14. Proposal products (via proposals)
-      await pool.request().query(`
-        DELETE pp FROM [${schema}].[stg_proposal_products] pp
-        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = pp.ProposalId
-        WHERE p.GroupId IN (${groupsListString})
-      `);
-      // 15. Proposal key mapping (direct GroupId)
-      await pool.request().query(`DELETE FROM [${schema}].[stg_proposal_key_mapping] WHERE GroupId IN (${groupsListString})`);
-      // 16. Proposals (direct)
-      await pool.request().query(`DELETE FROM [${schema}].[stg_proposals] WHERE GroupId IN (${groupsListString})`);
-      
-      console.log(`  ✅ Cleared staging data for groups: ${groupsWithPrefix.join(', ')}`);
-
-      // Also delete broker-level commission assignments that will be re-inserted
-      if (output.commissionAssignmentVersions.length > 0) {
-        const cavIds = output.commissionAssignmentVersions.map(c => `'${String(c.Id).replace(/'/g, "''")}'`);
-        const batchSize = 500;
-        for (let i = 0; i < cavIds.length; i += batchSize) {
-          const batch = cavIds.slice(i, i + batchSize).join(',');
-          await pool.request().query(`
-            DELETE FROM [${schema}].[stg_commission_assignment_recipients]
-            WHERE AssignmentVersionId IN (${batch})
-          `);
-          await pool.request().query(`
-            DELETE FROM [${schema}].[stg_commission_assignment_versions]
-            WHERE Id IN (${batch})
-          `);
-        }
-      }
-    } else {
-      // FULL TRUNCATE: Clear all staging data (original behavior)
-      console.log('  FULL STAGING CLEAR (truncating all staging tables)');
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposals]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_products]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_key_mapping]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_versions]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_participants]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchies]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_versions]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_participants]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rules]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rule_states]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_splits]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_split_distributions]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_assignments]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_participants]`);
-      // Clear staging assignment tables
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_versions]`);
-      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_recipients]`);
-    }
+    await clearStagingData(pool, schema, output, options);
     // NOTE: We intentionally do NOT delete from production (dbo) here.
     // Export to production is handled by separate export scripts.
 
@@ -2753,8 +3248,8 @@ export async function writeStagingOutput(
     }
 
     // Insert PHA assignments (batched - now includes HierarchyId for referential integrity)
-    // 7 params per row * 280 rows = 1960 params (under 2100 limit)
-    const phaBatchSize = 280;
+    // 8 params per row * 250 rows = 2000 params (under 2100 limit)
+    const phaBatchSize = 250;
     const totalPhaBatches = Math.ceil(output.policyHierarchyAssignments.length / phaBatchSize);
     
     for (let i = 0; i < output.policyHierarchyAssignments.length; i += phaBatchSize) {
