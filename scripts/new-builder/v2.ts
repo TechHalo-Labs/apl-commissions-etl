@@ -42,6 +42,12 @@ interface ValidationResult {
   nonPhaRows: number;
   unmatchedRows: number;
   overlappingRows: number;
+  // Chain validation (only populated with --deep flag)
+  proposalsWithoutSplitVersion?: number;
+  splitVersionsWithoutParticipants?: number;
+  participantsWithoutHierarchy?: number;
+  hierarchiesWithoutParticipants?: number;
+  hierarchyParticipantsWithoutSchedule?: number;
 }
 
 interface OverlappingCert {
@@ -178,9 +184,12 @@ async function loadDistinctGroups(config: DatabaseConfig, options: BuilderOption
   }
 }
 
-async function validateGroups(config: DatabaseConfig, groups: string[]): Promise<ValidationResult[]> {
+async function validateGroups(config: DatabaseConfig, groups: string[], deepValidation: boolean = false): Promise<ValidationResult[]> {
   if (groups.length === 0) return [];
-  const pool = await sql.connect(config);
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 300000
+  });
   const total = groups.length;
   try {
     const results: ValidationResult[] = [];
@@ -343,6 +352,87 @@ async function validateGroups(config: DatabaseConfig, groups: string[]): Promise
         console.log(`  ⚠️ Validation samples for ${groupIdWithPrefix}:`);
         for (const row of sample.recordset) {
           console.log(`    - Cert ${row.CertificateId} ${row.Product} ${row.PlanCode} ${row.CertEffectiveDate}`);
+        }
+      }
+
+      // Deep chain validation if requested
+      if (deepValidation && nonPhaRows > 0) {
+        const chainCheck = await pool.request().query(`
+          -- Check proposal chain integrity for group ${groupIdWithPrefix}
+          WITH ProposalsForGroup AS (
+            SELECT Id FROM [etl].[stg_proposals] WHERE GroupId = '${groupIdWithPrefix}'
+          ),
+          -- 1. Proposals without PremiumSplitVersions
+          ProposalsWithoutPSV AS (
+            SELECT p.Id
+            FROM ProposalsForGroup p
+            LEFT JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = p.Id
+            WHERE psv.Id IS NULL
+          ),
+          -- 2. PremiumSplitVersions without Participants
+          PSVWithoutParticipants AS (
+            SELECT psv.Id
+            FROM [etl].[stg_premium_split_versions] psv
+            WHERE psv.GroupId = '${groupIdWithPrefix}'
+              AND NOT EXISTS (
+                SELECT 1 FROM [etl].[stg_premium_split_participants] psp WHERE psp.VersionId = psv.Id
+              )
+          ),
+          -- 3. PremiumSplitParticipants without valid Hierarchy link
+          PSPWithoutHierarchy AS (
+            SELECT psp.Id
+            FROM [etl].[stg_premium_split_participants] psp
+            WHERE psp.GroupId = '${groupIdWithPrefix}'
+              AND (psp.HierarchyId IS NULL OR NOT EXISTS (
+                SELECT 1 FROM [etl].[stg_hierarchies] h WHERE h.Id = psp.HierarchyId
+              ))
+          ),
+          -- 4. Hierarchies without HierarchyParticipants (via versions)
+          HierarchiesWithoutParticipants AS (
+            SELECT h.Id
+            FROM [etl].[stg_hierarchies] h
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND NOT EXISTS (
+                SELECT 1 FROM [etl].[stg_hierarchy_versions] hv
+                INNER JOIN [etl].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId = hv.Id
+                WHERE hv.HierarchyId = h.Id
+              )
+          ),
+          -- 5. HierarchyParticipants without ScheduleId
+          HPWithoutSchedule AS (
+            SELECT hp.Id
+            FROM [etl].[stg_hierarchy_participants] hp
+            INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+            INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND (hp.ScheduleId IS NULL OR hp.ScheduleId = '')
+          )
+          SELECT
+            (SELECT COUNT(*) FROM ProposalsWithoutPSV) AS ProposalsWithoutPSV,
+            (SELECT COUNT(*) FROM PSVWithoutParticipants) AS PSVWithoutParticipants,
+            (SELECT COUNT(*) FROM PSPWithoutHierarchy) AS PSPWithoutHierarchy,
+            (SELECT COUNT(*) FROM HierarchiesWithoutParticipants) AS HierarchiesWithoutParticipants,
+            (SELECT COUNT(*) FROM HPWithoutSchedule) AS HPWithoutSchedule
+        `);
+
+        const chain = chainCheck.recordset[0];
+        results[results.length - 1].proposalsWithoutSplitVersion = chain.ProposalsWithoutPSV || 0;
+        results[results.length - 1].splitVersionsWithoutParticipants = chain.PSVWithoutParticipants || 0;
+        results[results.length - 1].participantsWithoutHierarchy = chain.PSPWithoutHierarchy || 0;
+        results[results.length - 1].hierarchiesWithoutParticipants = chain.HierarchiesWithoutParticipants || 0;
+        results[results.length - 1].hierarchyParticipantsWithoutSchedule = chain.HPWithoutSchedule || 0;
+
+        const chainIssues: string[] = [];
+        if (chain.ProposalsWithoutPSV > 0) chainIssues.push(`proposals-no-PSV=${chain.ProposalsWithoutPSV}`);
+        if (chain.PSVWithoutParticipants > 0) chainIssues.push(`PSV-no-participants=${chain.PSVWithoutParticipants}`);
+        if (chain.PSPWithoutHierarchy > 0) chainIssues.push(`PSP-no-hierarchy=${chain.PSPWithoutHierarchy}`);
+        if (chain.HierarchiesWithoutParticipants > 0) chainIssues.push(`hierarchies-no-participants=${chain.HierarchiesWithoutParticipants}`);
+        if (chain.HPWithoutSchedule > 0) chainIssues.push(`HP-no-schedule=${chain.HPWithoutSchedule}`);
+
+        if (chainIssues.length > 0) {
+          console.log(`  ⚠️ Chain issues: ${chainIssues.join(', ')}`);
+        } else {
+          console.log(`  ✓ Chain validation passed`);
         }
       }
     }
@@ -689,6 +779,9 @@ if (require.main === module) {
   const fromAuditPath = args.includes('--from-audit')
     ? args[args.indexOf('--from-audit') + 1]
     : undefined;
+  
+  // Parse --deep for deep chain validation
+  const deepValidation = args.includes('--deep');
   let idx = 0;
   while (idx < args.length) {
     if (args[idx] === '--groups') {
@@ -776,8 +869,8 @@ if (require.main === module) {
         process.exit(1);
       }
       
-      console.log(`Validating ${groupsToValidate.length} group(s)`);
-      const results = await validateGroups(config, groupsToValidate);
+      console.log(`Validating ${groupsToValidate.length} group(s)${deepValidation ? ' (with chain validation)' : ''}`);
+      const results = await validateGroups(config, groupsToValidate, deepValidation);
       const unmatched = results.filter(r => r.unmatchedRows > 0);
       const overlapping = results.filter(r => r.overlappingRows > 0);
       const failed = results.filter(r => r.unmatchedRows > 0 || r.overlappingRows > 0);
@@ -789,6 +882,32 @@ if (require.main === module) {
       if (overlapping.length > 0) {
         console.log(`⚠️  Groups with OVERLAPPING proposals: ${overlapping.map(r => `${r.groupId}(${r.overlappingRows})`).join(', ')}`);
       }
+      
+      // Chain validation summary (only if --deep was used)
+      if (deepValidation) {
+        const chainIssues = results.filter(r => 
+          (r.proposalsWithoutSplitVersion || 0) > 0 ||
+          (r.splitVersionsWithoutParticipants || 0) > 0 ||
+          (r.participantsWithoutHierarchy || 0) > 0 ||
+          (r.hierarchiesWithoutParticipants || 0) > 0 ||
+          (r.hierarchyParticipantsWithoutSchedule || 0) > 0
+        );
+        if (chainIssues.length > 0) {
+          console.log(`\n⚠️  Chain validation issues found in ${chainIssues.length} group(s):`);
+          for (const r of chainIssues) {
+            const issues: string[] = [];
+            if ((r.proposalsWithoutSplitVersion || 0) > 0) issues.push(`proposals-no-PSV=${r.proposalsWithoutSplitVersion}`);
+            if ((r.splitVersionsWithoutParticipants || 0) > 0) issues.push(`PSV-no-participants=${r.splitVersionsWithoutParticipants}`);
+            if ((r.participantsWithoutHierarchy || 0) > 0) issues.push(`PSP-no-hierarchy=${r.participantsWithoutHierarchy}`);
+            if ((r.hierarchiesWithoutParticipants || 0) > 0) issues.push(`hierarchies-no-participants=${r.hierarchiesWithoutParticipants}`);
+            if ((r.hierarchyParticipantsWithoutSchedule || 0) > 0) issues.push(`HP-no-schedule=${r.hierarchyParticipantsWithoutSchedule}`);
+            console.log(`  ${r.groupId}: ${issues.join(', ')}`);
+          }
+        } else {
+          console.log(`\n✓ All chain validations passed`);
+        }
+      }
+      
       if (failed.length > 0) {
         throw new Error(`Validation failed for ${failed.length} group(s)`);
       }
