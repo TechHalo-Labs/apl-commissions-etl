@@ -450,6 +450,7 @@ if (require.main === module) {
   let groups: string[] | undefined;
   let validateGroupsArg: string[] = [];
   let validateAllFlag = args.includes('--full-validation');
+  let validateAllGroups = args.includes('--all');
   let idx = 0;
   while (idx < args.length) {
     if (args[idx] === '--groups') {
@@ -522,12 +523,18 @@ if (require.main === module) {
 
     if (mode === 'validate') {
       // Validate-only mode: skip transform, just run validation
-      const groupsToValidate = validateGroupsArg.length > 0
-        ? validateGroupsArg
-        : (options.groups || []);
+      let groupsToValidate: string[];
       
-      if (groupsToValidate.length === 0) {
-        console.error('ERROR: --mode validate requires --validate-groups or --groups');
+      if (validateAllGroups) {
+        console.log('Loading all groups from database...');
+        groupsToValidate = await loadDistinctGroups(config, options);
+        console.log(`Found ${groupsToValidate.length} groups`);
+      } else if (validateGroupsArg.length > 0) {
+        groupsToValidate = validateGroupsArg;
+      } else if (options.groups && options.groups.length > 0) {
+        groupsToValidate = options.groups;
+      } else {
+        console.error('ERROR: --mode validate requires --all, --validate-groups, or --groups');
         process.exit(1);
       }
       
