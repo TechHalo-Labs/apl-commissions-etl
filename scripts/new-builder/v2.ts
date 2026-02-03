@@ -782,6 +782,11 @@ if (require.main === module) {
   
   // Parse --deep for deep chain validation
   const deepValidation = args.includes('--deep');
+  
+  // Parse --offset for resuming validation
+  const offsetArg = args.includes('--offset')
+    ? Number.parseInt(args[args.indexOf('--offset') + 1], 10)
+    : 0;
   let idx = 0;
   while (idx < args.length) {
     if (args[idx] === '--groups') {
@@ -867,6 +872,12 @@ if (require.main === module) {
       } else {
         console.error('ERROR: --mode validate requires --all, --validate-groups, or --groups');
         process.exit(1);
+      }
+      
+      // Apply offset if specified
+      if (offsetArg > 0 && offsetArg < groupsToValidate.length) {
+        console.log(`Skipping first ${offsetArg} groups (--offset)`);
+        groupsToValidate = groupsToValidate.slice(offsetArg);
       }
       
       console.log(`Validating ${groupsToValidate.length} group(s)${deepValidation ? ' (with chain validation)' : ''}`);
