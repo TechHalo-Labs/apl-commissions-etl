@@ -646,6 +646,10 @@ async function processCertificates(
   }
 
   builder.applyEntropyRouting(entropyOptions);
+  
+  // Segment by dominant trend - detect regime changes and route non-dominant to PHA
+  builder.segmentByDominantTrend();
+  
   builder.buildProposals();
   
   // Route small outlier proposals to PHA (< 5% of total certificates)

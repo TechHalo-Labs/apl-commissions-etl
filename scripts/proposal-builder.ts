@@ -883,11 +883,161 @@ export class ProposalBuilder {
   // Step 4: Build Proposals
   // ==========================================================================
 
+  // ==========================================================================
+  // Step 3b: Segment by Dominant Trend (Date-based regime detection)
+  // ==========================================================================
+
+  /**
+   * Segments selection criteria by detecting "regime changes" - dates where
+   * the dominant configuration hash changes. This creates cleaner proposals
+   * by splitting at natural transition points rather than merging all dates
+   * with the same hash into one proposal.
+   * 
+   * Algorithm:
+   * 1. Group criteria by date and count records per hash
+   * 2. For each date, identify the dominant hash (most records)
+   * 3. Detect regime changes where dominant hash switches
+   * 4. Tag each criteria with its regime (date segment)
+   * 5. Route non-dominant hashes within each regime to PHA
+   */
+  segmentByDominantTrend(): void {
+    console.log('Segmenting by dominant trend...');
+    const startTime = Date.now();
+
+    // Group criteria by groupId first (process each group independently)
+    const criteriaByGroup = new Map<string, SelectionCriteria[]>();
+    for (const criteria of this.selectionCriteria) {
+      const groupId = criteria.groupId;
+      if (!criteriaByGroup.has(groupId)) {
+        criteriaByGroup.set(groupId, []);
+      }
+      criteriaByGroup.get(groupId)!.push(criteria);
+    }
+
+    const updatedCriteria: SelectionCriteria[] = [];
+    let totalRegimes = 0;
+    let totalOutliers = 0;
+
+    for (const [groupId, groupCriteria] of criteriaByGroup) {
+      // Step 1: Group by date and count records per hash
+      const dateHashCounts = new Map<string, Map<string, { count: number; criteria: SelectionCriteria[] }>>();
+      
+      for (const criteria of groupCriteria) {
+        const dateKey = criteria.effectiveDate.toISOString().split('T')[0];
+        const hash = criteria.configHash;
+        
+        if (!dateHashCounts.has(dateKey)) {
+          dateHashCounts.set(dateKey, new Map());
+        }
+        const hashMap = dateHashCounts.get(dateKey)!;
+        if (!hashMap.has(hash)) {
+          hashMap.set(hash, { count: 0, criteria: [] });
+        }
+        const entry = hashMap.get(hash)!;
+        entry.count += criteria.certificateIds.length;
+        entry.criteria.push(criteria);
+      }
+
+      // Step 2: Sort dates and identify dominant hash per date
+      const sortedDates = Array.from(dateHashCounts.keys()).sort();
+      const dominantByDate = new Map<string, string>();
+      
+      for (const date of sortedDates) {
+        const hashMap = dateHashCounts.get(date)!;
+        let maxCount = 0;
+        let dominantHash = '';
+        for (const [hash, data] of hashMap) {
+          if (data.count > maxCount) {
+            maxCount = data.count;
+            dominantHash = hash;
+          }
+        }
+        dominantByDate.set(date, dominantHash);
+      }
+
+      // Step 3: Detect regime changes and assign regime IDs
+      const regimes: { startDate: string; endDate: string; hash: string }[] = [];
+      let currentRegime: { startDate: string; endDate: string; hash: string } | null = null;
+      
+      for (const date of sortedDates) {
+        const dominantHash = dominantByDate.get(date)!;
+        
+        if (!currentRegime || currentRegime.hash !== dominantHash) {
+          // New regime starts
+          if (currentRegime) {
+            regimes.push(currentRegime);
+          }
+          currentRegime = { startDate: date, endDate: date, hash: dominantHash };
+        } else {
+          // Extend current regime
+          currentRegime.endDate = date;
+        }
+      }
+      if (currentRegime) {
+        regimes.push(currentRegime);
+      }
+
+      totalRegimes += regimes.length;
+
+      // Step 4: Tag criteria with regime and route non-dominant to PHA
+      for (const date of sortedDates) {
+        const hashMap = dateHashCounts.get(date)!;
+        const dominantHash = dominantByDate.get(date)!;
+        
+        // Find which regime this date belongs to
+        const regime = regimes.find(r => date >= r.startDate && date <= r.endDate);
+        const regimeIndex = regime ? regimes.indexOf(regime) : 0;
+        
+        for (const [hash, data] of hashMap) {
+          if (hash === dominantHash) {
+            // Dominant hash - update configHash to include regime for proper grouping
+            for (const criteria of data.criteria) {
+              // Tag with regime so buildProposals creates separate proposals per regime
+              (criteria as any).regimeIndex = regimeIndex;
+              (criteria as any).regimeHash = `${hash}|REGIME-${regimeIndex}`;
+              updatedCriteria.push(criteria);
+            }
+          } else {
+            // Non-dominant hash - route to PHA as outlier
+            for (const criteria of data.criteria) {
+              for (const certId of criteria.certificateIds) {
+                this.phaRecords.push({
+                  certificateId: certId,
+                  groupId: criteria.groupId,
+                  effectiveDate: criteria.effectiveDate,
+                  splitConfig: criteria.splitConfig,
+                  reason: `Non-dominant hash on ${date} (dominant: ${dominantHash.substring(0, 12)}...)`,
+                  entryType: 4  // Non-dominant outlier
+                });
+                totalOutliers++;
+              }
+            }
+          }
+        }
+      }
+
+      if (regimes.length > 1) {
+        console.log(`  G${groupId}: ${regimes.length} regimes detected`);
+        for (let i = 0; i < regimes.length; i++) {
+          const r = regimes[i];
+          console.log(`    Regime ${i + 1}: ${r.startDate} → ${r.endDate} (hash: ${r.hash.substring(0, 12)}...)`);
+        }
+      }
+    }
+
+    // Replace selection criteria with regime-tagged versions
+    this.selectionCriteria = updatedCriteria;
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`  ✓ Segmented into ${totalRegimes} regimes, routed ${totalOutliers} non-dominant certs to PHA in ${elapsed}s`);
+  }
+
   buildProposals(): void {
     console.log('Building proposals...');
     const startTime = Date.now();
     
     // Group selection criteria into proposals
+    // Use regimeHash if available (from segmentByDominantTrend), otherwise use configHash
     const proposalMap = new Map<string, Proposal>();
     let processed = 0;
     const totalCriteria = this.selectionCriteria.length;
@@ -900,7 +1050,9 @@ export class ProposalBuilder {
         console.log(`  Progress: ${processed}/${totalCriteria} (${pct}%) - ${elapsed}s elapsed`);
       }
       
-      const key = `${criteria.groupId}|${criteria.configHash}`;
+      // Use regimeHash if available (from segmentByDominantTrend), otherwise use configHash
+      const hashToUse = (criteria as any).regimeHash || criteria.configHash;
+      const key = `${criteria.groupId}|${hashToUse}`;
       
       // Check if group is invalid (routes to PHA)
       if (this.isInvalidGroup(criteria.groupId)) {
