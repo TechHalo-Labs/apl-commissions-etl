@@ -8,6 +8,7 @@
  *   --experiment <name>   Name for this experiment (required)
  *   --workers <n>         Number of parallel workers (default: 4)
  *   --batch-size <n>      Groups per worker (default: auto-calculated)
+ *   --spawn-delay <s>     Seconds to wait between spawning workers (default: 5)
  *   --dry-run             Show what would be run without executing
  */
 
@@ -99,6 +100,11 @@ async function main() {
   
   const dryRun = args.includes('--dry-run');
   
+  // Delay between spawning workers (in seconds) to avoid DB connection storms
+  const spawnDelay = args.includes('--spawn-delay')
+    ? Number.parseInt(args[args.indexOf('--spawn-delay') + 1], 10)
+    : 5;
+  
   if (!experiment) {
     console.error('ERROR: --experiment <name> is required');
     console.error('');
@@ -111,6 +117,7 @@ async function main() {
   console.log('='.repeat(70));
   console.log(`Experiment: ${experiment}`);
   console.log(`Workers: ${numWorkers}`);
+  console.log(`Spawn delay: ${spawnDelay}s between workers`);
   console.log('');
   
   // Get total groups
@@ -154,13 +161,21 @@ async function main() {
     process.exit(0);
   }
   
-  // Spawn workers
-  console.log('Starting workers...');
+  // Spawn workers with staggered start
+  console.log(`Starting workers (${spawnDelay}s delay between spawns)...`);
   const startTime = Date.now();
   const statuses: WorkerStatus[] = [];
   const processes: ChildProcess[] = [];
   
-  for (const w of workers) {
+  for (let i = 0; i < workers.length; i++) {
+    const w = workers[i];
+    
+    // Add delay between spawns (except for the first worker)
+    if (i > 0 && spawnDelay > 0) {
+      console.log(`  Waiting ${spawnDelay}s before starting runner ${w.runnerId}...`);
+      await new Promise(resolve => setTimeout(resolve, spawnDelay * 1000));
+    }
+    
     const child = spawnWorker(w.runnerId, w.offset, w.limit, experiment, logDir);
     processes.push(child);
     
