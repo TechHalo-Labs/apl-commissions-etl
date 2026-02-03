@@ -87,7 +87,7 @@ async function analyzeGroupOutliers(
         STRING_AGG(
           CONCAT(ISNULL(ci.SplitBrokerId,'NULL'), ':', ISNULL(ci.CommissionsSchedule,'NULL')),
           '|'
-        ) WITHIN GROUP (ORDER BY ci.CertSplitSeq, ci.SplitBrokerSeq) AS HierarchySignature
+        ) AS HierarchySignature
       FROM [etl].[input_certificate_info] ci
       WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
         AND ci.CertStatus = 'A'
@@ -99,9 +99,9 @@ async function analyzeGroupOutliers(
       SELECT 
         HierarchySignature,
         COUNT(DISTINCT CertificateId) AS CertCount,
-        STRING_AGG(DISTINCT Product, ',') AS Products,
-        STRING_AGG(DISTINCT PlanCode, ',') AS PlanCodes
-      FROM CertHierarchy
+        (SELECT STRING_AGG(p, ',') FROM (SELECT DISTINCT Product AS p FROM CertHierarchy ch2 WHERE ch2.HierarchySignature = ch.HierarchySignature) x) AS Products,
+        (SELECT STRING_AGG(p, ',') FROM (SELECT DISTINCT PlanCode AS p FROM CertHierarchy ch2 WHERE ch2.HierarchySignature = ch.HierarchySignature) x) AS PlanCodes
+      FROM CertHierarchy ch
       GROUP BY HierarchySignature
     )
     SELECT 
