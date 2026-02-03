@@ -17,31 +17,44 @@ async function main() {
     database: parts['database'] || parts['initial catalog'],
     user: parts['user id'] || parts['uid'],
     password: parts['password'] || parts['pwd'],
-    options: { encrypt: true, trustServerCertificate: true }
+    options: { encrypt: true, trustServerCertificate: true },
+    requestTimeout: 120000
   });
   
-  // Check columns in input_certificate_info
-  const cols = await pool.request().query(`
-    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-    WHERE TABLE_SCHEMA = 'etl' AND TABLE_NAME = 'input_certificate_info'
-    ORDER BY ORDINAL_POSITION
-  `);
-  console.log('Columns in input_certificate_info:');
-  cols.recordset.forEach(r => console.log('  ' + r.COLUMN_NAME));
-  
-  // Check G25565 config distribution using stg_proposals
-  const configDist = await pool.request().query(`
+  // Check hierarchy distribution for G25565
+  const hierDist = await pool.request().query(`
+    WITH CertHierarchy AS (
+      SELECT 
+        ci.CertificateId,
+        ci.Product,
+        ci.PlanCode,
+        STRING_AGG(
+          CONCAT(ISNULL(ci.SplitBrokerId,'NULL'), ':', ISNULL(ci.CommissionsSchedule,'NULL')),
+          '|'
+        ) AS HierarchySignature
+      FROM [etl].[input_certificate_info] ci
+      WHERE LTRIM(RTRIM(ci.GroupId)) IN ('25565', 'G25565')
+        AND ci.CertStatus = 'A'
+        AND ci.RecStatus = 'A'
+      GROUP BY ci.CertificateId, ci.Product, ci.PlanCode
+    )
     SELECT 
-      SplitConfigHash,
-      ProductCodes,
-      COUNT(*) AS ProposalCount
-    FROM [etl].[stg_proposals]
-    WHERE GroupId = 'G25565'
-    GROUP BY SplitConfigHash, ProductCodes
-    ORDER BY ProposalCount DESC
+      HierarchySignature,
+      COUNT(DISTINCT CertificateId) AS CertCount,
+      COUNT(*) AS TotalRows
+    FROM CertHierarchy
+    GROUP BY HierarchySignature
+    ORDER BY CertCount DESC
   `);
-  console.log('\nG25565 proposal configs:');
-  configDist.recordset.forEach(r => console.log(`  ${r.SplitConfigHash?.substring(0,16)}... ${r.ProductCodes} (${r.ProposalCount} proposals)`));
+  
+  console.log('G25565 hierarchy signature distribution:');
+  let total = 0;
+  hierDist.recordset.forEach(r => {
+    total += r.CertCount;
+    console.log(`  ${r.HierarchySignature?.substring(0,50)}... ${r.CertCount} certs, ${r.TotalRows} rows`);
+  });
+  console.log(`\nTotal unique signatures: ${hierDist.recordset.length}`);
+  console.log(`Total certificates: ${total}`);
   
   await pool.close();
 }
