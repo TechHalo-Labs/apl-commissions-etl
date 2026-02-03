@@ -75,88 +75,62 @@ async function analyzeGroupOutliers(
   const groupIdNumeric = groupId.replace(/^[A-Za-z]+/, '');
   const groupIdWithPrefix = `G${groupIdNumeric}`;
 
-  // Get config distribution for this group
+  // Get config distribution for this group - simplified approach using existing SplitConfigHash
+  // This uses the raw_certificate_info which already has split data
   const configQuery = await pool.request().query(`
-    WITH CertConfigs AS (
+    WITH CertData AS (
       SELECT 
         ci.CertificateId,
         ci.Product,
         ci.PlanCode,
         ci.CertSplitSeq,
         ci.CertSplitPercent,
-        ci.SplitBrokerSeq,
         ci.SplitBrokerId,
         ci.CommissionsSchedule
-      FROM [etl].[input_certificate_info] ci
+      FROM [etl].[raw_certificate_info] ci
       WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
-        AND ci.CertStatus = 'A'
-        AND ci.RecStatus = 'A'
+        AND LTRIM(RTRIM(ci.CertStatus)) = 'A'
+        AND LTRIM(RTRIM(ci.RecStatus)) = 'A'
     ),
-    -- Build hierarchy hash per certificate
-    CertHierarchies AS (
+    -- Build a simple config signature per certificate
+    CertSignatures AS (
       SELECT 
         CertificateId,
-        Product,
-        PlanCode,
-        CertSplitSeq,
-        CertSplitPercent,
-        (
-          SELECT 
-            CONCAT(
-              '{"level":', SplitBrokerSeq, 
-              ',"broker":"', SplitBrokerId, 
-              '","schedule":"', ISNULL(CommissionsSchedule, ''), '"}'
-            )
-          FROM CertConfigs c2
-          WHERE c2.CertificateId = c1.CertificateId 
-            AND c2.CertSplitSeq = c1.CertSplitSeq
-          ORDER BY c2.SplitBrokerSeq
-          FOR JSON PATH
-        ) AS HierarchyJson
-      FROM CertConfigs c1
-      GROUP BY CertificateId, Product, PlanCode, CertSplitSeq, CertSplitPercent
+        STRING_AGG(
+          CONCAT(CertSplitSeq, ':', CertSplitPercent, ':', ISNULL(SplitBrokerId,''), ':', ISNULL(CommissionsSchedule,'')),
+          '|'
+        ) WITHIN GROUP (ORDER BY CertSplitSeq, SplitBrokerId) AS ConfigSignature
+      FROM CertData
+      GROUP BY CertificateId
     ),
-    -- Build config hash per certificate  
-    CertConfigHashes AS (
+    -- Get unique configs with their products
+    ConfigProducts AS (
       SELECT 
-        CertificateId,
-        Product,
-        PlanCode,
-        (
-          SELECT 
-            CONCAT(
-              '{"seq":', CertSplitSeq,
-              ',"pct":', CertSplitPercent,
-              ',"hierarchy":', ISNULL(HierarchyJson, '[]'), '}'
-            )
-          FROM CertHierarchies ch2
-          WHERE ch2.CertificateId = ch1.CertificateId
-          ORDER BY ch2.CertSplitSeq
-          FOR JSON PATH
-        ) AS ConfigJson
-      FROM CertHierarchies ch1
-      GROUP BY CertificateId, Product, PlanCode
+        cs.ConfigSignature,
+        cs.CertificateId,
+        cd.Product,
+        cd.PlanCode
+      FROM CertSignatures cs
+      INNER JOIN CertData cd ON cd.CertificateId = cs.CertificateId
     ),
-    -- Count by config
+    -- Count certificates per config
     ConfigCounts AS (
       SELECT 
-        HASHBYTES('SHA2_256', ConfigJson) AS ConfigHashBytes,
-        CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', ConfigJson), 2) AS ConfigHash,
-        ConfigJson,
+        ConfigSignature,
         COUNT(DISTINCT CertificateId) AS CertCount,
-        STRING_AGG(DISTINCT Product, ',') AS Products,
-        STRING_AGG(DISTINCT PlanCode, ',') AS PlanCodes
-      FROM CertConfigHashes
-      GROUP BY ConfigJson
+        STRING_AGG(DISTINCT Product, ',') WITHIN GROUP (ORDER BY Product) AS Products,
+        STRING_AGG(DISTINCT PlanCode, ',') WITHIN GROUP (ORDER BY PlanCode) AS PlanCodes
+      FROM ConfigProducts
+      GROUP BY ConfigSignature
     )
     SELECT 
-      ConfigHash,
-      ConfigJson,
+      CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', ConfigSignature), 2) AS ConfigHash,
+      ConfigSignature,
       CertCount,
       Products,
       PlanCodes,
       SUM(CertCount) OVER () AS TotalCerts,
-      CAST(CertCount AS FLOAT) / CAST(SUM(CertCount) OVER () AS FLOAT) * 100 AS Percentage
+      CAST(CertCount AS FLOAT) / NULLIF(CAST(SUM(CertCount) OVER () AS FLOAT), 0) * 100 AS Percentage
     FROM ConfigCounts
     ORDER BY CertCount DESC
   `);
