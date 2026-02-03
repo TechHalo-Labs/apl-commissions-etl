@@ -1462,12 +1462,31 @@ export class ProposalBuilder {
     // This may create CONTINUATION proposals with their own key mappings
     this.fixOverlappingDateRanges(output);
 
-    // DO NOT deduplicate key mappings - multiple proposals can cover the same (GroupId, Year, Product, Plan)
-    // The validation query checks if the cert date falls within the proposal's date range,
-    // so having multiple mappings for the same year is correct when proposals cover different parts of that year.
-    // 
-    // Example: PROP-25565-1 covers Jan-Jun 2024, PROP-25565-1-CONT covers Jun-Dec 2024
-    // Both should have key mappings for Year 2024, and the date range check selects the right one.
+    // Deduplicate key mappings by primary key (GroupId, EffectiveYear, ProductCode, PlanCode)
+    // For duplicates, prefer the proposal with the EARLIEST effective date
+    // This ensures certs from the beginning of the year find a matching proposal
+    // The validation query will use the date range check to find the exact proposal
+    const proposalStartDates = new Map<string, Date>();
+    for (const p of output.proposals) {
+      proposalStartDates.set(p.Id, p.EffectiveDateFrom);
+    }
+    
+    const keyMappingMap = new Map<string, StagingProposalKeyMapping>();
+    for (const mapping of output.proposalKeyMappings) {
+      const key = `${mapping.GroupId}|${mapping.EffectiveYear}|${mapping.ProductCode}|${mapping.PlanCode}`;
+      const existing = keyMappingMap.get(key);
+      if (!existing) {
+        keyMappingMap.set(key, mapping);
+      } else {
+        // Prefer proposal with earlier start date
+        const existingStart = proposalStartDates.get(existing.ProposalId) || new Date('2099-01-01');
+        const newStart = proposalStartDates.get(mapping.ProposalId) || new Date('2099-01-01');
+        if (newStart < existingStart) {
+          keyMappingMap.set(key, mapping);
+        }
+      }
+    }
+    output.proposalKeyMappings = Array.from(keyMappingMap.values());
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`  ✓ Generated all staging entities in ${elapsed}s`);
