@@ -1537,29 +1537,14 @@ export class ProposalBuilder {
         continue;
       }
 
-      // Sort by EffectiveDateFrom ascending
+      // Sort by EffectiveDateFrom ascending (original cert-based dates)
       proposals.sort((a, b) => a.EffectiveDateFrom.getTime() - b.EffectiveDateFrom.getTime());
-
-      // ========================================================================
-      // PASS 1: Make dates contiguous (baseline)
-      // ========================================================================
-      // Each proposal ends the day before the next one starts
-      for (let i = 0; i < proposals.length; i++) {
-        const current = proposals[i];
-        
-        if (i < proposals.length - 1) {
-          // Not the last proposal - end at day before next starts
-          const next = proposals[i + 1];
-          const dayBefore = new Date(next.EffectiveDateFrom);
-          dayBefore.setDate(dayBefore.getDate());  // Same day (next's start is already -1 day adjusted)
-          current.EffectiveDateTo = dayBefore;
-        } else {
-          // Last proposal - use its actual cert end date (will be extended in Pass 2 if safe)
-          // For now, keep the 2099-01-01 that was set during generation
-        }
-      }
       
-      console.log(`  Pass 1: Made ${proposals.length} proposals contiguous for ${groupId}`);
+      // Store original start dates (these are based on cert effective dates)
+      const originalStartDates = new Map<string, Date>();
+      for (const p of proposals) {
+        originalStartDates.set(p.Id, new Date(p.EffectiveDateFrom));
+      }
 
       // ========================================================================
       // PASS 2: Extend where safe (no product+plan overlap)
@@ -1601,43 +1586,49 @@ export class ProposalBuilder {
       for (let i = 0; i < proposals.length; i++) {
         const current = proposals[i];
         const currentPairs = getProductPlanSet(current.Id);
+        const currentOriginalStart = originalStartDates.get(current.Id)!;
 
-        // Try to extend START backward to 1901-01-01
-        let canExtendStart = true;
-        for (let j = 0; j < i; j++) {
+        // Extend START backward
+        // Find the LAST earlier proposal that overlaps on products
+        // If found, start at day after that proposal's original start (they share time boundary)
+        // If not found, extend to 1901-01-01
+        let newStart: Date = new Date('1901-01-01');
+        for (let j = i - 1; j >= 0; j--) {
           const earlier = proposals[j];
           const earlierPairs = getProductPlanSet(earlier.Id);
           if (hasOverlap(currentPairs, earlierPairs)) {
-            canExtendStart = false;
+            // Found overlapping earlier proposal - can't extend past this one's start
+            // Keep our original start date (they share a time boundary)
+            newStart = currentOriginalStart;
             break;
           }
         }
-        
-        if (canExtendStart) {
-          current.EffectiveDateFrom = new Date('1901-01-01');
-        }
+        current.EffectiveDateFrom = newStart;
 
-        // Try to extend END forward to 2099-01-01
-        let canExtendEnd = true;
+        // Extend END forward
+        // Find the FIRST later proposal that overlaps on products
+        // If found, end at day before that proposal's original start
+        // If not found, extend to 2099-01-01
+        let newEnd: Date = new Date('2099-01-01');
         for (let j = i + 1; j < proposals.length; j++) {
           const later = proposals[j];
           const laterPairs = getProductPlanSet(later.Id);
           if (hasOverlap(currentPairs, laterPairs)) {
-            canExtendEnd = false;
+            // Found overlapping later proposal - end before its original start
+            const laterOriginalStart = originalStartDates.get(later.Id)!;
+            newEnd = new Date(laterOriginalStart);
+            newEnd.setDate(newEnd.getDate() - 1);
             break;
           }
         }
-        
-        if (canExtendEnd) {
-          current.EffectiveDateTo = new Date('2099-01-01');
-        }
+        current.EffectiveDateTo = newEnd;
 
         // Update related entities (PSV, PSP)
         this.updateRelatedEntitiesDateRange(output, current.Id, current.EffectiveDateFrom, current.EffectiveDateTo);
         
         const startStr = current.EffectiveDateFrom.toISOString().split('T')[0];
         const endStr = current.EffectiveDateTo.toISOString().split('T')[0];
-        console.log(`  Pass 2: ${current.Id} → ${startStr} to ${endStr} (products: ${current.ProductCodes})`);
+        console.log(`  ${current.Id} → ${startStr} to ${endStr} (products: ${current.ProductCodes})`);
       }
 
       // ========================================================================
