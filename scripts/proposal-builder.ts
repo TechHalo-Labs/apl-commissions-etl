@@ -1011,7 +1011,74 @@ export class ProposalBuilder {
   }
 
   // ==========================================================================
-  // Step 4: Generate Staging Output
+  // Step 4b: Route Outliers to PHA
+  // ==========================================================================
+
+  /**
+   * Routes small proposals (outliers) to PHA based on certificate count percentage.
+   * If a proposal covers less than the threshold percentage of total certificates,
+   * its certificates are routed to PHA instead.
+   * 
+   * @param thresholdPercent - Minimum percentage to keep as proposal (default: 5%)
+   */
+  routeOutliersToPA(thresholdPercent: number = 5): void {
+    if (this.proposals.length <= 1) {
+      console.log('  Skipping outlier detection (only 1 proposal)');
+      return;
+    }
+
+    // Calculate total certificates across all proposals
+    const totalCerts = this.proposals.reduce((sum, p) => sum + p.certificateIds.length, 0);
+    
+    if (totalCerts === 0) {
+      console.log('  Skipping outlier detection (no certificates)');
+      return;
+    }
+
+    console.log(`Routing outliers to PHA (threshold: ${thresholdPercent}%)...`);
+    console.log(`  Total certificates: ${totalCerts}`);
+
+    const proposalsToKeep: Proposal[] = [];
+    const proposalsToRoute: Proposal[] = [];
+
+    for (const proposal of this.proposals) {
+      const certCount = proposal.certificateIds.length;
+      const percentage = (certCount / totalCerts) * 100;
+      
+      if (percentage < thresholdPercent) {
+        proposalsToRoute.push(proposal);
+        console.log(`  → Outlier: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}%) - routing to PHA`);
+      } else {
+        proposalsToKeep.push(proposal);
+        console.log(`  ✓ Keep: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}%)`);
+      }
+    }
+
+    // Route outlier proposal certificates to PHA
+    for (const proposal of proposalsToRoute) {
+      // Create PHA record for each certificate in the outlier proposal
+      for (const certId of proposal.certificateIds) {
+        this.phaRecords.push({
+          certificateId: certId,
+          groupId: proposal.groupId.replace(/^G/, ''),  // Remove 'G' prefix for PHA
+          effectiveDate: proposal.effectiveDateFrom,
+          splitConfig: proposal.splitConfig,
+          reason: `Outlier (${proposal.certificateIds.length} certs < ${thresholdPercent}% threshold)`,
+          entryType: 3  // Outlier
+        });
+      }
+    }
+
+    // Update proposals list
+    this.proposals = proposalsToKeep;
+
+    const routedCount = proposalsToRoute.reduce((sum, p) => sum + p.certificateIds.length, 0);
+    console.log(`  ✓ Routed ${routedCount} certificates from ${proposalsToRoute.length} outlier proposals to PHA`);
+    console.log(`  ✓ Remaining: ${proposalsToKeep.length} proposals with ${totalCerts - routedCount} certificates`);
+  }
+
+  // ==========================================================================
+  // Step 5: Generate Staging Output
   // ==========================================================================
 
   generateStagingOutput(): StagingOutput {
@@ -3473,6 +3540,9 @@ export async function runProposalBuilder(
     }
 
     builder.buildProposals();
+    
+    // Route small outlier proposals to PHA (< 5% of total certificates)
+    builder.routeOutliersToPA(5);
 
     // Generate staging output
     const output = builder.generateStagingOutput();
@@ -3572,6 +3642,7 @@ export async function runProposalBuilderBatched(
   builder.loadCertificates(firstBatch);
   builder.extractSelectionCriteria();
   builder.buildProposals();
+  builder.routeOutliersToPA(5);  // Route small outliers to PHA
   const output = builder.generateStagingOutput();
   
   await writeStagingOutput(config, output, options);
