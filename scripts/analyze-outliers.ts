@@ -75,62 +75,44 @@ async function analyzeGroupOutliers(
   const groupIdNumeric = groupId.replace(/^[A-Za-z]+/, '');
   const groupIdWithPrefix = `G${groupIdNumeric}`;
 
-  // Get config distribution for this group - simplified approach
+  // Get config distribution for this group based on the split hierarchy
+  // Group by the broker chain (SplitBrokerId sequence per certificate)
   const configQuery = await pool.request().query(`
-    WITH CertData AS (
+    WITH CertHierarchy AS (
       SELECT 
         ci.CertificateId,
         ci.Product,
         ci.PlanCode,
-        ci.CertSplitSeq,
-        ci.CertSplitPercent,
-        ci.SplitBrokerId,
-        ci.CommissionsSchedule
-      FROM [etl].[raw_certificate_info] ci
-      WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
-        AND LTRIM(RTRIM(ci.CertStatus)) = 'A'
-        AND LTRIM(RTRIM(ci.RecStatus)) = 'A'
-    ),
-    -- Build a simple config signature per certificate
-    CertSignatures AS (
-      SELECT 
-        CertificateId,
+        -- Create a signature from the broker hierarchy
         STRING_AGG(
-          CONCAT(CertSplitSeq, ':', CertSplitPercent, ':', ISNULL(SplitBrokerId,''), ':', ISNULL(CommissionsSchedule,'')),
+          CONCAT(ISNULL(ci.SplitBrokerId,'NULL'), ':', ISNULL(ci.CommissionsSchedule,'NULL')),
           '|'
-        ) AS ConfigSignature
-      FROM CertData
-      GROUP BY CertificateId
+        ) WITHIN GROUP (ORDER BY ci.CertSplitSeq, ci.SplitBrokerSeq) AS HierarchySignature
+      FROM [etl].[input_certificate_info] ci
+      WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
+        AND ci.CertStatus = 'A'
+        AND ci.RecStatus = 'A'
+      GROUP BY ci.CertificateId, ci.Product, ci.PlanCode
     ),
-    -- Get unique configs with their products
-    ConfigProducts AS (
-      SELECT DISTINCT
-        cs.ConfigSignature,
-        cs.CertificateId,
-        cd.Product,
-        cd.PlanCode
-      FROM CertSignatures cs
-      INNER JOIN CertData cd ON cd.CertificateId = cs.CertificateId
-    ),
-    -- Count certificates per config
-    ConfigCounts AS (
+    -- Count by hierarchy signature
+    HierarchyCounts AS (
       SELECT 
-        ConfigSignature,
+        HierarchySignature,
         COUNT(DISTINCT CertificateId) AS CertCount,
-        STRING_AGG(Product, ',') AS Products,
-        STRING_AGG(PlanCode, ',') AS PlanCodes
-      FROM (SELECT DISTINCT ConfigSignature, CertificateId, Product, PlanCode FROM ConfigProducts) sub
-      GROUP BY ConfigSignature
+        STRING_AGG(DISTINCT Product, ',') AS Products,
+        STRING_AGG(DISTINCT PlanCode, ',') AS PlanCodes
+      FROM CertHierarchy
+      GROUP BY HierarchySignature
     )
     SELECT 
-      CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', ConfigSignature), 2) AS ConfigHash,
-      ConfigSignature,
+      CONVERT(VARCHAR(64), HASHBYTES('SHA2_256', HierarchySignature), 2) AS ConfigHash,
+      HierarchySignature AS ConfigSignature,
       CertCount,
       Products,
       PlanCodes,
       SUM(CertCount) OVER () AS TotalCerts,
       CAST(CertCount AS FLOAT) / NULLIF(CAST(SUM(CertCount) OVER () AS FLOAT), 0) * 100 AS Percentage
-    FROM ConfigCounts
+    FROM HierarchyCounts
     ORDER BY CertCount DESC
   `);
 
