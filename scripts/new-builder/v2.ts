@@ -127,9 +127,12 @@ async function loadDistinctGroups(config: DatabaseConfig, options: BuilderOption
   const schema = options.schema || 'etl';
   const pool = await sql.connect(config);
   try {
+    // Only load groups that have commission detail records (actual transactions)
     const result = await pool.request().query(`
       SELECT DISTINCT LTRIM(RTRIM(ci.GroupId)) AS GroupId
-      FROM [${schema}].[input_certificate_info] ci
+      FROM [${schema}].[raw_certificate_info] ci
+      INNER JOIN [${schema}].[raw_commissions_detail] cd 
+        ON LTRIM(RTRIM(ci.CertificateId)) = LTRIM(RTRIM(cd.CertificateId))
       WHERE LTRIM(RTRIM(ci.CertStatus)) = 'A'
         AND LTRIM(RTRIM(ci.RecStatus)) = 'A'
         AND ci.CertEffectiveDate IS NOT NULL
