@@ -647,6 +647,9 @@ async function processCertificates(
 
   builder.applyEntropyRouting(entropyOptions);
   builder.buildProposals();
+  
+  // Route small outlier proposals to PHA (< 5% of total certificates)
+  builder.routeOutliersToPA(5);
 }
 
 async function runProposalBuilderV2(
