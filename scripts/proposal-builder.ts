@@ -1168,8 +1168,10 @@ export class ProposalBuilder {
 
   /**
    * Routes small proposals (outliers) to PHA based on certificate count percentage.
-   * If a proposal covers less than the threshold percentage of total certificates,
+   * If a proposal covers less than the threshold percentage of its GROUP's total certificates,
    * its certificates are routed to PHA instead.
+   * 
+   * NOTE: Threshold is calculated PER GROUP, not globally across all groups.
    * 
    * @param thresholdPercent - Minimum percentage to keep as proposal (default: 5%)
    */
@@ -1179,30 +1181,50 @@ export class ProposalBuilder {
       return;
     }
 
-    // Calculate total certificates across all proposals
-    const totalCerts = this.proposals.reduce((sum, p) => sum + p.certificateIds.length, 0);
-    
-    if (totalCerts === 0) {
-      console.log('  Skipping outlier detection (no certificates)');
-      return;
-    }
+    console.log(`Routing outliers to PHA (threshold: ${thresholdPercent}% per group)...`);
 
-    console.log(`Routing outliers to PHA (threshold: ${thresholdPercent}%)...`);
-    console.log(`  Total certificates: ${totalCerts}`);
+    // Group proposals by groupId
+    const proposalsByGroup = new Map<string, Proposal[]>();
+    for (const proposal of this.proposals) {
+      const groupId = proposal.groupId;
+      if (!proposalsByGroup.has(groupId)) {
+        proposalsByGroup.set(groupId, []);
+      }
+      proposalsByGroup.get(groupId)!.push(proposal);
+    }
 
     const proposalsToKeep: Proposal[] = [];
     const proposalsToRoute: Proposal[] = [];
+    let totalKept = 0;
+    let totalRouted = 0;
 
-    for (const proposal of this.proposals) {
-      const certCount = proposal.certificateIds.length;
-      const percentage = (certCount / totalCerts) * 100;
+    // Process each group independently
+    for (const [groupId, groupProposals] of proposalsByGroup) {
+      // Skip if only 1 proposal in group
+      if (groupProposals.length <= 1) {
+        proposalsToKeep.push(...groupProposals);
+        totalKept += groupProposals.reduce((sum, p) => sum + p.certificateIds.length, 0);
+        continue;
+      }
+
+      // Calculate total certificates for THIS GROUP only
+      const groupTotalCerts = groupProposals.reduce((sum, p) => sum + p.certificateIds.length, 0);
       
-      if (percentage < thresholdPercent) {
-        proposalsToRoute.push(proposal);
-        console.log(`  → Outlier: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}%) - routing to PHA`);
-      } else {
-        proposalsToKeep.push(proposal);
-        console.log(`  ✓ Keep: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}%)`);
+      if (groupTotalCerts === 0) continue;
+
+      for (const proposal of groupProposals) {
+        const certCount = proposal.certificateIds.length;
+        const percentage = (certCount / groupTotalCerts) * 100;
+        
+        if (percentage < thresholdPercent) {
+          proposalsToRoute.push(proposal);
+          totalRouted += certCount;
+          console.log(`  → Outlier: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}% of ${groupId}) - routing to PHA`);
+        } else {
+          proposalsToKeep.push(proposal);
+          totalKept += certCount;
+          console.log(`  ✓ Keep: ${proposal.id} (${certCount} certs = ${percentage.toFixed(2)}% of ${groupId})`);
+        }
       }
     }
 
@@ -1215,7 +1237,7 @@ export class ProposalBuilder {
           groupId: proposal.groupId.replace(/^G/, ''),  // Remove 'G' prefix for PHA
           effectiveDate: proposal.effectiveDateFrom,
           splitConfig: proposal.splitConfig,
-          reason: `Outlier (${proposal.certificateIds.length} certs < ${thresholdPercent}% threshold)`,
+          reason: `Outlier (${proposal.certificateIds.length} certs < ${thresholdPercent}% of group)`,
           entryType: 3  // Outlier
         });
       }
@@ -1224,9 +1246,8 @@ export class ProposalBuilder {
     // Update proposals list
     this.proposals = proposalsToKeep;
 
-    const routedCount = proposalsToRoute.reduce((sum, p) => sum + p.certificateIds.length, 0);
-    console.log(`  ✓ Routed ${routedCount} certificates from ${proposalsToRoute.length} outlier proposals to PHA`);
-    console.log(`  ✓ Remaining: ${proposalsToKeep.length} proposals with ${totalCerts - routedCount} certificates`);
+    console.log(`  ✓ Routed ${totalRouted} certificates from ${proposalsToRoute.length} outlier proposals to PHA`);
+    console.log(`  ✓ Remaining: ${proposalsToKeep.length} proposals with ${totalKept} certificates`);
   }
 
   // ==========================================================================
