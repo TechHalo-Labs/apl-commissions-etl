@@ -134,7 +134,7 @@ TRUNCATE TABLE [etl].[stg_policy_hierarchy_assignments];
 )
 INSERT INTO [etl].[stg_policy_hierarchy_assignments] (
     Id, PolicyId, CertificateId, HierarchyId, SplitPercent, WritingBrokerId,
-    SplitSequence, IsNonConforming, NonConformantReason, CreationTime, IsDeleted
+    SplitSequence, IsNonConforming, NonConformantReason, EntryType, CreationTime, IsDeleted
 )
 SELECT
     Id,
@@ -146,6 +146,7 @@ SELECT
     SplitSequence,
     1 AS IsNonConforming,
     NonConformantReason,
+    0 AS EntryType,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM assignments_with_hierarchy

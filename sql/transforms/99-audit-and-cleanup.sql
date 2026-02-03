@@ -439,6 +439,129 @@ WHERE p.BrokerUniquePartyId IS NOT NULL
 
 PRINT 'BrokerId populated on Proposals (from BrokerUniquePartyId): ' + CAST(@@ROWCOUNT AS VARCHAR);
 
+-- =============================================================================
+-- 5.6 Open-end proposal end dates for matching
+-- Proposals keep their actual EffectiveDateFrom from certificate data
+-- EffectiveDateTo is set to far-future for open-ended matching
+-- =============================================================================
+PRINT '';
+PRINT 'Step 5.6: Setting Proposals EffectiveDateTo to 2099-01-01 for open-ended matching...';
+
+-- Open-end the end date for ALL proposals (allows policies with any future date to match)
+UPDATE [$(ETL_SCHEMA)].[stg_proposals]
+SET EffectiveDateTo = '2099-01-01'
+WHERE EffectiveDateTo <> '2099-01-01' OR EffectiveDateTo IS NULL;
+
+PRINT 'Proposals EffectiveDateTo set to 2099-01-01: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- 5.7 Open-end PremiumSplitVersions end dates for matching
+-- =============================================================================
+PRINT '';
+PRINT 'Step 5.7: Setting PremiumSplitVersions EffectiveTo to 2099-01-01...';
+
+-- Open-end the end date for ALL versions (allows future policies to match)
+UPDATE [$(ETL_SCHEMA)].[stg_premium_split_versions]
+SET EffectiveTo = '2099-01-01'
+WHERE EffectiveTo <> '2099-01-01' OR EffectiveTo IS NULL;
+
+PRINT 'PremiumSplitVersions EffectiveTo set to 2099-01-01: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- 5.8 Open-end HierarchyVersions end dates for matching
+-- =============================================================================
+PRINT '';
+PRINT 'Step 5.8: Setting HierarchyVersions EffectiveTo to 2099-01-01...';
+
+-- Open-end the end date for ALL versions (allows future policies to match)
+UPDATE [$(ETL_SCHEMA)].[stg_hierarchy_versions]
+SET EffectiveTo = '2099-01-01'
+WHERE EffectiveTo <> '2099-01-01' OR EffectiveTo IS NULL;
+
+PRINT 'HierarchyVersions EffectiveTo set to 2099-01-01: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+-- =============================================================================
+-- 5.9 Normalize single-state StateRules to DEFAULT format
+-- For HierarchyVersions with exactly ONE StateRule, rename to DEFAULT format
+-- This ensures IDs match production and avoids DELETE/INSERT during export
+-- =============================================================================
+PRINT '';
+PRINT 'Step 5.9: Normalizing single-state StateRules to DEFAULT format...';
+
+-- Create temp table to map old IDs to new IDs for single-state rules
+IF OBJECT_ID('tempdb..#StateRuleRename') IS NOT NULL DROP TABLE #StateRuleRename;
+
+SELECT 
+    sr.Id AS OldId,
+    -- Replace the last segment (state code) with DEFAULT
+    LEFT(sr.Id, LEN(sr.Id) - CHARINDEX('-', REVERSE(sr.Id)) + 1) + 'DEFAULT' AS NewId,
+    sr.HierarchyVersionId,
+    sr.ShortName AS OldShortName
+INTO #StateRuleRename
+FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
+WHERE sr.HierarchyVersionId IN (
+    -- HierarchyVersions with exactly 1 StateRule
+    SELECT HierarchyVersionId 
+    FROM [$(ETL_SCHEMA)].[stg_state_rules] 
+    GROUP BY HierarchyVersionId 
+    HAVING COUNT(*) = 1
+)
+AND sr.ShortName <> 'DEFAULT';  -- Skip if already DEFAULT
+
+DECLARE @single_state_count INT = (SELECT COUNT(*) FROM #StateRuleRename);
+PRINT 'Single-state StateRules to normalize: ' + CAST(@single_state_count AS VARCHAR);
+
+IF @single_state_count > 0
+BEGIN
+    -- Step 1: Update HierarchySplits to reference the new DEFAULT IDs
+    PRINT '  Step 5.9.1: Updating HierarchySplits.StateRuleId references...';
+    
+    UPDATE hs
+    SET hs.StateRuleId = r.NewId
+    FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
+    INNER JOIN #StateRuleRename r ON r.OldId = hs.StateRuleId;
+    
+    PRINT '  HierarchySplits updated: ' + CAST(@@ROWCOUNT AS VARCHAR);
+
+    -- Step 2: Update StateRules - change Id and ShortName to DEFAULT
+    PRINT '  Step 5.9.2: Renaming StateRule IDs to DEFAULT format...';
+    
+    -- Since we can't UPDATE primary keys directly with references, 
+    -- we INSERT new rows, then DELETE old rows
+    
+    -- Insert new StateRules with DEFAULT format
+    INSERT INTO [$(ETL_SCHEMA)].[stg_state_rules] (
+        Id, HierarchyVersionId, ShortName, Name, Description, Type, SortOrder, CreationTime, IsDeleted
+    )
+    SELECT 
+        r.NewId AS Id,
+        sr.HierarchyVersionId,
+        'DEFAULT' AS ShortName,
+        'Default State Rule' AS Name,
+        sr.Description,
+        sr.Type,
+        sr.SortOrder,
+        sr.CreationTime,
+        sr.IsDeleted
+    FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
+    INNER JOIN #StateRuleRename r ON r.OldId = sr.Id;
+    
+    PRINT '  New DEFAULT StateRules inserted: ' + CAST(@@ROWCOUNT AS VARCHAR);
+    
+    -- Delete old state-specific StateRules
+    DELETE sr
+    FROM [$(ETL_SCHEMA)].[stg_state_rules] sr
+    INNER JOIN #StateRuleRename r ON r.OldId = sr.Id;
+    
+    PRINT '  Old state-specific StateRules deleted: ' + CAST(@@ROWCOUNT AS VARCHAR);
+END
+ELSE
+BEGIN
+    PRINT '  No single-state StateRules need normalization.';
+END
+
+DROP TABLE #StateRuleRename;
+
 PRINT '';
 
 -- =============================================================================
@@ -469,6 +592,42 @@ UNION ALL SELECT 'Policies', COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policies]
 UNION ALL SELECT 'PolicyHierarchyAssignments', COUNT(*) FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments]
 UNION ALL SELECT 'CommissionAssignmentVersions', COUNT(*) FROM [$(ETL_SCHEMA)].[stg_commission_assignment_versions]
 ORDER BY entity;
+
+PRINT '';
+
+-- =============================================================================
+-- Section 6.5: Additional Policy Hierarchy Assignments for Invalid Groups
+-- =============================================================================
+PRINT '============================================================';
+PRINT 'SECTION 6.5: ADDITIONAL POLICY HIERARCHY ASSIGNMENTS';
+PRINT '============================================================';
+PRINT '';
+
+-- Find policies that should have PHA but don't (invalid GroupIds)
+-- GroupId is null, all 0's, or G plus all 0's
+DECLARE @additional_pha_candidates INT = (
+    SELECT COUNT(DISTINCT p.Id)
+    FROM [$(ETL_SCHEMA)].[stg_policies] p
+    WHERE p.Id NOT IN (SELECT PolicyId FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments])
+      AND (
+        p.GroupId IS NULL
+        OR LTRIM(RTRIM(p.GroupId)) = ''
+        OR p.GroupId LIKE '%[^0]%' = 0  -- All zeros
+        OR p.GroupId LIKE 'G%' AND SUBSTRING(p.GroupId, 2, LEN(p.GroupId)-1) LIKE '%[^0]%' = 0  -- G + all zeros
+      )
+);
+
+PRINT 'Policies that should have PHA but don''t (invalid GroupIds): ' + CAST(@additional_pha_candidates AS VARCHAR);
+
+IF @additional_pha_candidates > 0
+BEGIN
+    PRINT '   ℹ️  INFO: Found policies with invalid GroupIds that should get Policy Hierarchy Assignments';
+    PRINT '   ℹ️  These will be processed by the proposal builder in the next run';
+END
+ELSE
+BEGIN
+    PRINT '   ✅ All policies with invalid GroupIds already have Policy Hierarchy Assignments';
+END
 
 PRINT '';
 

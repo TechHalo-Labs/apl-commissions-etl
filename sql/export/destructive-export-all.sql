@@ -1,15 +1,18 @@
 -- ================================================================
--- DESTRUCTIVE EXPORT: Complete ETL to Production
+-- TARGETED DESTRUCTIVE EXPORT: Preserve Safe Data, Replace Hierarchies
 -- ================================================================
--- WARNING: This will DELETE ALL existing production data
+-- SAFE TO PRESERVE (100% unaffected by hierarchy changes):
+--   - EmployerGroups, Products, Plans, Brokers, Schedules, FeeSchedules
+-- WARNING: Deletes hierarchy-related data and regenerates it
 -- ================================================================
 
 SET NOCOUNT ON;
 GO
 
 PRINT '╔════════════════════════════════════════════════════════════════╗';
-PRINT '║  DESTRUCTIVE EXPORT: CLEARING ALL PRODUCTION DATA             ║';
-PRINT '║  WARNING: Deleting existing production data!                  ║';
+PRINT '║  TARGETED EXPORT: PRESERVING SAFE DATA, REPLACING HIERARCHIES ║';
+PRINT '║  SAFE: EmployerGroups, Products, Plans, Brokers, Schedules     ║';
+PRINT '║  REPLACED: All hierarchy-related tables                        ║';
 PRINT '╚════════════════════════════════════════════════════════════════╝';
 PRINT '';
 
@@ -76,47 +79,34 @@ DELETE FROM [dbo].[Policies];
 PRINT '  ✓ Policies cleared';
 PRINT '';
 
-PRINT 'Clearing groups (EmployerGroups)...';
-DELETE FROM [dbo].[EmployerGroups];
-PRINT '  ✓ EmployerGroups cleared';
-PRINT '';
+-- EmployerGroups, Products, and Plans are preserved (not affected by hierarchy changes)
 
-PRINT 'Clearing products and plans...';
-DELETE FROM [dbo].[Products];
-DELETE FROM [dbo].[Plans];
-PRINT '  ✓ Products and Plans cleared';
-PRINT '';
-
-PRINT 'Clearing brokers and licenses...';
+PRINT 'Clearing broker details (keeping Brokers table)...';
 DELETE FROM [dbo].[BrokerBankingInfos];
 DELETE FROM [dbo].[BrokerLicenses];
-DELETE FROM [dbo].[Brokers];
-PRINT '  ✓ Brokers cleared';
+PRINT '  ✓ Broker details cleared (Brokers table preserved)';
 PRINT '';
 
-PRINT 'Clearing schedules...';
-DELETE FROM [dbo].[ScheduleRateTiers];
-DELETE FROM [dbo].[SpecialScheduleRates];
-DELETE FROM [dbo].[FeeSchedules];
-DELETE FROM [dbo].[Schedules];
-PRINT '  ✓ Schedules cleared';
+PRINT 'Preserving core reference data (EmployerGroups, Products, Plans, Brokers, Schedules)...';
+PRINT '  ✓ EmployerGroups, Products, Plans, Brokers, Schedules, FeeSchedules preserved';
 PRINT '';
 
 PRINT '✅ All production data cleared';
 PRINT '';
 PRINT '════════════════════════════════════════════════════════════════';
-PRINT 'Now run the export scripts in order:';
-PRINT '  1. 01-export-schedules.sql';
-PRINT '  2. 02-export-brokers.sql';
-PRINT '  3. 05-export-groups.sql';
-PRINT '  4. 06-export-products.sql';
-PRINT '  5. 07-export-proposals.sql';
-PRINT '  6. 08-export-hierarchies.sql';
-PRINT '  7. 09-export-policies.sql';
-PRINT '  8. 11-export-splits.sql';
-PRINT '  9. 13-export-commission-assignments.sql';
-PRINT ' 10. 13-export-licenses.sql';
-PRINT ' 11. 14-export-policy-hierarchy-assignments.sql';
+PRINT 'Now run the export scripts in order (skipping preserved tables):';
+PRINT '  ✓ 01-export-schedules.sql (SKIP - Schedules preserved)';
+PRINT '  ✓ 02-export-brokers.sql (SKIP - Brokers preserved)';
+PRINT '  ✓ 05-export-groups.sql (SKIP - EmployerGroups preserved)';
+PRINT '  ✓ 06-export-products.sql (SKIP - Products preserved)';
+PRINT '  ✓ 06a-export-plans.sql (SKIP - Plans preserved)';
+PRINT '  🔄 07-export-proposals.sql (RUN - Proposals affected by EffectiveDateFrom changes)';
+PRINT '  🔄 08-export-hierarchies.sql (RUN - Hierarchies completely regenerated)';
+PRINT '  🔄 09-export-policies.sql (RUN - Policies reference new hierarchies)';
+PRINT '  🔄 11-export-splits.sql (RUN - Premium splits reference new hierarchies)';
+PRINT '  🔄 13-export-commission-assignments.sql (RUN - Assignments may reference hierarchies)';
+PRINT '  🔄 13-export-licenses.sql (RUN - Broker details)';
+PRINT '  🔄 14-export-policy-hierarchy-assignments.sql (RUN - PHA reference new hierarchies)';
 PRINT '════════════════════════════════════════════════════════════════';
 PRINT '';
 

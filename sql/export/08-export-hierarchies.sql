@@ -222,11 +222,22 @@ SELECT
 FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
 WHERE hs.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchySplits])
   -- REFERENTIAL INTEGRITY: Only export splits for exported state rules
-  AND hs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules]);
+  AND hs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules])
+  -- ProductId is required (NOT NULL in production)
+  AND hs.ProductId IS NOT NULL;
 
 DECLARE @hsCount INT;
 SELECT @hsCount = @@ROWCOUNT;
 PRINT 'HierarchySplits exported: ' + CAST(@hsCount AS VARCHAR);
+
+-- Report skipped splits due to NULL ProductId
+DECLARE @skippedProductId INT;
+SELECT @skippedProductId = COUNT(*) 
+FROM [$(ETL_SCHEMA)].[stg_hierarchy_splits] hs
+WHERE hs.ProductId IS NULL
+  AND hs.StateRuleId IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[StateRules]);
+IF @skippedProductId > 0
+  PRINT 'WARNING: ' + CAST(@skippedProductId AS VARCHAR) + ' HierarchySplits skipped (NULL ProductId)';
 GO
 
 PRINT 'Exporting missing SplitDistributions...';

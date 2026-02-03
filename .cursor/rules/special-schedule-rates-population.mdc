@@ -1,0 +1,158 @@
+# SpecialScheduleRates Population Guide
+
+## Overview
+SpecialScheduleRates table stores year-by-year commission rates for schedules that have varying rates across different policy years (1-16). This is used by the commission calculation system to apply the correct rate for each year of a policy.
+
+## When to Use
+- After importing new schedule data from `old_etl.raw_schedule_rates`
+- When commission calculations show missing rates for specific years
+- When the commission calculation system reports "Schedule not found" errors for specific years
+
+## Data Source
+- **Source Table**: `old_etl.raw_schedule_rates`
+- **Target Table**: `dbo.SpecialScheduleRates`
+- **Join Table**: `dbo.ScheduleRates` (for ScheduleRateId mapping)
+
+## Population Logic
+
+### Step 1: Identify Varying Rate Schedules
+Find schedules where rates differ across years:
+```sql
+SELECT DISTINCT ScheduleName
+FROM old_etl.raw_schedule_rates
+WHERE Year1 <> Year2 OR Year1 <> Year3 OR ... OR Year1 <> Year16
+```
+
+### Step 2: Transform to Year-by-Year Records
+For each varying schedule, create 16 records (one per year):
+- Year 1 → Year1 value
+- Year 2 → Year2 value
+- ...
+- Year 16 → Year16 value
+
+### Step 3: Map to ScheduleRate IDs
+Join with `dbo.ScheduleRates` using:
+- ProductCode
+- State
+- GroupSizeFrom
+- GroupSizeTo
+
+### Step 4: Insert Records
+Insert into `dbo.SpecialScheduleRates`:
+- ScheduleRateId (from dbo.ScheduleRates.Id)
+- Year (1-16)
+- Rate (year-specific rate value)
+- CreationTime (GETUTCDATE())
+- IsDeleted (0)
+
+### Step 5: Avoid Duplicates
+Skip records where `ScheduleRateId + Year` combination already exists.
+
+## Node.js Script Usage
+
+### File Location
+`scripts/populate-special-schedule-rates.ts`
+
+### Command Line Usage
+```bash
+# Using npm scripts (recommended)
+npm run populate-special-rates:dry          # Dry run
+npm run populate-special-rates              # Full population
+
+# Direct execution
+npx tsx scripts/populate-special-schedule-rates.ts --dry-run
+npx tsx scripts/populate-special-schedule-rates.ts
+
+# Test with limited records (for testing/validation)
+npx tsx scripts/populate-special-schedule-rates.ts --dry-run --limit=100
+```
+
+### Parameters
+- `--dry-run` or `-d`: Show what would be inserted without making changes
+- `--limit=N`: Process only N schedules (useful for testing)
+
+### Script Features
+- ✅ Batch processing for performance
+- ✅ Duplicate detection and skipping
+- ✅ Dry run mode for testing
+- ✅ Progress reporting
+- ✅ Error handling
+
+## Expected Results
+Based on testing with production data:
+
+- **Input**: ~1M+ schedules with varying rates in `old_etl.raw_schedule_rates`
+- **Transformation**: Each schedule becomes 16 year-by-year records
+- **Mapping**: Each raw schedule maps to multiple `ScheduleRate` records
+- **Output**: ~4M+ SpecialScheduleRates records total
+- **Example**: 5 test schedules → 80 year records → 239K final records
+
+**Sample Output:**
+```
+📊 Found 5 schedules with varying rates (limited to 5)
+🔄 Transformed into 80 year-by-year records
+🔗 Found mappings for 5 unique schedule combinations
+📝 Created 239712 final records for insertion
+📋 Sample records:
+  - ScheduleRateId: 9615369, Year: 1, Rate: 40.00
+  - ScheduleRateId: 9615553, Year: 1, Rate: 40.00
+```
+
+## Verification Queries
+
+### Check Record Count
+```sql
+SELECT COUNT(*) AS TotalRecords FROM dbo.SpecialScheduleRates;
+```
+
+### Check Data Quality
+```sql
+SELECT
+    COUNT(DISTINCT ScheduleRateId) AS UniqueSchedules,
+    COUNT(DISTINCT Year) AS YearsCovered,
+    AVG(Rate) AS AverageRate,
+    MIN(Year) AS MinYear,
+    MAX(Year) AS MaxYear
+FROM dbo.SpecialScheduleRates;
+```
+
+### Sample Records
+```sql
+SELECT TOP 10 ScheduleRateId, Year, Rate
+FROM dbo.SpecialScheduleRates
+ORDER BY ScheduleRateId, Year;
+```
+
+## Performance Considerations
+- **Index Requirements**: `(ScheduleRateId, Year)` should be indexed
+- **Batch Size**: 1000 records per batch for optimal performance
+- **Memory Usage**: Processes schedules in chunks to avoid memory issues
+
+## Common Issues
+1. **No varying schedules found**: Check if `old_etl.raw_schedule_rates` is populated
+2. **ScheduleRate mapping fails**: Verify ProductCode/State/GroupSize alignment
+3. **Duplicates**: Script automatically skips existing records
+
+## Related Tables
+- `old_etl.raw_schedule_rates` (source)
+- `dbo.ScheduleRates` (reference for IDs)
+- `dbo.SpecialScheduleRates` (target)
+
+## Testing
+Always run with `--dry-run` first to verify:
+- Expected record count matches projections
+- Sample data shows correct ScheduleRateId/Year/Rate values
+- No errors in processing logic
+- Performance is acceptable for full run
+
+## Production Deployment
+1. Run `npm run populate-special-rates:dry` to validate
+2. Run `npm run populate-special-rates` for full population
+3. Verify results with verification queries
+4. Check commission calculations work correctly
+
+## Performance Notes
+- Dry runs skip duplicate checking for speed
+- Production runs include duplicate prevention
+- Large datasets (>1M schedules) may take several minutes
+- Script provides progress updates during processing

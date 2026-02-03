@@ -87,12 +87,13 @@ DELETE FROM [dbo].[BrokerLicenses];
 DELETE FROM [dbo].[Brokers];
 PRINT '  ✓ Cleared Brokers';
 
--- Schedules
-DELETE FROM [dbo].[ScheduleRateTiers];
-DELETE FROM [dbo].[SpecialScheduleRates];
-DELETE FROM [dbo].[FeeSchedules];
-DELETE FROM [dbo].[Schedules];
-PRINT '  ✓ Cleared Schedules';
+-- Schedules (COMMENTED OUT - preserving existing production schedules)
+-- DELETE FROM [dbo].[ScheduleRateTiers];
+-- DELETE FROM [dbo].[SpecialScheduleRates];
+-- DELETE FROM [dbo].[FeeSchedules];
+-- DELETE FROM [dbo].[Schedules];
+-- PRINT '  ✓ Cleared Schedules';
+PRINT '  ⏭️  Skipped Schedules (preserving existing production data)';
 
 PRINT '';
 PRINT '✅ All production data cleared';
@@ -100,29 +101,31 @@ PRINT '';
 GO
 
 -- ================================================================
--- Step 2: Export Schedules
+-- Step 2: Export Schedules (COMMENTED OUT - preserving existing production schedules)
 -- ================================================================
 
-PRINT 'Step 2: Exporting Schedules...';
+PRINT 'Step 2: Skipping Schedules (preserving existing production data)...';
 
-SET IDENTITY_INSERT [dbo].[Schedules] ON;
+-- SET IDENTITY_INSERT [dbo].[Schedules] ON;
+-- 
+-- INSERT INTO [dbo].[Schedules] (
+--     Id, ExternalId, Name, Description, Status, CommissionType,
+--     RateStructure, EffectiveDate, EndDate, ProductLines, ProductCodes,
+--     Owner, ContractCount, ProductCount, CurrentVersionId,
+--     CurrentVersionNumber, CreationTime, IsDeleted
+-- )
+-- SELECT 
+--     Id, ExternalId, Name, Description, Status, CommissionType,
+--     RateStructure, EffectiveDate, EndDate, ProductLines, ProductCodes,
+--     Owner, ContractCount, ProductCount, CurrentVersionId,
+--     CurrentVersionNumber, CreationTime, IsDeleted
+-- FROM [etl].[stg_schedules];
+-- 
+-- SET IDENTITY_INSERT [dbo].[Schedules] OFF;
+-- 
+-- PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Schedules';
 
-INSERT INTO [dbo].[Schedules] (
-    Id, ExternalId, Name, Description, Status, CommissionType,
-    RateStructure, EffectiveDate, EndDate, ProductLines, ProductCodes,
-    Owner, ContractCount, ProductCount, CurrentVersionId,
-    CurrentVersionNumber, CreationTime, IsDeleted
-)
-SELECT 
-    Id, ExternalId, Name, Description, Status, CommissionType,
-    RateStructure, EffectiveDate, EndDate, ProductLines, ProductCodes,
-    Owner, ContractCount, ProductCount, CurrentVersionId,
-    CurrentVersionNumber, CreationTime, IsDeleted
-FROM [etl].[stg_schedules];
-
-SET IDENTITY_INSERT [dbo].[Schedules] OFF;
-
-PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Schedules';
+PRINT '  ⏭️  Skipped - using existing production Schedules';
 PRINT '';
 GO
 
@@ -160,18 +163,94 @@ PRINT 'Step 4: Exporting Broker Licenses...';
 SET IDENTITY_INSERT [dbo].[BrokerLicenses] ON;
 
 INSERT INTO [dbo].[BrokerLicenses] (
-    Id, BrokerId, State, LicenseNumber, LicenseType,
-    IssueDate, ExpirationDate, Status, CreationTime, IsDeleted
+    Id, BrokerId, State, LicenseNumber, Type, Status,
+    EffectiveDate, ExpirationDate, GracePeriodDate,
+    LicenseCode, IsResidentLicense, ApplicableCounty,
+    CreationTime, IsDeleted
 )
 SELECT 
-    Id, BrokerId, State, LicenseNumber, LicenseType,
-    IssueDate, ExpirationDate, Status, CreationTime, IsDeleted
+    Id,
+    BrokerId,
+    COALESCE(State, 'XX') AS State,
+    COALESCE(LicenseNumber, 'N/A') AS LicenseNumber,
+    COALESCE(Type, 0) AS Type,
+    COALESCE(Status, 0) AS Status,
+    COALESCE(EffectiveDate, GETUTCDATE()) AS EffectiveDate,
+    COALESCE(ExpirationDate, '2099-01-01') AS ExpirationDate,
+    '2099-01-01' AS GracePeriodDate,  -- Far-future grace period
+    LicenseCode,
+    COALESCE(IsResidentLicense, 0) AS IsResidentLicense,
+    ApplicableCounty,
+    COALESCE(CreationTime, GETUTCDATE()) AS CreationTime,
+    COALESCE(IsDeleted, 0) AS IsDeleted
 FROM [etl].[stg_broker_licenses]
-WHERE EXISTS (SELECT 1 FROM [dbo].[Brokers] WHERE Id = stg_broker_licenses.BrokerId);
+WHERE BrokerId IS NOT NULL
+  AND EXISTS (SELECT 1 FROM [dbo].[Brokers] WHERE Id = stg_broker_licenses.BrokerId);
 
 SET IDENTITY_INSERT [dbo].[BrokerLicenses] OFF;
 
 PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Broker Licenses';
+
+-- Create corresponding Broker Appointments for each license state
+PRINT '  Creating Broker Appointments for license states...';
+
+-- State name lookup (inline for simplicity)
+INSERT INTO [dbo].[BrokerAppointments] (
+    BrokerId, StateCode, StateName, LicenseCode, LicenseCodeLabel,
+    EffectiveDate, ExpirationDate, GracePeriodDate, OriginalEffectiveDate,
+    Status, NiprStatus, IsCommissionEligible,
+    CreationTime, IsDeleted
+)
+SELECT DISTINCT
+    bl.BrokerId,
+    bl.State AS StateCode,
+    CASE bl.State 
+        WHEN 'AL' THEN 'Alabama' WHEN 'AK' THEN 'Alaska' WHEN 'AZ' THEN 'Arizona' 
+        WHEN 'AR' THEN 'Arkansas' WHEN 'CA' THEN 'California' WHEN 'CO' THEN 'Colorado'
+        WHEN 'CT' THEN 'Connecticut' WHEN 'DE' THEN 'Delaware' WHEN 'FL' THEN 'Florida'
+        WHEN 'GA' THEN 'Georgia' WHEN 'HI' THEN 'Hawaii' WHEN 'ID' THEN 'Idaho'
+        WHEN 'IL' THEN 'Illinois' WHEN 'IN' THEN 'Indiana' WHEN 'IA' THEN 'Iowa'
+        WHEN 'KS' THEN 'Kansas' WHEN 'KY' THEN 'Kentucky' WHEN 'LA' THEN 'Louisiana'
+        WHEN 'ME' THEN 'Maine' WHEN 'MD' THEN 'Maryland' WHEN 'MA' THEN 'Massachusetts'
+        WHEN 'MI' THEN 'Michigan' WHEN 'MN' THEN 'Minnesota' WHEN 'MS' THEN 'Mississippi'
+        WHEN 'MO' THEN 'Missouri' WHEN 'MT' THEN 'Montana' WHEN 'NE' THEN 'Nebraska'
+        WHEN 'NV' THEN 'Nevada' WHEN 'NH' THEN 'New Hampshire' WHEN 'NJ' THEN 'New Jersey'
+        WHEN 'NM' THEN 'New Mexico' WHEN 'NY' THEN 'New York' WHEN 'NC' THEN 'North Carolina'
+        WHEN 'ND' THEN 'North Dakota' WHEN 'OH' THEN 'Ohio' WHEN 'OK' THEN 'Oklahoma'
+        WHEN 'OR' THEN 'Oregon' WHEN 'PA' THEN 'Pennsylvania' WHEN 'RI' THEN 'Rhode Island'
+        WHEN 'SC' THEN 'South Carolina' WHEN 'SD' THEN 'South Dakota' WHEN 'TN' THEN 'Tennessee'
+        WHEN 'TX' THEN 'Texas' WHEN 'UT' THEN 'Utah' WHEN 'VT' THEN 'Vermont'
+        WHEN 'VA' THEN 'Virginia' WHEN 'WA' THEN 'Washington' WHEN 'WV' THEN 'West Virginia'
+        WHEN 'WI' THEN 'Wisconsin' WHEN 'WY' THEN 'Wyoming' WHEN 'DC' THEN 'District of Columbia'
+        ELSE bl.State
+    END AS StateName,
+    bl.Type AS LicenseCode,
+    CASE bl.Type 
+        WHEN 0 THEN 'Life' WHEN 1 THEN 'Health' WHEN 2 THEN 'Variable' ELSE 'Other'
+    END AS LicenseCodeLabel,
+    bl.EffectiveDate,
+    bl.ExpirationDate,
+    '2099-01-01' AS GracePeriodDate,  -- Far-future grace period
+    bl.EffectiveDate AS OriginalEffectiveDate,
+    bl.Status,
+    'Active' AS NiprStatus,
+    1 AS IsCommissionEligible,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM [dbo].[BrokerLicenses] bl
+WHERE NOT EXISTS (
+    SELECT 1 FROM [dbo].[BrokerAppointments] ba 
+    WHERE ba.BrokerId = bl.BrokerId AND ba.StateCode = bl.State
+);
+
+PRINT '  ✓ Created ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Broker Appointments';
+
+-- Update all appointments to have 2099-01-01 grace period
+UPDATE [dbo].[BrokerAppointments]
+SET GracePeriodDate = '2099-01-01'
+WHERE GracePeriodDate IS NULL OR GracePeriodDate <> '2099-01-01';
+
+PRINT '  ✓ Updated appointments with 2099-01-01 grace period';
 PRINT '';
 GO
 
@@ -490,20 +569,26 @@ INSERT INTO [dbo].[Policies] (
     Premium, FaceAmount, PayMode, Frequency,
     EffectiveDate, IssueDate, ExpirationDate,
     State, Division, CompanyCode, LionRecordNumber,
-    PaidThroughDate, ProposalId, ProposalAssignedAt,
+    CustomerId, PaidThroughDate, ProposalId, ProposalAssignedAt,
     ProposalAssignmentSource, CreationTime, IsDeleted
 )
 SELECT 
     Id, PolicyNumber, CertificateNumber, OldPolicyNumber,
-    PolicyType, Status, StatusDate, BrokerId, ContractId,
+    COALESCE(PolicyType, 0) AS PolicyType,
+    COALESCE(Status, 0) AS Status,
+    StatusDate, BrokerId, ContractId,
     GroupId, CarrierName, CarrierId, ProductCode, ProductName,
     PlanCode, PlanName, MasterCategory, Category,
     InsuredName, InsuredFirstName, InsuredLastName,
-    Premium, FaceAmount, PayMode, Frequency,
+    COALESCE(Premium, 0) AS Premium,
+    COALESCE(FaceAmount, 0) AS FaceAmount,
+    PayMode, Frequency,
     EffectiveDate, IssueDate, ExpirationDate,
     State, Division, CompanyCode, LionRecordNumber,
-    PaidThroughDate, ProposalId, ProposalAssignedAt,
-    ProposalAssignmentSource, CreationTime, IsDeleted
+    CustomerId, PaidThroughDate, ProposalId, ProposalAssignedAt,
+    ProposalAssignmentSource,
+    COALESCE(CreationTime, GETUTCDATE()) AS CreationTime,
+    COALESCE(IsDeleted, 0) AS IsDeleted
 FROM [etl].[stg_policies];
 
 PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Policies';
@@ -539,14 +624,19 @@ GO
 PRINT 'Step 21: Exporting Commission Assignment Versions...';
 
 INSERT INTO [dbo].[CommissionAssignmentVersions] (
-    Id, ProposalId, BrokerId, VersionNumber, EffectiveFrom,
-    EffectiveTo, Reason, Status, CreationTime, IsDeleted
+    Id, BrokerId, BrokerName, ProposalId, GroupId,
+    HierarchyId, HierarchyVersionId, HierarchyParticipantId,
+    VersionNumber, EffectiveFrom, EffectiveTo, Status, Type,
+    ChangeDescription, TotalAssignedPercent, CreationTime, IsDeleted
 )
 SELECT 
-    Id, ProposalId, BrokerId, VersionNumber, EffectiveFrom,
-    EffectiveTo, Reason, Status, CreationTime, IsDeleted
+    Id, BrokerId, BrokerName, ProposalId, GroupId,
+    HierarchyId, HierarchyVersionId, HierarchyParticipantId,
+    VersionNumber, EffectiveFrom, EffectiveTo, Status, Type,
+    ChangeDescription, TotalAssignedPercent, CreationTime, IsDeleted
 FROM [etl].[stg_commission_assignment_versions]
-WHERE EXISTS (SELECT 1 FROM [dbo].[Proposals] WHERE Id = stg_commission_assignment_versions.ProposalId);
+WHERE ProposalId = '__DEFAULT__'
+   OR EXISTS (SELECT 1 FROM [dbo].[Proposals] WHERE Id = stg_commission_assignment_versions.ProposalId);
 
 PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Commission Assignment Versions';
 
@@ -554,14 +644,18 @@ PRINT '';
 PRINT 'Step 22: Exporting Commission Assignment Recipients...';
 
 INSERT INTO [dbo].[CommissionAssignmentRecipients] (
-    Id, VersionId, RecipientBrokerId, Percentage,
-    CreationTime, IsDeleted
+    Id, VersionId, RecipientBrokerId, RecipientName, Percentage,
+    CreationTime
 )
 SELECT 
-    Id, VersionId, RecipientBrokerId, Percentage,
-    CreationTime, IsDeleted
+    Id, 
+    AssignmentVersionId AS VersionId, 
+    RecipientBrokerId, 
+    RecipientBrokerName AS RecipientName,
+    [Percent] AS Percentage,
+    CreationTime
 FROM [etl].[stg_commission_assignment_recipients]
-WHERE EXISTS (SELECT 1 FROM [dbo].[CommissionAssignmentVersions] WHERE Id = stg_commission_assignment_recipients.VersionId);
+WHERE EXISTS (SELECT 1 FROM [dbo].[CommissionAssignmentVersions] WHERE Id = stg_commission_assignment_recipients.AssignmentVersionId);
 
 PRINT '  ✓ Exported ' + CAST(@@ROWCOUNT AS VARCHAR) + ' Commission Assignment Recipients';
 PRINT '';

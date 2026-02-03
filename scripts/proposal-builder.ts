@@ -31,6 +31,8 @@
 
 import * as crypto from 'crypto';
 import * as sql from 'mssql';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // =============================================================================
 // Type Definitions
@@ -157,8 +159,7 @@ interface Proposal {
   effectiveDateTo: Date;
   splitConfig: SplitConfiguration;
   certificateIds: string[];
-  // Commission assignments (NEW)
-  assignments: ProposalAssignment[];
+  // NOTE: assignments removed - now tracked at broker level via brokerAssignments map
 }
 
 /** Policy Hierarchy Assignment (non-conformant cases) */
@@ -168,6 +169,7 @@ interface PolicyHierarchyAssignment {
   effectiveDate: Date;
   splitConfig: SplitConfiguration;
   reason: string;
+  entryType?: number;
 }
 
 /** Staging table output structures */
@@ -189,7 +191,7 @@ interface StagingProposal {
   DateRangeFrom: number;
   DateRangeTo: number;
   EffectiveDateFrom: Date;
-  EffectiveDateTo: Date;
+  EffectiveDateTo: Date;  // 2099-01-01 = open-ended for commission calculations
   Notes: string | null;
 }
 
@@ -210,7 +212,7 @@ interface StagingPremiumSplitVersion {
   ProposalNumber: string;
   VersionNumber: string;
   EffectiveFrom: Date;
-  EffectiveTo: Date;
+  EffectiveTo: Date;  // 2099-01-01 = open-ended for commission calculations
   TotalSplitPercent: number;
   Status: number;
 }
@@ -232,7 +234,7 @@ interface StagingPremiumSplitParticipant {
   WritingBrokerId: number;
   GroupId: string;
   EffectiveFrom: Date;
-  EffectiveTo: Date;
+  EffectiveTo: Date;  // 2099-01-01 = open-ended for commission calculations
   Notes: string | null;
 }
 
@@ -243,7 +245,8 @@ interface StagingHierarchy {
   GroupName: string | null;
   BrokerId: number;
   BrokerName: string | null;
-  ProposalId: string;
+  // Can be null for PHA-generated hierarchies
+  ProposalId: string | null;
   CurrentVersionId: string;
   EffectiveDate: Date;
   SitusState: string | null;
@@ -255,7 +258,7 @@ interface StagingHierarchyVersion {
   HierarchyId: string;
   VersionNumber: string;
   EffectiveFrom: Date;
-  EffectiveTo: Date;
+  EffectiveTo: Date;  // 2099-01-01 = open-ended for commission calculations
   Status: number;
 }
 
@@ -272,11 +275,14 @@ interface StagingHierarchyParticipant {
 }
 
 interface StagingPolicyHierarchyAssignment {
+  Id: string;
   PolicyId: string;
+  HierarchyId: string;  // Links to hierarchy created for this PHA
   WritingBrokerId: number;
   SplitSequence: number;
   SplitPercent: number;
   NonConformantReason: string | null;
+  EntryType: number;
 }
 
 interface StagingPolicyHierarchyParticipant {
@@ -390,12 +396,28 @@ interface StagingOutput {
 }
 
 /** Builder options for configurable operation */
+/** Execution mode for the proposal builder */
+export type ExecutionMode = 'transform' | 'export' | 'full';
+
 export interface BuilderOptions {
+  mode?: ExecutionMode;       // Default: 'transform'
   batchSize?: number;         // Default: null (process all), Set to 1000-5000 for batching
   dryRun?: boolean;           // Default: false
   verbose?: boolean;          // Default: false
   limitCertificates?: number; // For testing
   schema?: string;            // Target schema (default: 'etl')
+  referenceSchema?: string;   // Schema for reference tables like Schedules (default: 'dbo')
+  productionSchema?: string;  // Production schema for export (default: 'dbo')
+  groups?: string[];          // Optional: Only process these group IDs (e.g., ['26683', '12345'])
+}
+
+export interface EntropyOptions {
+  highEntropyUniqueRatio: number;
+  highEntropyShannon: number;
+  dominantCoverageThreshold: number;
+  phaClusterSizeThreshold: number;
+  logEntropyByGroup?: boolean;
+  verbose?: boolean;
 }
 
 /** Audit log structure */
@@ -417,7 +439,7 @@ interface AuditLog {
 // Proposal Builder Class
 // =============================================================================
 
-class ProposalBuilder {
+export class ProposalBuilder {
   private certificates: CertificateRecord[] = [];
   private selectionCriteria: SelectionCriteria[] = [];
   private proposals: Proposal[] = [];
@@ -427,11 +449,21 @@ class ProposalBuilder {
   private hashCollisions = new Map<string, string>();
   private collisionCount = 0;
   
-  // Deduplicated hierarchies
-  private hierarchyByHash = new Map<string, { writingBrokerId: string; tiers: HierarchyTier[] }>();
+  // Proposal-specific hierarchies (each belongs to exactly one proposal)
+  // Now includes proposalId to ensure 1:1 relationship
+  private hierarchyByHash = new Map<string, {
+    writingBrokerId: string;
+    tiers: HierarchyTier[];
+    groupId: string;
+    splitPercent: number;
+    proposalId: string;
+  }>();
   
   // Map from hierarchy hash to generated hierarchy ID (for deduplication)
   private hierarchyIdByHash = new Map<string, string>();
+  
+  // Track used hierarchy IDs to prevent collisions (same broker/tier/split across different groups)
+  private usedHierarchyIds = new Set<string>();
   
   // Track states per hierarchy (hierarchyHash -> Set<stateCode>)
   private hierarchyStatesByHash = new Map<string, Set<string>>();
@@ -454,26 +486,90 @@ class ProposalBuilder {
   // Non-conformant detection
   private nonConformantGroups = new Set<string>();
   
+  // Excluded groups (loaded from stg_excluded_groups)
+  private excludedGroups = new Set<string>();
+  
   // Track (state, products) per hierarchy for generating hierarchy splits
   private hierarchyStateProducts = new Map<string, Map<string, Set<string>>>();
   
   // Schedule lookup map: ExternalId -> numeric Id
   private scheduleIdByExternalId = new Map<string, number>();
 
+  // Broker-level commission assignments: brokerId -> { assignment details, effectiveDate }
+  // Tracks the most recent assignment per broker (not per proposal)
+  private brokerAssignments = new Map<string, {
+    sourceBrokerId: string;
+    sourceBrokerName: string | null;
+    recipientBrokerId: string;
+    recipientBrokerName: string | null;
+    effectiveDate: Date;
+  }>();
+
   // ==========================================================================
-  // Step 0: Load Schedules (for ID resolution)
+  // Step 0a: Load Excluded Groups (from stg_excluded_groups)
   // ==========================================================================
 
-  async loadSchedules(pool: any): Promise<void> {
-    console.log('Loading schedules for ID resolution...');
+  async loadExcludedGroups(pool: any, schema: string = 'etl'): Promise<void> {
+    console.log('Loading excluded groups from stg_excluded_groups...');
+    try {
+      const result = await pool.request().query(`
+        SELECT GroupId, ExclusionReason
+        FROM [${schema}].[stg_excluded_groups]
+      `);
+      
+      for (const row of result.recordset) {
+        // Store both with and without G prefix for matching
+        this.excludedGroups.add(row.GroupId);
+        // Also store without G prefix for matching against raw groupId
+        if (row.GroupId.startsWith('G')) {
+          this.excludedGroups.add(row.GroupId.substring(1));
+        }
+      }
+      
+      console.log(`  ✓ Loaded ${result.recordset.length} excluded groups`);
+      if (result.recordset.length > 0) {
+        const reasons = new Map<string, number>();
+        for (const row of result.recordset) {
+          reasons.set(row.ExclusionReason, (reasons.get(row.ExclusionReason) || 0) + 1);
+        }
+        for (const [reason, count] of reasons) {
+          console.log(`    - ${reason}: ${count}`);
+        }
+      }
+    } catch (err: any) {
+      console.log(`  ⚠️ Could not load excluded groups: ${err.message}`);
+      console.log(`  ⚠️ Proceeding without exclusion filter`);
+    }
+  }
+
+  // Check if a group is excluded
+  isExcludedGroup(groupId: string): boolean {
+    if (!groupId) return false;
+    const trimmed = groupId.trim();
+    // Check both with and without G prefix
+    return this.excludedGroups.has(trimmed) || 
+           this.excludedGroups.has(`G${trimmed}`) ||
+           this.excludedGroups.has(trimmed.replace(/^G/, ''));
+  }
+
+  // ==========================================================================
+  // Step 0b: Load Schedules (for ID resolution)
+  // ==========================================================================
+
+  async loadSchedules(pool: any, referenceSchema: string = 'dbo'): Promise<void> {
+    console.log(`Loading schedules for ID resolution from [${referenceSchema}].[Schedules]...`);
     const result = await pool.request().query(`
       SELECT Id, ExternalId
-      FROM dbo.Schedules
+      FROM [${referenceSchema}].[Schedules]
       WHERE ExternalId IS NOT NULL
     `);
     
     for (const row of result.recordset) {
-      this.scheduleIdByExternalId.set(row.ExternalId, row.Id);
+      // Trim whitespace from ExternalId to handle inconsistent data
+      const trimmedExternalId = row.ExternalId?.trim();
+      if (trimmedExternalId) {
+        this.scheduleIdByExternalId.set(trimmedExternalId, row.Id);
+      }
     }
     
     console.log(`  ✓ Loaded ${this.scheduleIdByExternalId.size} schedule mappings`);
@@ -532,6 +628,28 @@ class ProposalBuilder {
         const splitRecords = certsForThisCert.filter(c => c.certSplitSeq === splitSeq);
         const splitPercent = splitRecords[0]?.certSplitPercent || 0;
         
+        // Track broker-level assignments: if splitBrokerId != paidBrokerId, it's an assignment
+        // Keep only the most recent assignment per broker (based on certificate effective date)
+        for (const r of splitRecords) {
+          if (r.splitBrokerId && r.paidBrokerId && 
+              r.splitBrokerId.trim() !== '' && r.paidBrokerId.trim() !== '' &&
+              r.splitBrokerId !== r.paidBrokerId) {
+            const existing = this.brokerAssignments.get(r.splitBrokerId);
+            const certDate = new Date(cert.certEffectiveDate);
+            
+            // Keep most recent assignment for this broker
+            if (!existing || certDate > existing.effectiveDate) {
+              this.brokerAssignments.set(r.splitBrokerId, {
+                sourceBrokerId: r.splitBrokerId,
+                sourceBrokerName: r.splitBrokerName,
+                recipientBrokerId: r.paidBrokerId,
+                recipientBrokerName: r.paidBrokerName,
+                effectiveDate: certDate
+              });
+            }
+          }
+        }
+        
         // Build hierarchy tiers for this split (including assignment fields)
         const tiers: HierarchyTier[] = splitRecords
           .sort((a, b) => a.splitBrokerSeq - b.splitBrokerSeq)
@@ -549,10 +667,14 @@ class ProposalBuilder {
         const writingBrokerName = tiers[0]?.brokerName || null;
         const writingBrokerNPN = tiers[0]?.brokerNPN || null;
         
-        // Compute hierarchy hash (IMPORTANT: Include paidBrokerId so assignments differentiate proposals)
-        const hierarchyJson = JSON.stringify(
-          tiers.map(t => ({ level: t.level, brokerId: t.brokerId, schedule: t.schedule, paidBrokerId: t.paidBrokerId }))
-        );
+        // Compute hierarchy hash (CRITICAL: Include groupId so hierarchies are NOT shared across groups)
+        // This fixes the bug where hierarchies were being reused for wrong groups
+        // NOTE: paidBrokerId is intentionally EXCLUDED - it's for assignment tracking, not proposal grouping
+        const hierarchyJson = JSON.stringify({
+          groupId: cert.groupId,  // GROUP-SPECIFIC hierarchy
+          splitPercent: splitPercent,  // Include split percent for unique ID generation
+          tiers: tiers.map(t => ({ level: t.level, brokerId: t.brokerId, schedule: t.schedule }))
+        });
         const hierarchyHash = this.computeHashWithCollisionCheck(hierarchyJson, `hierarchy-${cert.certificateId}-${splitSeq}`);
         
         splits.push({
@@ -570,9 +692,10 @@ class ProposalBuilder {
       const splitConfig: SplitConfiguration = { splits, totalSplitPercent };
       
       // Compute config hash
+      // NOTE: seq (splitSeq) is intentionally EXCLUDED - it's just an identifier, not a meaningful differentiator
+      // This allows certificates with same hierarchy structure to merge regardless of their sequence number
       const configJson = JSON.stringify(
         splits.map(s => ({
-          seq: s.splitSeq,
           pct: s.splitPercent,
           hierarchyHash: s.hierarchyHash
         }))
@@ -596,6 +719,7 @@ class ProposalBuilder {
     this.selectionCriteria = Array.from(criteriaMap.values());
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`  ✓ Extracted ${this.selectionCriteria.length} selection criteria in ${elapsed}s`);
+    console.log(`  ✓ Collected ${this.brokerAssignments.size} broker-level assignments (most recent per broker)`);
   }
 
   // ==========================================================================
@@ -606,51 +730,12 @@ class ProposalBuilder {
     console.log('Identifying non-conformant cases...');
     const startTime = Date.now();
 
-    // Check 1: DTC policies (GroupId = G00000)
-    let dtcCount = 0;
-    for (const criteria of this.selectionCriteria) {
-      if (criteria.groupId === '00000') { // Note: criteria.groupId doesn't have 'G' prefix yet
-        this.phaRecords.push({
-          certificateId: criteria.certificateIds[0],
-          groupId: criteria.groupId,
-          effectiveDate: criteria.effectiveDate,
-          splitConfig: criteria.splitConfig,
-          reason: 'DTC-NoGroup'
-        });
-        dtcCount++;
-      }
-    }
-
-    // Check 2: Non-conformant groups (from database lookup)
-    const groupIds = Array.from(new Set(this.selectionCriteria.map(c => c.groupId)));
-    if (groupIds.length > 0) {
-      const groupIdsList = groupIds.map(id => `'G${id}'`).join(','); // Add 'G' prefix for lookup
-      const groupResult = await pool.request().query(`
-        SELECT Id, IsNonConformant
-        FROM [dbo].[EmployerGroups]
-        WHERE Id IN (${groupIdsList}) AND IsNonConformant = 1
-      `);
-
-      for (const group of groupResult.recordset) {
-        const cleanGroupId = group.Id.replace(/^G/, ''); // Remove 'G' prefix
-        this.nonConformantGroups.add(cleanGroupId);
-
-        // Route all criteria in non-conformant groups to PHA
-        for (const criteria of this.selectionCriteria) {
-          if (criteria.groupId === cleanGroupId) {
-            this.phaRecords.push({
-              certificateId: criteria.certificateIds[0],
-              groupId: criteria.groupId,
-              effectiveDate: criteria.effectiveDate,
-              splitConfig: criteria.splitConfig,
-              reason: 'NonConformant-SplitMismatch'
-            });
-          }
-        }
-      }
-    }
-
-    // Check 3: Certificates with split percent != 100
+    // NOTE: DTC check (GroupId = '00000') REMOVED - DTC groups are processed normally
+    // NOTE: IsNonConformant database check REMOVED - using exclusion table instead
+    // Groups are excluded via stg_excluded_groups table during certificate loading
+    
+    // Only check: Certificates with split percent != 100
+    // This is a data quality issue that prevents valid proposal creation
     let splitMismatchCount = 0;
     for (const criteria of this.selectionCriteria) {
       if (criteria.splitConfig.totalSplitPercent !== 100) {
@@ -659,7 +744,8 @@ class ProposalBuilder {
           groupId: criteria.groupId,
           effectiveDate: criteria.effectiveDate,
           splitConfig: criteria.splitConfig,
-          reason: 'NonConformant-CertificateSplitMismatch'
+          reason: 'NonConformant-CertificateSplitMismatch',
+          entryType: 1
         });
         splitMismatchCount++;
       }
@@ -677,10 +763,109 @@ class ProposalBuilder {
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`  ✓ Identified ${this.phaRecords.length} non-conformant cases in ${elapsed}s`);
-    console.log(`    - DTC policies: ${dtcCount}`);
-    console.log(`    - Non-conformant groups: ${this.nonConformantGroups.size}`);
     console.log(`    - Split mismatches: ${splitMismatchCount}`);
     console.log(`    - Remaining conformant criteria: ${this.selectionCriteria.length}/${originalCount}`);
+  }
+
+  // ==========================================================================
+  // Step 3b: Entropy Routing (V2)
+  // ==========================================================================
+  applyEntropyRouting(options: EntropyOptions): void {
+    console.log('Applying entropy-based routing...');
+    const startTime = Date.now();
+    const remaining: SelectionCriteria[] = [];
+
+    const addCriteriaToPha = (criteria: SelectionCriteria, reason: string, entryType: number) => {
+      for (const certId of criteria.certificateIds) {
+        this.phaRecords.push({
+          certificateId: certId,
+          groupId: criteria.groupId,
+          effectiveDate: criteria.effectiveDate,
+          splitConfig: criteria.splitConfig,
+          reason,
+          entryType
+        });
+      }
+    };
+
+    const byGroup = new Map<string, SelectionCriteria[]>();
+    for (const criteria of this.selectionCriteria) {
+      if (!byGroup.has(criteria.groupId)) byGroup.set(criteria.groupId, []);
+      byGroup.get(criteria.groupId)!.push(criteria);
+    }
+
+    let routedToPha = 0;
+    const computeMetrics = (clusters: Map<string, SelectionCriteria[]>, totalRecords: number) => {
+      const uniqueConfigs = clusters.size;
+      const simpleEntropy = uniqueConfigs / totalRecords;
+      const dominantRecords = Math.max(...Array.from(clusters.values()).map(c => c.length));
+      const dominantPct = dominantRecords / totalRecords;
+      const probs = Array.from(clusters.values()).map(c => c.length / totalRecords);
+      const shannonEntropy = -probs.reduce((sum, p) => sum + (p * Math.log2(p)), 0);
+      return { uniqueConfigs, simpleEntropy, dominantRecords, dominantPct, shannonEntropy };
+    };
+
+    for (const [groupId, groupCriteria] of byGroup) {
+      // Hard rule: invalid group -> PHA
+      if (this.isInvalidGroup(groupId)) {
+        for (const criteria of groupCriteria) {
+          addCriteriaToPha(criteria, 'Invalid GroupId (null/empty/zeros)', 2);
+          routedToPha++;
+        }
+        continue;
+      }
+
+      const clusters = new Map<string, SelectionCriteria[]>();
+      for (const criteria of groupCriteria) {
+        const key = criteria.configHash;
+        if (!clusters.has(key)) clusters.set(key, []);
+        clusters.get(key)!.push(criteria);
+      }
+
+      const totalRecords = groupCriteria.length;
+      const {
+        uniqueConfigs,
+        simpleEntropy,
+        dominantRecords,
+        dominantPct,
+        shannonEntropy
+      } = computeMetrics(clusters, totalRecords);
+
+      const isHighEntropy = (
+        simpleEntropy > options.highEntropyUniqueRatio ||
+        shannonEntropy > options.highEntropyShannon ||
+        dominantPct < options.dominantCoverageThreshold
+      );
+
+      if (options.logEntropyByGroup || options.verbose) {
+        console.log(`  Entropy ${groupId}: unique=${uniqueConfigs}, total=${totalRecords}, dominant=${dominantRecords}, simple=${simpleEntropy.toFixed(3)}, shannon=${shannonEntropy.toFixed(3)}`);
+      }
+
+      if (isHighEntropy) {
+        for (const criteria of groupCriteria) {
+          addCriteriaToPha(criteria, 'BusinessDrivenEntropy', 2);
+          routedToPha++;
+        }
+        continue;
+      }
+
+      for (const cluster of clusters.values()) {
+        if (cluster.length < options.phaClusterSizeThreshold) {
+          for (const criteria of cluster) {
+            addCriteriaToPha(criteria, 'HumanErrorOutlier', 1);
+            routedToPha++;
+          }
+        } else {
+          remaining.push(...cluster);
+        }
+      }
+    }
+
+    this.selectionCriteria = remaining;
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`  ✓ Entropy routing complete in ${elapsed}s`);
+    console.log(`    - Routed to PHA: ${routedToPha}`);
+    console.log(`    - Remaining conformant criteria: ${this.selectionCriteria.length}`);
   }
 
   // ==========================================================================
@@ -713,15 +898,16 @@ class ProposalBuilder {
           groupId: criteria.groupId,
           effectiveDate: criteria.effectiveDate,
           splitConfig: criteria.splitConfig,
-          reason: 'Invalid GroupId (null/empty/zeros)'
+          reason: 'Invalid GroupId (null/empty/zeros)',
+          entryType: 2
         });
         continue;
       }
 
       if (!proposalMap.has(key)) {
         this.proposalCounter++;
-        // Extract assignments from split configuration
-        const assignments = this.extractAssignments(criteria.splitConfig);
+        // NOTE: Assignments are now tracked at broker level via brokerAssignments map
+        // (collected during extractSelectionCriteria)
         
         // Use ProposalNumber format as the Id
         const proposalId = `PROP-${criteria.groupId}-${this.proposalCounter}`;
@@ -748,8 +934,7 @@ class ProposalBuilder {
           effectiveDateFrom: criteria.effectiveDate,
           effectiveDateTo: criteria.effectiveDate,
           splitConfig: criteria.splitConfig,
-          certificateIds: [...criteria.certificateIds],
-          assignments
+          certificateIds: [...criteria.certificateIds]
         };
         proposalMap.set(key, proposal);
       } else {
@@ -787,15 +972,23 @@ class ProposalBuilder {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`  ✓ Built ${this.proposals.length} proposals and ${this.phaRecords.length} PHA records in ${elapsed}s`);
     
-    // Store deduplicated hierarchies
+    // Store proposal-specific hierarchies (each hierarchy belongs to exactly one proposal)
+    // Remove deduplication logic - each proposal gets its own hierarchy even if structures are identical
     for (const proposal of this.proposals) {
       for (const split of proposal.splitConfig.splits) {
-        if (!this.hierarchyByHash.has(split.hierarchyHash)) {
-          this.hierarchyByHash.set(split.hierarchyHash, {
-            writingBrokerId: split.writingBrokerId,
-            tiers: split.tiers
-          });
-        }
+        // Create proposal-specific hierarchy hash by including proposalId
+        const proposalSpecificHash = `${split.hierarchyHash}-PROPOSAL-${proposal.id}`;
+
+        this.hierarchyByHash.set(proposalSpecificHash, {
+          writingBrokerId: split.writingBrokerId,
+          tiers: split.tiers,
+          groupId: proposal.groupId,
+          splitPercent: split.splitPercent,
+          proposalId: proposal.id  // Track which proposal this hierarchy belongs to
+        });
+
+        // Update the split to use the proposal-specific hash
+        split.hierarchyHash = proposalSpecificHash;
       }
     }
   }
@@ -828,12 +1021,23 @@ class ProposalBuilder {
     };
 
     console.log(`  Processing ${this.proposals.length} proposals...`);
+    // Helper: Subtract one day from date
+    // REASON: Commission runner uses > (not >=) for date comparison
+    // So we need proposal.EffectiveDateFrom to be one day BEFORE the actual effective date
+    // Example: Certificate effective 2024-10-01 needs proposal.EffectiveDateFrom = 2024-09-30
+    //          so that (2024-10-01 > 2024-09-30) = true
+    const subtractOneDay = (date: Date): Date => {
+      const result = new Date(date);
+      result.setDate(result.getDate() - 1);
+      return result;
+    };
+
     // Generate proposals
     for (const p of this.proposals) {
       output.proposals.push({
         Id: p.id,
         ProposalNumber: p.proposalNumber,
-        Status: 1, // Active
+        Status: 1, // ProposalStatus.Active (0=Pending, 1=Active, 2=Superseded)
         SubmittedDate: p.effectiveDateFrom,
         ProposedEffectiveDate: p.effectiveDateFrom,
         SitusState: p.situsState,
@@ -847,8 +1051,8 @@ class ProposalBuilder {
         SplitConfigHash: p.configHash,
         DateRangeFrom: p.effectiveDateFrom.getFullYear(),
         DateRangeTo: p.effectiveDateTo.getFullYear(),
-        EffectiveDateFrom: p.effectiveDateFrom,
-        EffectiveDateTo: p.effectiveDateTo,
+        EffectiveDateFrom: subtractOneDay(p.effectiveDateFrom),  // -1 day for > comparison
+        EffectiveDateTo: new Date('2099-01-01'),  // Far-future = open-ended
         Notes: `Generated by TypeScript builder. Certificates: ${p.certificateIds.length}`
       });
 
@@ -870,8 +1074,8 @@ class ProposalBuilder {
       }
 
       // Generate premium split version
-      this.splitVersionCounter++;
-      const versionId = `PSV-${this.splitVersionCounter}`;
+      // NOTE: Use proposal ID in the versionId to avoid collisions with existing production data
+      const versionId = `PSV-${p.id}`;  // e.g., PSV-PROP-26683-1
       output.premiumSplitVersions.push({
         Id: versionId,
         GroupId: p.groupId,
@@ -879,16 +1083,14 @@ class ProposalBuilder {
         ProposalId: p.id,
         ProposalNumber: p.proposalNumber,
         VersionNumber: 'V1',
-        EffectiveFrom: p.effectiveDateFrom,
-        EffectiveTo: new Date('2099-01-01'),
+        EffectiveFrom: subtractOneDay(p.effectiveDateFrom),  // -1 day for > comparison
+        EffectiveTo: new Date('2099-01-01'),  // Far-future = open-ended
         TotalSplitPercent: p.splitConfig.totalSplitPercent,
-        Status: 1
+        Status: 1  // SplitVersionStatus.Active (Draft=0, Active=1)
       });
 
       // Generate premium split participants (one per split)
       for (const split of p.splitConfig.splits) {
-        this.splitParticipantCounter++;
-        
         // Get or create hierarchy
         const hierarchyId = this.getOrCreateHierarchy(
           split.hierarchyHash,
@@ -900,8 +1102,9 @@ class ProposalBuilder {
           output
         );
         
+        // NOTE: Use proposal ID + split sequence to avoid collisions with existing production data
         output.premiumSplitParticipants.push({
-          Id: `PSP-${this.splitParticipantCounter}`,
+          Id: `PSP-${p.id}-${split.splitSeq}`,  // e.g., PSP-PROP-26683-1-1
           VersionId: versionId,
           BrokerId: brokerExternalToInternal(split.writingBrokerId),
           BrokerName: split.writingBrokerName,
@@ -916,69 +1119,136 @@ class ProposalBuilder {
           Sequence: split.splitSeq,
           WritingBrokerId: brokerExternalToInternal(split.writingBrokerId),
           GroupId: p.groupId,
-          EffectiveFrom: p.effectiveDateFrom,
-          EffectiveTo: new Date('2099-01-01'),
+          EffectiveFrom: subtractOneDay(p.effectiveDateFrom),  // -1 day for > comparison
+          EffectiveTo: new Date('2099-01-01'),  // Far-future = open-ended
           Notes: null
         });
       }
 
-      // Generate commission assignments for this proposal (NEW)
-      for (const assignment of p.assignments) {
-        // Include both source and recipient in ID to ensure uniqueness
-        const cavId = `CAV-${p.id}-${assignment.sourceBrokerId}-${assignment.recipientBrokerId}`;
-        
-        output.commissionAssignmentVersions.push({
-          Id: cavId,
-          BrokerId: brokerExternalToInternal(assignment.sourceBrokerId),
-          BrokerName: assignment.sourceBrokerName,
-          ProposalId: p.id,
-          GroupId: p.groupId,
-          HierarchyId: null,
-          HierarchyVersionId: null,
-          HierarchyParticipantId: null,
-          VersionNumber: '1',
-          EffectiveFrom: p.effectiveDateFrom,
-          EffectiveTo: p.effectiveDateTo,
-          Status: 1, // Active
-          Type: 1, // Full assignment
-          ChangeDescription: `Commission assignment from ${assignment.sourceBrokerName || assignment.sourceBrokerId} to ${assignment.recipientBrokerName || assignment.recipientBrokerId}`,
-          TotalAssignedPercent: 100.00
-        });
-
-        const carId = `CAR-${cavId}`;
-        
-        output.commissionAssignmentRecipients.push({
-          Id: carId,
-          VersionId: cavId,
-          RecipientBrokerId: brokerExternalToInternal(assignment.recipientBrokerId),
-          RecipientName: assignment.recipientBrokerName,
-          RecipientNPN: null,
-          Percentage: 100.00,
-          RecipientHierarchyId: null,
-          Notes: `Receives commissions from ${assignment.sourceBrokerName || assignment.sourceBrokerId} for proposal ${p.id}`
-        });
-      }
+      // NOTE: Per-proposal commission assignments REMOVED
+      // Assignments are now generated at broker level after all proposals (see below)
     }
 
+    // Generate BROKER-LEVEL commission assignments (NEW LOGIC)
+    // ProposalId = '__DEFAULT__' - assignments are per broker, not per proposal
+    // Only most recent assignment per broker is kept (tracked in brokerAssignments map)
+    console.log(`  Generating ${this.brokerAssignments.size} broker-level commission assignments...`);
+    for (const [brokerId, assignment] of this.brokerAssignments) {
+      const cavId = `CAV-${brokerId}`;  // One per broker
+      
+      output.commissionAssignmentVersions.push({
+        Id: cavId,
+        BrokerId: brokerExternalToInternal(assignment.sourceBrokerId),
+        BrokerName: assignment.sourceBrokerName,
+        ProposalId: '__DEFAULT__',  // KEY CHANGE: Broker-level, not proposal-level
+        GroupId: null,
+        HierarchyId: null,
+        HierarchyVersionId: null,
+        HierarchyParticipantId: null,
+        VersionNumber: '1',
+        EffectiveFrom: assignment.effectiveDate,
+        EffectiveTo: new Date('2099-01-01'),  // Far-future = open-ended
+        Status: 3, // AssignmentStatus.Active (Draft=0, Future=1, Historical=2, Active=3)
+        Type: 1, // Full assignment
+        ChangeDescription: `Broker assignment: ${assignment.sourceBrokerName || assignment.sourceBrokerId} → ${assignment.recipientBrokerName || assignment.recipientBrokerId}`,
+        TotalAssignedPercent: 100.00
+      });
+
+      const carId = `CAR-${cavId}`;
+      
+      output.commissionAssignmentRecipients.push({
+        Id: carId,
+        VersionId: cavId,
+        RecipientBrokerId: brokerExternalToInternal(assignment.recipientBrokerId),
+        RecipientName: assignment.recipientBrokerName,
+        RecipientNPN: null,
+        Percentage: 100.00,
+        RecipientHierarchyId: null,
+        Notes: `Broker assignment - most recent effective ${assignment.effectiveDate.toISOString().split('T')[0]}`
+      });
+    }
+    console.log(`  ✓ Generated ${output.commissionAssignmentVersions.length} broker-level assignments`);
+
     // Generate PHA records for non-conformant policies
+    // Each PHA gets its own unique hierarchy to ensure referential integrity
+    console.log(`  Generating ${this.phaRecords.length} PHA records with hierarchies...`);
     for (const pha of this.phaRecords) {
       for (const split of pha.splitConfig.splits) {
         this.phaCounter++;
-        const phaAssignmentId = `PHA-${this.phaCounter}`;
+        const phaGroupKey = pha.groupId.replace(/[^A-Za-z0-9]/g, '') || 'UNKNOWN';
+        const phaAssignmentId = `PHA-${phaGroupKey}-${this.phaCounter}`;
         
+        // Create a unique hierarchy for this PHA
+        // Note: We don't deduplicate PHA hierarchies because of unique constraint on (PolicyId, HierarchyId, WritingBrokerId)
+        this.hierarchyCounter++;
+        const phaHierarchyId = `H-PHA-${phaGroupKey}-${this.hierarchyCounter}`;
+        this.hvCounter++;
+        const phaHierarchyVersionId = `HV-PHA-${phaGroupKey}-${this.hvCounter}`;
+        
+        const writingBrokerId = brokerExternalToInternal(split.writingBrokerId);
+        const writingBrokerName = split.tiers[0]?.brokerName || null;
+        const groupId = `G${pha.groupId}`;
+        
+        // Create hierarchy for PHA
+        output.hierarchies.push({
+          Id: phaHierarchyId,
+          Name: `PHA Hierarchy for Policy ${pha.certificateId}`,
+          GroupId: groupId,
+          GroupName: null,
+          BrokerId: writingBrokerId,
+          BrokerName: writingBrokerName,
+          ProposalId: null,  // PHA hierarchies don't have proposals
+          CurrentVersionId: phaHierarchyVersionId,
+          EffectiveDate: pha.effectiveDate,
+          SitusState: null,
+          Status: 0  // HierarchyStatus.Active (Active=0, Inactive=1)
+        });
+
+        // Create hierarchy version for PHA
+        output.hierarchyVersions.push({
+          Id: phaHierarchyVersionId,
+          HierarchyId: phaHierarchyId,
+          VersionNumber: 'V1',
+          EffectiveFrom: pha.effectiveDate,
+          EffectiveTo: new Date('2099-01-01'),
+          Status: 1  // HierarchyVersionStatus.Active (Draft=0, Active=1)
+        });
+
+        // Create hierarchy participants for PHA
+        for (const tier of split.tiers) {
+          this.hpCounter++;
+          const scheduleId = tier.schedule ? this.scheduleIdByExternalId.get(tier.schedule.trim()) || null : null;
+          
+          output.hierarchyParticipants.push({
+            Id: `HP-PHA-${phaGroupKey}-${this.hpCounter}`,
+            HierarchyVersionId: phaHierarchyVersionId,
+            EntityId: tier.brokerId,
+            EntityName: tier.brokerName,
+            EntityType: 1, // Broker
+            Level: tier.level,
+            CommissionRate: null,
+            ScheduleCode: tier.schedule,
+            ScheduleId: scheduleId
+          });
+        }
+        
+        // Create PHA assignment with HierarchyId
         output.policyHierarchyAssignments.push({
+          Id: phaAssignmentId,
           PolicyId: pha.certificateId,
-          WritingBrokerId: brokerExternalToInternal(split.writingBrokerId),
+          HierarchyId: phaHierarchyId,
+          WritingBrokerId: writingBrokerId,
           SplitSequence: split.splitSeq,
           SplitPercent: split.splitPercent,
-          NonConformantReason: pha.reason
+          NonConformantReason: pha.reason,
+          EntryType: pha.entryType ?? 0
         });
 
         // Generate PHA participants
         for (const tier of split.tiers) {
           this.phpCounter++;
           output.policyHierarchyParticipants.push({
-            Id: `PHP-${this.phpCounter}`,
+            Id: `PHP-${phaGroupKey}-${this.phpCounter}`,
             PolicyHierarchyAssignmentId: phaAssignmentId,
             BrokerId: tier.brokerId,
             BrokerName: tier.brokerName,
@@ -988,6 +1258,7 @@ class ProposalBuilder {
         }
       }
     }
+    console.log(`  ✓ Generated ${output.policyHierarchyAssignments.length} PHA assignments with hierarchies`);
 
     // Collect products per (hierarchy, state) from proposals for hierarchy splits
     console.log(`  Collecting products per hierarchy and state from ${this.proposals.length} proposals...`);
@@ -1034,88 +1305,46 @@ class ProposalBuilder {
       
       const stateArray = Array.from(states).sort();
       
-      // Business Rule: Single state → default rule, Multiple states → state-specific rules
-      if (stateArray.length === 1) {
-        // Create ONE default state rule (applies to all states)
+      // FIXED: Always create state-specific rules (never DEFAULT) for proper referential integrity
+      // This ensures sr.ShortName = p.[State] joins work correctly in commission processing
+      // Previously, single-state hierarchies used ShortName='DEFAULT' which broke the join
+      let sortOrder = 1;
+      for (const stateCode of stateArray) {
         this.stateRuleCounter++;
+        const stateRuleId = `SR-${hierarchyVersion.Id}-${stateCode}`;
+        
         output.stateRules.push({
-          Id: `SR-${hierarchyVersion.Id}-DEFAULT`,
+          Id: stateRuleId,
           HierarchyVersionId: hierarchyVersion.Id,
-          ShortName: 'DEFAULT',
-          Name: 'Default Rule',
-          Description: `Default state rule for hierarchy ${hierarchy.Name}`,
+          ShortName: stateCode,
+          Name: stateCode,
+          Description: `State rule for ${stateCode} in hierarchy ${hierarchy.Name}`,
           Type: 0, // Include
-          SortOrder: 1
+          SortOrder: sortOrder++
         });
-        // NO state rule states - applies universally
-      } else {
-        // Create one state rule per state
-        let sortOrder = 1;
-        for (const stateCode of stateArray) {
-          this.stateRuleCounter++;
-          const stateRuleId = `SR-${hierarchyVersion.Id}-${stateCode}`;
-          
-          output.stateRules.push({
-            Id: stateRuleId,
-            HierarchyVersionId: hierarchyVersion.Id,
-            ShortName: stateCode,
-            Name: stateCode,
-            Description: `State rule for ${stateCode} in hierarchy ${hierarchy.Name}`,
-            Type: 0, // Include
-            SortOrder: sortOrder++
-          });
-          
-          // Create state rule state association
-          this.stateRuleStateCounter++;
-          output.stateRuleStates.push({
-            Id: `SRS-${this.stateRuleStateCounter}`,
-            StateRuleId: stateRuleId,
-            StateCode: stateCode,
-            StateName: getStateName(stateCode)
-          });
-          
-          // Create hierarchy splits for products in this state
-          const stateProductMap = this.hierarchyStateProducts.get(hierarchyHash);
-          if (stateProductMap) {
-            const productsForState = stateProductMap.get(stateCode);
-            if (productsForState && productsForState.size > 0) {
-              let productSortOrder = 1;
-              for (const productCode of Array.from(productsForState).sort()) {
-                this.hierarchySplitCounter++;
-                output.hierarchySplits.push({
-                  Id: `HS-${this.hierarchySplitCounter}`,
-                  StateRuleId: stateRuleId,
-                  ProductId: null, // Will be resolved by downstream processes
-                  ProductCode: productCode,
-                  ProductName: `${productCode} Product`,
-                  SortOrder: productSortOrder++
-                });
-              }
-            }
-          }
-        }
-      }
-      
-      // For DEFAULT rules (single state), create hierarchy splits for all products across all states
-      if (stateArray.length === 1) {
-        const defaultStateRuleId = `SR-${hierarchyVersion.Id}-DEFAULT`;
+        
+        // Create state rule state association
+        this.stateRuleStateCounter++;
+        output.stateRuleStates.push({
+          Id: `SRS-${stateRuleId}-${stateCode}`,
+          StateRuleId: stateRuleId,
+          StateCode: stateCode,
+          StateName: getStateName(stateCode)
+        });
+        
+        // Create hierarchy splits for products in this state
         const stateProductMap = this.hierarchyStateProducts.get(hierarchyHash);
         if (stateProductMap) {
-          const allProducts = new Set<string>();
-          for (const products of stateProductMap.values()) {
-            for (const product of products) {
-              allProducts.add(product);
-            }
-          }
-          
-          if (allProducts.size > 0) {
+          const productsForState = stateProductMap.get(stateCode);
+          if (productsForState && productsForState.size > 0) {
             let productSortOrder = 1;
-            for (const productCode of Array.from(allProducts).sort()) {
+            for (const productCode of Array.from(productsForState).sort()) {
               this.hierarchySplitCounter++;
+              const hierarchySplitId = `HS-${stateRuleId}-${productCode}`;
               output.hierarchySplits.push({
-                Id: `HS-${this.hierarchySplitCounter}`,
-                StateRuleId: defaultStateRuleId,
-                ProductId: null,
+                Id: hierarchySplitId,
+                StateRuleId: stateRuleId,
+                ProductId: productCode,  // Products.Id = ProductCode in dbo.Products
                 ProductCode: productCode,
                 ProductName: `${productCode} Product`,
                 SortOrder: productSortOrder++
@@ -1184,27 +1413,48 @@ class ProposalBuilder {
       // Create a distribution for each participant
       for (const participant of participants) {
         this.splitDistributionCounter++;
+        
+        // FIX: Resolve ScheduleId from ScheduleCode (ExternalId) -> numeric Id
+        // This ensures we always use the correct numeric ID from the Schedules table
+        // The commission runner parses ScheduleId as long - must be numeric, not ExternalId
+        // Note: .trim() handles whitespace in source data (CertificateInfo.CommissionsSchedule)
+        const trimmedScheduleCode = participant.ScheduleCode?.trim() || null;
+        const resolvedScheduleId = trimmedScheduleCode 
+          ? this.scheduleIdByExternalId.get(trimmedScheduleCode) || null 
+          : null;
+        
+        if (trimmedScheduleCode && !resolvedScheduleId) {
+          console.warn(`  ⚠️ Schedule not found for code: ${trimmedScheduleCode}`);
+        }
+        
         output.splitDistributions.push({
-          Id: `SD-${this.splitDistributionCounter}`,
+          Id: `SD-${split.Id}-${participant.Id}`,
           HierarchySplitId: split.Id,
           HierarchyParticipantId: participant.Id,
           ParticipantEntityId: brokerExternalToInternal(participant.EntityId),
           Percentage: 100 / participants.length, // Equal distribution across participants
-          ScheduleId: participant.ScheduleId ? String(participant.ScheduleId) : null, // Use resolved numeric ID
+          ScheduleId: resolvedScheduleId ? String(resolvedScheduleId) : null, // FIXED: Use resolved numeric ID
           ScheduleName: participant.ScheduleCode ? `Schedule ${participant.ScheduleCode}` : null
         });
       }
     }
     console.log(`  ✓ Generated ${output.splitDistributions.length} split distributions`);
 
+    // POST-PROCESSING: Fix overlapping date ranges for proposals in the same group
+    // This may create CONTINUATION proposals with their own key mappings
+    this.fixOverlappingDateRanges(output);
+
     // Deduplicate key mappings by primary key (GroupId, EffectiveYear, ProductCode, PlanCode)
+    // IMPORTANT: This must happen AFTER fixOverlappingDateRanges since continuations add mappings
+    // For duplicates, prefer the CONTINUATION proposal (it has the correct future coverage)
     const keyMappingMap = new Map<string, StagingProposalKeyMapping>();
     for (const mapping of output.proposalKeyMappings) {
       const key = `${mapping.GroupId}|${mapping.EffectiveYear}|${mapping.ProductCode}|${mapping.PlanCode}`;
-      if (!keyMappingMap.has(key)) {
+      // For duplicates, prefer continuation proposals (they have "-CONT" suffix)
+      const existing = keyMappingMap.get(key);
+      if (!existing || mapping.ProposalId.includes('-CONT')) {
         keyMappingMap.set(key, mapping);
       }
-      // If duplicate, keep the first one (arbitrary choice, they should be identical)
     }
     output.proposalKeyMappings = Array.from(keyMappingMap.values());
 
@@ -1213,6 +1463,366 @@ class ProposalBuilder {
     console.log(`    Proposals: ${output.proposals.length}, Proposal Products: ${output.proposalProducts.length}, Hierarchies: ${output.hierarchies.length}, Key Mappings: ${output.proposalKeyMappings.length}`);
     
     return output;
+  }
+
+  // ==========================================================================
+  // Helper: Fix Overlapping Date Ranges
+  // ==========================================================================
+  // When multiple proposals exist for the same group, we need to handle product overlap:
+  // 
+  // - Products that EXIST in the next proposal: truncate (superseded by new schedules)
+  // - Products that DON'T EXIST in next proposal: create CONTINUATION proposal
+  // 
+  // Example: Group G26683 has:
+  //   - PROP-26683-1 (2024-10-01): GAO21HFM, GC14 CL1, GCI21HFM, MEDLINK9CM with AF01/AF02
+  //   - PROP-26683-2 (2025-10-01): GAO21HFM, GC14 CL1, GCI21HFM with NW-PB4/NW-RZ4
+  // 
+  // Result after fix:
+  //   - PROP-26683-1: ALL 4 products (2024-09-30 → 2025-09-30) AF01/AF02 [TRUNCATED]
+  //   - PROP-26683-2: 3 products (2025-09-30 → 2099-01-01) NW-PB4/NW-RZ4
+  //   - PROP-26683-1-CONT: MEDLINK9CM only (2025-09-30 → 2099-01-01) AF01/AF02 [NEW]
+
+  private fixOverlappingDateRanges(output: StagingOutput): void {
+    // Group proposals by GroupId
+    const proposalsByGroup = new Map<string, StagingProposal[]>();
+    for (const proposal of output.proposals) {
+      const groupId = proposal.GroupId;
+      if (!proposalsByGroup.has(groupId)) {
+        proposalsByGroup.set(groupId, []);
+      }
+      proposalsByGroup.get(groupId)!.push(proposal);
+    }
+
+    // Track new proposals to add (can't modify array while iterating)
+    const continuationProposals: StagingProposal[] = [];
+
+    for (const [groupId, proposals] of proposalsByGroup) {
+      if (proposals.length <= 1) continue;
+
+      // Sort by EffectiveDateFrom ascending
+      proposals.sort((a, b) => a.EffectiveDateFrom.getTime() - b.EffectiveDateFrom.getTime());
+
+      for (let i = 0; i < proposals.length - 1; i++) {
+        const current = proposals[i];
+        const next = proposals[i + 1];
+
+        // Parse product lists
+        const currentProducts = new Set(
+          current.ProductCodes.split(',').map(p => p.trim()).filter(p => p)
+        );
+        const nextProducts = new Set(
+          next.ProductCodes.split(',').map(p => p.trim()).filter(p => p)
+        );
+
+        // Find overlapping vs non-overlapping products
+        const overlapping = [...currentProducts].filter(p => nextProducts.has(p));
+        const onlyInCurrent = [...currentProducts].filter(p => !nextProducts.has(p));
+
+        const dayBefore = new Date(next.EffectiveDateFrom);
+        dayBefore.setDate(dayBefore.getDate() - 1);
+
+        if (overlapping.length > 0) {
+          // Truncate current proposal's date range (overlapping products superseded)
+          current.EffectiveDateTo = dayBefore;
+
+          // Update corresponding PremiumSplitVersions and Participants
+          const psv = output.premiumSplitVersions.find(v => v.ProposalId === current.Id);
+          if (psv) {
+            psv.EffectiveTo = dayBefore;
+            for (const psp of output.premiumSplitParticipants) {
+              if (psp.VersionId === psv.Id) {
+                psp.EffectiveTo = dayBefore;
+              }
+            }
+          }
+          
+          console.log(`  ✓ Truncated ${current.Id} to ${dayBefore.toISOString().split('T')[0]} (${overlapping.length} products superseded by ${next.Id})`);
+        }
+
+        if (onlyInCurrent.length > 0) {
+          // These products need a CONTINUATION proposal
+          // They continue with current's hierarchy/schedules past the cutoff
+          this.proposalCounter++;
+          const contId = `${current.Id}-CONT`;
+          
+          console.log(`  ✓ Creating continuation proposal ${contId} for products: ${onlyInCurrent.join(', ')}`);
+
+          // Create continuation proposal
+          continuationProposals.push({
+            Id: contId,
+            ProposalNumber: contId,
+            Status: current.Status,
+            SubmittedDate: next.EffectiveDateFrom,
+            ProposedEffectiveDate: next.EffectiveDateFrom,
+            SitusState: current.SitusState,
+            GroupId: current.GroupId,
+            GroupName: current.GroupName,
+            BrokerId: current.BrokerId,
+            BrokerName: current.BrokerName,
+            BrokerUniquePartyId: current.BrokerUniquePartyId,
+            ProductCodes: onlyInCurrent.join(','),
+            PlanCodes: current.PlanCodes, // Keep all plan codes, runner will filter
+            SplitConfigHash: current.SplitConfigHash, // Same hierarchy config
+            DateRangeFrom: next.EffectiveDateFrom.getFullYear(),
+            DateRangeTo: 2099,
+            EffectiveDateFrom: next.EffectiveDateFrom,
+            EffectiveDateTo: new Date('2099-01-01'),
+            Notes: `Continuation of ${current.Id} for products not in ${next.Id}`
+          });
+
+          // Create continuation hierarchy, PSV, PSP, key mappings
+          this.createContinuationEntities(
+            current, 
+            contId, 
+            onlyInCurrent, 
+            next.EffectiveDateFrom, 
+            output
+          );
+        }
+      }
+      
+      console.log(`  ✓ Fixed date ranges for group ${groupId}: ${proposals.length} proposals processed`);
+    }
+
+    // Add continuation proposals to output
+    output.proposals.push(...continuationProposals);
+  }
+
+  /**
+   * Create all supporting entities for a continuation proposal
+   */
+  private createContinuationEntities(
+    sourceProposal: StagingProposal,
+    contProposalId: string,
+    products: string[],
+    effectiveFrom: Date,
+    output: StagingOutput
+  ): void {
+    // Find source hierarchy via PSP -> Hierarchy chain
+    const sourcePsv = output.premiumSplitVersions.find(v => v.ProposalId === sourceProposal.Id);
+    if (!sourcePsv) return;
+
+    const sourcePsps = output.premiumSplitParticipants.filter(p => p.VersionId === sourcePsv.Id);
+    if (sourcePsps.length === 0) return;
+
+    // Create new PSV for continuation
+    this.splitVersionCounter++;
+    const contPsvId = `PSV-${contProposalId}`;
+    
+    output.premiumSplitVersions.push({
+      Id: contPsvId,
+      GroupId: sourcePsv.GroupId,
+      GroupName: sourcePsv.GroupName,
+      ProposalId: contProposalId,
+      ProposalNumber: contProposalId,
+      VersionNumber: 'V1',
+      EffectiveFrom: effectiveFrom,
+      EffectiveTo: new Date('2099-01-01'),
+      TotalSplitPercent: sourcePsv.TotalSplitPercent,
+      Status: sourcePsv.Status
+    });
+
+    // For each source PSP, create continuation PSP with NEW hierarchy
+    for (const sourcePsp of sourcePsps) {
+      const sourceHierarchy = output.hierarchies.find(h => h.Id === sourcePsp.HierarchyId);
+      if (!sourceHierarchy) continue;
+
+      // Create new hierarchy for continuation (1:1 with proposal)
+      this.hierarchyCounter++;
+      const contHierarchyId = `H-${contProposalId}-${sourcePsp.Sequence}`;
+      const contHvId = `${contHierarchyId}-V1`;
+
+      output.hierarchies.push({
+        Id: contHierarchyId,
+        Name: `Continuation hierarchy for ${contProposalId}`,
+        GroupId: sourceHierarchy.GroupId,
+        GroupName: sourceHierarchy.GroupName,
+        BrokerId: sourceHierarchy.BrokerId,
+        BrokerName: sourceHierarchy.BrokerName,
+        ProposalId: contProposalId,
+        CurrentVersionId: contHvId,
+        EffectiveDate: effectiveFrom,
+        SitusState: sourceHierarchy.SitusState,
+        Status: sourceHierarchy.Status
+      });
+
+      // Find source hierarchy version
+      const sourceHv = output.hierarchyVersions.find(hv => hv.HierarchyId === sourceHierarchy.Id);
+      if (!sourceHv) continue;
+
+      output.hierarchyVersions.push({
+        Id: contHvId,
+        HierarchyId: contHierarchyId,
+        VersionNumber: 'V1',
+        EffectiveFrom: effectiveFrom,
+        EffectiveTo: new Date('2099-01-01'),
+        Status: sourceHv.Status
+      });
+
+      // Copy hierarchy participants (same brokers, same schedules)
+      const sourceHps = output.hierarchyParticipants.filter(hp => hp.HierarchyVersionId === sourceHv.Id);
+      for (const sourceHp of sourceHps) {
+        this.hpCounter++;
+        output.hierarchyParticipants.push({
+          Id: `${contHierarchyId}-L${sourceHp.Level}`,
+          HierarchyVersionId: contHvId,
+          EntityId: sourceHp.EntityId,
+          EntityName: sourceHp.EntityName,
+          EntityType: sourceHp.EntityType,
+          Level: sourceHp.Level,
+          CommissionRate: sourceHp.CommissionRate,
+          ScheduleCode: sourceHp.ScheduleCode,
+          ScheduleId: sourceHp.ScheduleId
+        });
+      }
+
+      // Create PSP for continuation
+      this.splitParticipantCounter++;
+      output.premiumSplitParticipants.push({
+        Id: `PSP-${contProposalId}-${sourcePsp.Sequence}`,
+        VersionId: contPsvId,
+        BrokerId: sourcePsp.BrokerId,
+        BrokerName: sourcePsp.BrokerName,
+        BrokerNPN: sourcePsp.BrokerNPN,
+        BrokerUniquePartyId: sourcePsp.BrokerUniquePartyId,
+        SplitPercent: sourcePsp.SplitPercent,
+        IsWritingAgent: sourcePsp.IsWritingAgent,
+        HierarchyId: contHierarchyId,
+        HierarchyName: `Continuation hierarchy for ${contProposalId}`,
+        TemplateId: null,
+        TemplateName: null,
+        Sequence: sourcePsp.Sequence,
+        WritingBrokerId: sourcePsp.WritingBrokerId,
+        GroupId: sourcePsp.GroupId,
+        EffectiveFrom: effectiveFrom,
+        EffectiveTo: new Date('2099-01-01'),
+        Notes: `Continuation of ${sourcePsp.Id}`
+      });
+
+      // Create state rules, hierarchy splits, split distributions for continuation
+      // (Copy from source, filtered to continuation products only)
+      this.createContinuationStateRulesAndSplits(
+        sourceHv.Id,
+        contHvId,
+        products,
+        output
+      );
+    }
+
+    // Create proposal products for continuation
+    for (const product of products) {
+      this.proposalProductCounter++;
+      output.proposalProducts.push({
+        Id: this.proposalProductCounter,  // Must be numeric for database
+        ProposalId: contProposalId,
+        ProductCode: product,
+        ProductName: `${product} Product`,
+        CommissionStructure: null,
+        ResolvedScheduleId: null
+      });
+    }
+
+    // Create key mappings for continuation products
+    const years = this.getYearRange(effectiveFrom, new Date('2099-01-01'));
+    const planCodes = sourceProposal.PlanCodes.split(',').map(p => p.trim());
+    
+    for (const year of years) {
+      for (const product of products) {
+        for (const planCode of planCodes) {
+          output.proposalKeyMappings.push({
+            GroupId: sourceProposal.GroupId,
+            EffectiveYear: year,
+            ProductCode: product,
+            PlanCode: planCode,
+            ProposalId: contProposalId,
+            SplitConfigHash: sourceProposal.SplitConfigHash
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * Copy state rules and hierarchy splits for continuation, filtered to specific products
+   */
+  private createContinuationStateRulesAndSplits(
+    sourceHvId: string,
+    contHvId: string,
+    products: string[],
+    output: StagingOutput
+  ): void {
+    const productSet = new Set(products);
+    
+    // Find source state rules
+    const sourceStateRules = output.stateRules.filter(sr => sr.HierarchyVersionId === sourceHvId);
+    
+    for (const sourceSr of sourceStateRules) {
+      this.stateRuleCounter++;
+      const contSrId = `SR-${contHvId}-${sourceSr.ShortName}`;
+      
+      output.stateRules.push({
+        Id: contSrId,
+        HierarchyVersionId: contHvId,
+        ShortName: sourceSr.ShortName,
+        Name: sourceSr.Name,
+        Description: sourceSr.Description,
+        Type: sourceSr.Type,
+        SortOrder: sourceSr.SortOrder
+      });
+
+      // Copy state rule states
+      const sourceSrss = output.stateRuleStates.filter(srs => srs.StateRuleId === sourceSr.Id);
+      for (const sourceSrs of sourceSrss) {
+        this.stateRuleStateCounter++;
+        output.stateRuleStates.push({
+          Id: `SRS-${contSrId}-${sourceSrs.StateCode}`,
+          StateRuleId: contSrId,
+          StateCode: sourceSrs.StateCode,
+          StateName: sourceSrs.StateName
+        });
+      }
+
+      // Copy hierarchy splits, FILTERED to continuation products only
+      const sourceHss = output.hierarchySplits.filter(
+        hs => hs.StateRuleId === sourceSr.Id && productSet.has(hs.ProductCode)
+      );
+      
+      for (const sourceHs of sourceHss) {
+        this.hierarchySplitCounter++;
+        const contHsId = `HS-${contSrId}-${sourceHs.ProductCode}`;
+        
+        output.hierarchySplits.push({
+          Id: contHsId,
+          StateRuleId: contSrId,
+          ProductId: sourceHs.ProductId,
+          ProductCode: sourceHs.ProductCode,
+          ProductName: sourceHs.ProductName,
+          SortOrder: sourceHs.SortOrder
+        });
+
+        // Copy split distributions - need to map old HP IDs to new HP IDs
+        const sourceSds = output.splitDistributions.filter(sd => sd.HierarchySplitId === sourceHs.Id);
+        for (const sourceSd of sourceSds) {
+          this.splitDistributionCounter++;
+          
+          // Map the HierarchyParticipantId from source to continuation
+          // Source format: H-PROP-26683-1-P20885-1-V1-L1
+          // We need to find the corresponding participant in the continuation hierarchy
+          const sourceHpId = sourceSd.HierarchyParticipantId;
+          const contHpId = sourceHpId.replace(sourceHvId.replace('-V1', ''), contHvId.replace('-V1', ''));
+          
+          output.splitDistributions.push({
+            Id: `SD-${contHsId}-${contHpId}`,
+            HierarchySplitId: contHsId,
+            HierarchyParticipantId: contHpId,
+            ParticipantEntityId: sourceSd.ParticipantEntityId,
+            Percentage: sourceSd.Percentage,
+            ScheduleId: sourceSd.ScheduleId,
+            ScheduleName: sourceSd.ScheduleName
+          });
+        }
+      }
+    }
   }
 
   // ==========================================================================
@@ -1228,6 +1838,7 @@ class ProposalBuilder {
     situsState: string | null,
     output: StagingOutput
   ): string {
+    // NEW: Hierarchy IDs are now unique per proposal, eliminating duplicates
     // Track state for this hierarchy (for state rules generation)
     if (situsState) {
       if (!this.hierarchyStatesByHash.has(hierarchyHash)) {
@@ -1247,14 +1858,20 @@ class ProposalBuilder {
       throw new Error(`Hierarchy not found for hash: ${hierarchyHash}`);
     }
 
+    // Generate unique hierarchy ID: H-{ProposalId}-{WritingBrokerId}-{seq}
+    // Example: H-PROP-0006-1-P10035-1 (proposal PROP-0006-1, writing broker P10035, sequence 1)
+    // ProposalId uniqueness guarantees no duplicates
     this.hierarchyCounter++;
-    const hierarchyId = `H-${this.hierarchyCounter}`;
+    const hierarchyId = `H-${hierarchyData.proposalId}-${hierarchyData.writingBrokerId}-${this.hierarchyCounter}`;
+
+    // No collision detection needed since ProposalId + counter guarantees uniqueness
+    this.usedHierarchyIds.add(hierarchyId);
+    
     const writingBrokerId = brokerExternalToInternal(hierarchyData.writingBrokerId);
     const writingBrokerName = hierarchyData.tiers[0]?.brokerName || null;
 
-    // Create hierarchy
-    this.hvCounter++;
-    const versionId = `HV-${this.hvCounter}`;
+    // Create hierarchy version with ID derived from hierarchy ID
+    const versionId = `${hierarchyId}-V1`;
 
     output.hierarchies.push({
       Id: hierarchyId,
@@ -1267,7 +1884,7 @@ class ProposalBuilder {
       CurrentVersionId: versionId,
       EffectiveDate: effectiveDate,
       SitusState: situsState,
-      Status: 1
+      Status: 0  // HierarchyStatus.Active (Active=0, Inactive=1)
     });
 
     // Create hierarchy version
@@ -1277,18 +1894,19 @@ class ProposalBuilder {
       VersionNumber: 'V1',
       EffectiveFrom: effectiveDate,
       EffectiveTo: new Date('2099-01-01'),
-      Status: 1
+      Status: 1  // HierarchyVersionStatus.Active (Draft=0, Active=1)
     });
 
-    // Create hierarchy participants
+    // Create hierarchy participants with IDs derived from hierarchy ID
     for (const tier of hierarchyData.tiers) {
-      this.hpCounter++;
+      // Resolve numeric schedule ID from schedule code (trim handles whitespace in source)
+      const scheduleId = tier.schedule ? this.scheduleIdByExternalId.get(tier.schedule.trim()) || null : null;
       
-      // Resolve numeric schedule ID from schedule code
-      const scheduleId = tier.schedule ? this.scheduleIdByExternalId.get(tier.schedule) || null : null;
+      // Participant ID: {hierarchyId}-L{level} (e.g., H-P20667-2-50-L1)
+      const participantId = `${hierarchyId}-L${tier.level}`;
       
       output.hierarchyParticipants.push({
-        Id: `HP-${this.hpCounter}`,
+        Id: participantId,
         HierarchyVersionId: versionId,
         EntityId: tier.brokerId,
         EntityName: tier.brokerName,
@@ -1314,42 +1932,9 @@ class ProposalBuilder {
     return date.toISOString().split('T')[0];
   }
 
-  /**
-   * Extract unique assignments from a split configuration.
-   * An assignment exists when paidBrokerId differs from brokerId.
-   */
-  private extractAssignments(splitConfig: SplitConfiguration): ProposalAssignment[] {
-    const assignmentMap = new Map<string, ProposalAssignment>();
-
-    for (const split of splitConfig.splits) {
-      for (const tier of split.tiers) {
-        // Check if assignment exists (paidBrokerId differs from brokerId)
-        if (tier.paidBrokerId && 
-            tier.paidBrokerId !== tier.brokerId &&
-            tier.paidBrokerId.trim() !== '' &&
-            tier.paidBrokerId.trim() !== tier.brokerId.trim()) {
-          
-          const key = `${tier.brokerId}→${tier.paidBrokerId}`;
-          
-          if (!assignmentMap.has(key)) {
-            assignmentMap.set(key, {
-              sourceBrokerId: tier.brokerId,
-              sourceBrokerName: tier.brokerName,
-              recipientBrokerId: tier.paidBrokerId,
-              recipientBrokerName: tier.paidBrokerName
-            });
-          }
-        }
-      }
-    }
-
-    // Return sorted array for consistent hashing
-    return Array.from(assignmentMap.values()).sort((a, b) => {
-      const sourceCompare = a.sourceBrokerId.localeCompare(b.sourceBrokerId);
-      if (sourceCompare !== 0) return sourceCompare;
-      return a.recipientBrokerId.localeCompare(b.recipientBrokerId);
-    });
-  }
+  // NOTE: extractAssignments() method REMOVED
+  // Broker assignments are now collected at the certificate level during extractSelectionCriteria()
+  // and stored in the brokerAssignments Map (one per broker, most recent effective date)
 
   /**
    * MODIFIED: Full SHA256 hash (64 chars) with collision detection
@@ -1382,7 +1967,15 @@ class ProposalBuilder {
     const trimmed = groupId.trim();
     if (trimmed === '') return true;
     if (/^0+$/.test(trimmed)) return true; // All zeros
+    if (/^G0+$/.test(trimmed)) return true; // G followed by all zeros
     return false;
+  }
+
+  seedProposalProductCounter(seed: number): void {
+    const numericSeed = Number(seed);
+    if (Number.isFinite(numericSeed) && numericSeed > this.proposalProductCounter) {
+      this.proposalProductCounter = numericSeed;
+    }
   }
 
   // ==========================================================================
@@ -1390,12 +1983,8 @@ class ProposalBuilder {
   // ==========================================================================
 
   getStats() {
-    // Count total assignments across all proposals
-    const totalAssignments = this.proposals.reduce(
-      (sum, p) => sum + p.assignments.length, 
-      0
-    );
-    const proposalsWithAssignments = this.proposals.filter(p => p.assignments.length > 0).length;
+    // Broker-level assignment statistics
+    const brokerAssignmentCount = this.brokerAssignments.size;
 
     return {
       certificates: this.certificates.length,
@@ -1405,9 +1994,8 @@ class ProposalBuilder {
       uniqueGroups: new Set(this.proposals.map(p => p.groupId)).size,
       uniqueHierarchies: this.hierarchyByHash.size,
       hashCollisions: this.collisionCount,
-      // Assignment statistics (NEW)
-      proposalsWithAssignments,
-      totalAssignments
+      // Broker-level assignment statistics (CHANGED from proposal-level)
+      brokerAssignments: brokerAssignmentCount
     };
   }
 }
@@ -1435,15 +2023,68 @@ export async function loadCertificatesFromDatabase(
   const pool = await sql.connect(config);
 
   try {
+    // Load excluded groups first
+    let excludedGroupIds: Set<string> = new Set();
+    try {
+      const excludedResult = await pool.request().query(`
+        SELECT GroupId FROM [${schema}].[stg_excluded_groups]
+      `);
+      for (const row of excludedResult.recordset) {
+        excludedGroupIds.add(row.GroupId);
+        // Also add without G prefix for matching
+        if (row.GroupId.startsWith('G')) {
+          excludedGroupIds.add(row.GroupId.substring(1));
+        }
+      }
+      if (options.verbose) {
+        console.log(`Loaded ${excludedResult.recordset.length} excluded groups from stg_excluded_groups`);
+      }
+    } catch (err: any) {
+      if (options.verbose) {
+        console.log(`  ⚠️ Could not load excluded groups: ${err.message}`);
+      }
+    }
+
     if (options.verbose) {
       console.log(`Loading certificates from [${schema}].[input_certificate_info]...`);
       console.log(`  Filter: CertStatus='A', RecStatus='A', CertEffectiveDate IS NOT NULL`);
+      if (options.groups && options.groups.length > 0) {
+        console.log(`  Groups filter: Only processing ${options.groups.length} groups: ${options.groups.join(', ')}`);
+      }
+      if (excludedGroupIds.size > 0) {
+        console.log(`  Exclusion: ${excludedGroupIds.size} groups will be skipped`);
+      }
       console.log(`  Note: Loading ALL rows (each certificate may have multiple split rows)`);
     }
     
     const limitClause = options.limitCertificates 
       ? `TOP ${options.limitCertificates}` 
       : '';
+    
+    // Build exclusion clause if we have excluded groups
+    let exclusionClause = '';
+    if (excludedGroupIds.size > 0) {
+      const excludedList = Array.from(excludedGroupIds)
+        .map(id => `'${id.replace(/'/g, "''")}'`)
+        .join(',');
+      exclusionClause = `AND LTRIM(RTRIM(ISNULL(ci.GroupId, ''))) NOT IN (${excludedList})
+        AND CONCAT('G', LTRIM(RTRIM(ISNULL(ci.GroupId, '')))) NOT IN (${excludedList})`;
+    }
+    
+    // Build groups filter clause if specific groups are requested
+    let groupsFilterClause = '';
+    if (options.groups && options.groups.length > 0) {
+      // Normalize group IDs: strip ALL leading letters (G, AB, etc.), trim whitespace
+      // input_certificate_info.GroupId stores numeric-only values
+      const normalizedGroups = options.groups.map(g => {
+        const trimmed = g.trim();
+        return trimmed.replace(/^[A-Za-z]+/, ''); // Strip all leading letters
+      });
+      const groupsList = normalizedGroups
+        .map(id => `'${id.replace(/'/g, "''")}'`)
+        .join(',');
+      groupsFilterClause = `AND LTRIM(RTRIM(ISNULL(ci.GroupId, ''))) IN (${groupsList})`;
+    }
     
     const result = await pool.request().query(`
       SELECT ${limitClause}
@@ -1472,9 +2113,11 @@ export async function loadCertificatesFromDatabase(
         ON b.ExternalPartyId = ci.SplitBrokerId
       LEFT JOIN [dbo].[Brokers] pb 
         ON pb.ExternalPartyId = ci.PaidBrokerId
-      WHERE ci.CertStatus = 'A'
-        AND ci.RecStatus = 'A'
+      WHERE LTRIM(RTRIM(ci.CertStatus)) = 'A'
+        AND LTRIM(RTRIM(ci.RecStatus)) = 'A'
         AND ci.CertEffectiveDate IS NOT NULL
+        ${exclusionClause}
+        ${groupsFilterClause}
       ORDER BY ci.GroupId, ci.CertEffectiveDate, ci.Product, ci.PlanCode, 
                ci.CertSplitSeq, ci.SplitBrokerSeq
     `);
@@ -1527,24 +2170,164 @@ export async function writeStagingOutput(
     }
     const startTime = Date.now();
 
-    // Clear existing data
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposals]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_products]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_key_mapping]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_versions]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_participants]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchies]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_versions]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_participants]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rules]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rule_states]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_splits]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_split_distributions]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_assignments]`);
-    await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_participants]`);
-    // Clear assignment tables (NEW)
-    await pool.request().query(`DELETE FROM [dbo].[CommissionAssignmentRecipients]`);
-    await pool.request().query(`DELETE FROM [dbo].[CommissionAssignmentVersions]`);
+    // Clear existing data - SELECTIVE if groups specified, FULL otherwise
+    if (options.groups && options.groups.length > 0) {
+      // SELECTIVE DELETE: Only clear staging data for specified groups
+      // This preserves other groups' staging data for targeted corrections
+      const groupsWithPrefix = options.groups.map(g => {
+        const trimmed = g.trim();
+        return /^[A-Za-z]/.test(trimmed) ? trimmed : `G${trimmed}`;
+      });
+      const groupsWithNumericPrefix = options.groups.map(g => {
+        const trimmed = g.trim();
+        const numericPart = trimmed.replace(/^[A-Za-z]+/, '');
+        return `G${numericPart}`;
+      });
+      const groupsListString = Array.from(new Set([...groupsWithPrefix, ...groupsWithNumericPrefix]))
+        .map(g => `'${g}'`)
+        .join(',');
+      
+      console.log(`  SELECTIVE STAGING CLEAR for groups: ${groupsWithPrefix.join(', ')}`);
+      
+      // Delete in FK dependency order (children first)
+      // 1. Commission assignment recipients (via versions -> proposals)
+      await pool.request().query(`
+        DELETE car FROM [${schema}].[stg_commission_assignment_recipients] car
+        INNER JOIN [${schema}].[stg_commission_assignment_versions] cav ON cav.Id = car.AssignmentVersionId
+        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
+        WHERE p.GroupId IN (${groupsListString})
+      `);
+      // 2. Commission assignment versions (via proposals)
+      await pool.request().query(`
+        DELETE cav FROM [${schema}].[stg_commission_assignment_versions] cav
+        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
+        WHERE p.GroupId IN (${groupsListString})
+      `);
+      // 3. Policy hierarchy participants (via assignments -> hierarchies)
+      await pool.request().query(`
+        DELETE php FROM [${schema}].[stg_policy_hierarchy_participants] php
+        INNER JOIN [${schema}].[stg_policy_hierarchy_assignments] pha ON pha.Id = php.PolicyHierarchyAssignmentId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 4. Policy hierarchy assignments (via hierarchies)
+      await pool.request().query(`
+        DELETE pha FROM [${schema}].[stg_policy_hierarchy_assignments] pha
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 5. Split distributions (via hierarchy splits -> state rules -> hierarchy versions -> hierarchies)
+      await pool.request().query(`
+        DELETE sd FROM [${schema}].[stg_split_distributions] sd
+        INNER JOIN [${schema}].[stg_hierarchy_splits] hs ON hs.Id = sd.HierarchySplitId
+        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 6. Hierarchy splits (via state rules -> hierarchy versions -> hierarchies)
+      await pool.request().query(`
+        DELETE hs FROM [${schema}].[stg_hierarchy_splits] hs
+        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = hs.StateRuleId
+        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 7. State rule states (via state rules -> hierarchy versions -> hierarchies)
+      await pool.request().query(`
+        DELETE srs FROM [${schema}].[stg_state_rule_states] srs
+        INNER JOIN [${schema}].[stg_state_rules] sr ON sr.Id = srs.StateRuleId
+        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 8. State rules (via hierarchy versions -> hierarchies)
+      await pool.request().query(`
+        DELETE sr FROM [${schema}].[stg_state_rules] sr
+        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = sr.HierarchyVersionId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 9. Hierarchy participants (via hierarchy versions -> hierarchies)
+      await pool.request().query(`
+        DELETE hp FROM [${schema}].[stg_hierarchy_participants] hp
+        INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 10. Hierarchy versions (via hierarchies)
+      await pool.request().query(`
+        DELETE hv FROM [${schema}].[stg_hierarchy_versions] hv
+        INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+        WHERE h.GroupId IN (${groupsListString})
+      `);
+      // 11. Premium split participants (via premium split versions -> proposals)
+      await pool.request().query(`
+        DELETE psp FROM [${schema}].[stg_premium_split_participants] psp
+        INNER JOIN [${schema}].[stg_premium_split_versions] psv ON psv.Id = psp.VersionId
+        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
+        WHERE p.GroupId IN (${groupsListString})
+      `);
+      // 12. Premium split versions (via proposals)
+      await pool.request().query(`
+        DELETE psv FROM [${schema}].[stg_premium_split_versions] psv
+        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = psv.ProposalId
+        WHERE p.GroupId IN (${groupsListString})
+      `);
+      // 13. Hierarchies (direct)
+      await pool.request().query(`DELETE FROM [${schema}].[stg_hierarchies] WHERE GroupId IN (${groupsListString})`);
+      // 14. Proposal products (via proposals)
+      await pool.request().query(`
+        DELETE pp FROM [${schema}].[stg_proposal_products] pp
+        INNER JOIN [${schema}].[stg_proposals] p ON p.Id = pp.ProposalId
+        WHERE p.GroupId IN (${groupsListString})
+      `);
+      // 15. Proposal key mapping (direct GroupId)
+      await pool.request().query(`DELETE FROM [${schema}].[stg_proposal_key_mapping] WHERE GroupId IN (${groupsListString})`);
+      // 16. Proposals (direct)
+      await pool.request().query(`DELETE FROM [${schema}].[stg_proposals] WHERE GroupId IN (${groupsListString})`);
+      
+      console.log(`  ✅ Cleared staging data for groups: ${groupsWithPrefix.join(', ')}`);
+
+      // Also delete broker-level commission assignments that will be re-inserted
+      if (output.commissionAssignmentVersions.length > 0) {
+        const cavIds = output.commissionAssignmentVersions.map(c => `'${String(c.Id).replace(/'/g, "''")}'`);
+        const batchSize = 500;
+        for (let i = 0; i < cavIds.length; i += batchSize) {
+          const batch = cavIds.slice(i, i + batchSize).join(',');
+          await pool.request().query(`
+            DELETE FROM [${schema}].[stg_commission_assignment_recipients]
+            WHERE AssignmentVersionId IN (${batch})
+          `);
+          await pool.request().query(`
+            DELETE FROM [${schema}].[stg_commission_assignment_versions]
+            WHERE Id IN (${batch})
+          `);
+        }
+      }
+    } else {
+      // FULL TRUNCATE: Clear all staging data (original behavior)
+      console.log('  FULL STAGING CLEAR (truncating all staging tables)');
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposals]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_products]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_proposal_key_mapping]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_versions]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_premium_split_participants]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchies]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_versions]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_participants]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rules]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_state_rule_states]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_hierarchy_splits]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_split_distributions]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_assignments]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_policy_hierarchy_participants]`);
+      // Clear staging assignment tables
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_versions]`);
+      await pool.request().query(`TRUNCATE TABLE [${schema}].[stg_commission_assignment_recipients]`);
+    }
+    // NOTE: We intentionally do NOT delete from production (dbo) here.
+    // Export to production is handled by separate export scripts.
 
     // Insert proposals (batched multi-row VALUES for performance)
     // 16 params per row, SQL Server max 2100 params = max 131 rows per batch
@@ -1969,10 +2752,10 @@ export async function writeStagingOutput(
       console.log(`  Wrote ${output.splitDistributions.length} split distributions`);
     }
 
-    // Insert PHA assignments (batched - 6 params per row, max ~300 rows)
-    const phaBatchSize = 300;
+    // Insert PHA assignments (batched - now includes HierarchyId for referential integrity)
+    // 7 params per row * 280 rows = 1960 params (under 2100 limit)
+    const phaBatchSize = 280;
     const totalPhaBatches = Math.ceil(output.policyHierarchyAssignments.length / phaBatchSize);
-    let phaIdCounter = 0;
     
     for (let i = 0; i < output.policyHierarchyAssignments.length; i += phaBatchSize) {
       const batch = output.policyHierarchyAssignments.slice(i, i + phaBatchSize);
@@ -1984,28 +2767,30 @@ export async function writeStagingOutput(
       }
       
       const values = batch.map((pha, idx) => {
-        phaIdCounter++;
-        return `('PHA-${phaIdCounter}', @PolicyId${idx}, @WritingBrokerId${idx}, @SplitSequence${idx}, @SplitPercent${idx}, @NonConformantReason${idx}, GETUTCDATE(), 0)`;
+        return `(@Id${idx}, @PolicyId${idx}, @HierarchyId${idx}, @WritingBrokerId${idx}, @SplitSequence${idx}, @SplitPercent${idx}, @NonConformantReason${idx}, @EntryType${idx}, GETUTCDATE(), 0)`;
       }).join(',');
       
       const request = pool.request();
       batch.forEach((pha, idx) => {
+        request.input(`Id${idx}`, sql.NVarChar(100), pha.Id);
         request.input(`PolicyId${idx}`, sql.NVarChar(100), pha.PolicyId);
+        request.input(`HierarchyId${idx}`, sql.NVarChar(100), pha.HierarchyId);
         request.input(`WritingBrokerId${idx}`, sql.BigInt, pha.WritingBrokerId);
         request.input(`SplitSequence${idx}`, sql.Int, pha.SplitSequence);
         request.input(`SplitPercent${idx}`, sql.Decimal(18, 4), pha.SplitPercent);
         request.input(`NonConformantReason${idx}`, sql.NVarChar(500), pha.NonConformantReason);
+        request.input(`EntryType${idx}`, sql.TinyInt, pha.EntryType ?? 0);
       });
       
       await request.query(`
         INSERT INTO [${schema}].[stg_policy_hierarchy_assignments] (
-          Id, PolicyId, WritingBrokerId, SplitSequence, SplitPercent, NonConformantReason,
+          Id, PolicyId, HierarchyId, WritingBrokerId, SplitSequence, SplitPercent, NonConformantReason, EntryType,
           CreationTime, IsDeleted
         ) VALUES ${values}
       `);
     }
     if (options.verbose) {
-      console.log(`  Wrote ${output.policyHierarchyAssignments.length} PHA assignments`);
+      console.log(`  Wrote ${output.policyHierarchyAssignments.length} PHA assignments with HierarchyId`);
     }
 
     // Insert PHA participants (batched - 6 params per row, max ~300 rows)
@@ -2038,12 +2823,12 @@ export async function writeStagingOutput(
       console.log(`  Wrote ${output.policyHierarchyParticipants.length} PHA participants`);
     }
 
-    // Insert CommissionAssignmentVersions (batched - 15 params per row, max ~130 rows)
+    // Insert CommissionAssignmentVersions to STAGING (batched - 15 params per row, max ~130 rows)
     const cavBatchSize = 130;
     for (let i = 0; i < output.commissionAssignmentVersions.length; i += cavBatchSize) {
       const batch = output.commissionAssignmentVersions.slice(i, i + cavBatchSize);
       const values = batch.map((cav, idx) =>
-        `(@Id${idx}, @BrokerId${idx}, @BrokerName${idx}, @ProposalId${idx}, @GroupId${idx}, @HierarchyId${idx}, @HierarchyVersionId${idx}, @HierarchyParticipantId${idx}, @VersionNumber${idx}, @EffectiveFrom${idx}, @EffectiveTo${idx}, @Status${idx}, @Type${idx}, @ChangeDescription${idx}, @TotalAssignedPercent${idx}, GETUTCDATE(), 0)`
+        `(@Id${idx}, @BrokerId${idx}, @BrokerName${idx}, @ProposalId${idx}, NULL, @HierarchyId${idx}, @HierarchyVersionId${idx}, @HierarchyParticipantId${idx}, @VersionNumber${idx}, @EffectiveFrom${idx}, @EffectiveTo${idx}, @Status${idx}, @Type${idx}, @ChangeDescription${idx}, @TotalAssignedPercent${idx}, GETUTCDATE(), 0)`
       ).join(',');
       
       const request = pool.request();
@@ -2052,7 +2837,7 @@ export async function writeStagingOutput(
         request.input(`BrokerId${idx}`, sql.BigInt, cav.BrokerId);
         request.input(`BrokerName${idx}`, sql.NVarChar(510), cav.BrokerName);
         request.input(`ProposalId${idx}`, sql.NVarChar(100), cav.ProposalId);
-        request.input(`GroupId${idx}`, sql.NVarChar(100), cav.GroupId);
+        // GroupId is NULL for broker-level assignments
         request.input(`HierarchyId${idx}`, sql.NVarChar(100), cav.HierarchyId);
         request.input(`HierarchyVersionId${idx}`, sql.NVarChar(100), cav.HierarchyVersionId);
         request.input(`HierarchyParticipantId${idx}`, sql.NVarChar(100), cav.HierarchyParticipantId);
@@ -2066,7 +2851,7 @@ export async function writeStagingOutput(
       });
       
       await request.query(`
-        INSERT INTO [dbo].[CommissionAssignmentVersions] (
+        INSERT INTO [${schema}].[stg_commission_assignment_versions] (
           Id, BrokerId, BrokerName, ProposalId, GroupId,
           HierarchyId, HierarchyVersionId, HierarchyParticipantId,
           VersionNumber, EffectiveFrom, EffectiveTo,
@@ -2079,30 +2864,32 @@ export async function writeStagingOutput(
       console.log(`  Wrote ${output.commissionAssignmentVersions.length} commission assignment versions`);
     }
 
-    // Insert CommissionAssignmentRecipients (batched - 8 params per row, max ~250 rows)
+    // Insert CommissionAssignmentRecipients to STAGING (batched)
+    // NOTE: Staging table has different columns than production:
+    // - AssignmentVersionId (not VersionId)
+    // - RecipientBrokerName (not RecipientName)
+    // - Percent (not Percentage)
+    // - No RecipientNPN, RecipientHierarchyId, Notes columns
     const carBatchSize = 250;
     for (let i = 0; i < output.commissionAssignmentRecipients.length; i += carBatchSize) {
       const batch = output.commissionAssignmentRecipients.slice(i, i + carBatchSize);
       const values = batch.map((car, idx) =>
-        `(@Id${idx}, @VersionId${idx}, @RecipientBrokerId${idx}, @RecipientName${idx}, @RecipientNPN${idx}, @Percentage${idx}, @RecipientHierarchyId${idx}, @Notes${idx})`
+        `(@Id${idx}, @AssignmentVersionId${idx}, @RecipientBrokerId${idx}, @RecipientBrokerName${idx}, @Percent${idx}, 1, GETUTCDATE(), 0)`
       ).join(',');
       
       const request = pool.request();
       batch.forEach((car, idx) => {
         request.input(`Id${idx}`, sql.NVarChar(200), car.Id);
-        request.input(`VersionId${idx}`, sql.NVarChar(100), car.VersionId);
+        request.input(`AssignmentVersionId${idx}`, sql.NVarChar(100), car.VersionId);
         request.input(`RecipientBrokerId${idx}`, sql.BigInt, car.RecipientBrokerId);
-        request.input(`RecipientName${idx}`, sql.NVarChar(510), car.RecipientName);
-        request.input(`RecipientNPN${idx}`, sql.NVarChar(40), car.RecipientNPN);
-        request.input(`Percentage${idx}`, sql.Decimal(5, 2), car.Percentage);
-        request.input(`RecipientHierarchyId${idx}`, sql.NVarChar(100), car.RecipientHierarchyId);
-        request.input(`Notes${idx}`, sql.NVarChar(1000), car.Notes);
+        request.input(`RecipientBrokerName${idx}`, sql.NVarChar(510), car.RecipientName);
+        request.input(`Percent${idx}`, sql.Decimal(5, 2), car.Percentage);
       });
       
       await request.query(`
-        INSERT INTO [dbo].[CommissionAssignmentRecipients] (
-          Id, VersionId, RecipientBrokerId, RecipientName, RecipientNPN,
-          Percentage, RecipientHierarchyId, Notes
+        INSERT INTO [${schema}].[stg_commission_assignment_recipients] (
+          Id, AssignmentVersionId, RecipientBrokerId, RecipientBrokerName,
+          [Percent], RecipientType, CreationTime, IsDeleted
         ) VALUES ${values}
       `);
     }
@@ -2170,9 +2957,10 @@ export async function runProposalBuilder(
     const builder = new ProposalBuilder();
     
     // Load schedules for ID resolution (creates its own connection)
+    // Uses reference schema (default: dbo) for Schedules table
     const schedulePool = await sql.connect(config);
     try {
-      await builder.loadSchedules(schedulePool);
+      await builder.loadSchedules(schedulePool, options.referenceSchema || 'dbo');
     } finally {
       await schedulePool.close();
     }
@@ -2210,8 +2998,7 @@ export async function runProposalBuilder(
     console.log(`Unique groups: ${stats.uniqueGroups}`);
     console.log(`Unique hierarchies: ${stats.uniqueHierarchies}`);
     console.log(`Hash collisions: ${stats.hashCollisions}`);
-    console.log(`Proposals with assignments: ${stats.proposalsWithAssignments}`);
-    console.log(`Total assignments: ${stats.totalAssignments}`);
+    console.log(`Broker-level assignments: ${stats.brokerAssignments}`);
     
     // Audit log
     const endTime = new Date();
@@ -2327,14 +3114,505 @@ export async function runProposalBuilderBatched(
 }
 
 // =============================================================================
+// Export Staging to Production
+// =============================================================================
+
+/**
+ * Execute a SQL file with SQLCMD variable replacement
+ * Reuses pattern from export-all-destructive.ts
+ */
+async function executeSqlFile(
+  pool: sql.ConnectionPool, 
+  filePath: string,
+  etlSchema: string,
+  productionSchema: string,
+  verbose: boolean = false
+): Promise<{ rowsAffected: number }> {
+  const fileName = path.basename(filePath);
+  console.log(`\n  Executing ${fileName}...`);
+  
+  let sqlContent = fs.readFileSync(filePath, 'utf8');
+  
+  // Replace SQLCMD variables
+  sqlContent = sqlContent.replace(/\$\(PRODUCTION_SCHEMA\)/g, productionSchema);
+  sqlContent = sqlContent.replace(/\$\(ETL_SCHEMA\)/g, etlSchema);
+  
+  // Split on GO statements (case-insensitive, on its own line)
+  const batches = sqlContent.split(/^\s*GO\s*$/im).filter(b => b.trim().length > 0);
+  
+  if (verbose) {
+    console.log(`    ${batches.length} batch(es) found`);
+  }
+  
+  let totalRowsAffected = 0;
+  
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i].trim();
+    if (batch.length === 0) continue;
+    
+    try {
+      const result = await pool.request().query(batch);
+      if (result.rowsAffected && result.rowsAffected.length > 0) {
+        const batchRows = result.rowsAffected.reduce((a, b) => a + b, 0);
+        totalRowsAffected += batchRows;
+        if (batchRows > 0 && verbose) {
+          console.log(`    Batch ${i + 1}: ${batchRows} rows affected`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`    ❌ Error in batch ${i + 1}: ${err.message}`);
+      throw err;
+    }
+  }
+  
+  console.log(`  ✅ ${fileName}: ${totalRowsAffected} rows affected`);
+  return { rowsAffected: totalRowsAffected };
+}
+
+/**
+ * Export staging tables to production (dbo) schema
+ * Executes SQL export files in FK dependency order
+ */
+export async function exportStagingToProduction(
+  config: DatabaseConfig,
+  options: BuilderOptions
+): Promise<void> {
+  const etlSchema = options.schema || 'etl';
+  const productionSchema = options.productionSchema || 'dbo';
+  const verbose = options.verbose || false;
+  const dryRun = options.dryRun || false;
+  
+  console.log('='.repeat(70));
+  console.log('EXPORT: Staging to Production');
+  console.log('='.repeat(70));
+  console.log(`  ETL Schema: ${etlSchema}`);
+  console.log(`  Production Schema: ${productionSchema}`);
+  console.log(`  Dry Run: ${dryRun}`);
+  if (options.groups && options.groups.length > 0) {
+    console.log(`  Selective Export: ${options.groups.length} groups (${options.groups.join(', ')})`);
+  } else {
+    console.log(`  Selective Export: No (full export)`);
+  }
+  console.log('');
+  
+  if (dryRun) {
+    console.log('DRY RUN: This export would:');
+    
+    if (options.groups && options.groups.length > 0) {
+      const normalizedGroups = options.groups.map(g => {
+        const trimmed = g.trim();
+        // If already has letter prefix, keep it; otherwise add 'G'
+        return /^[A-Za-z]/.test(trimmed) ? trimmed : `G${trimmed}`;
+      });
+      console.log(`\n  SELECTIVE EXPORT for groups: ${normalizedGroups.join(', ')}`);
+      console.log('\n  STEP 1 - DELETE existing production data for THESE GROUPS ONLY:');
+    } else {
+      console.log('\n  FULL EXPORT (all data)');
+      console.log('\n  STEP 1 - DELETE ALL existing production data from (DESTRUCTIVE):');
+    }
+    
+    const tables = [
+      'CommissionAssignmentRecipients', 'CommissionAssignmentVersions',
+      'PolicyHierarchyAssignments', 'SplitDistributions', 'HierarchySplits',
+      'StateRuleStates', 'StateRules', 'HierarchyParticipants', 'HierarchyVersions',
+      'PremiumSplitParticipants', 'PremiumSplitVersions', 'Hierarchies',
+      'ProposalProducts', 'Proposals'
+    ];
+    for (const table of tables) {
+      console.log(`    - ${productionSchema}.${table}`);
+    }
+    console.log('\n  NOTE: Brokers are NOT deleted (shared across system, additive only)');
+    console.log('\n  STEP 2 - INSERT staging data using:');
+    const scripts = [
+      'sql/export/02-export-brokers.sql (ADDITIVE - missing brokers only)',
+      'sql/export/07-export-proposals.sql',
+      'sql/export/08-export-hierarchies.sql',
+      'sql/export/11-export-splits.sql',
+      'sql/export/14-export-policy-hierarchy-assignments.sql',
+      'sql/export/13-export-commission-assignments.sql',
+    ];
+    for (const script of scripts) {
+      console.log(`    - ${script}`);
+    }
+    console.log('\n✅ Dry run complete (no changes made)');
+    return;
+  }
+  
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 600000, // 10 minutes for large exports
+  });
+  
+  try {
+    // Ensure stg_excluded_groups table exists (referenced by export scripts)
+    console.log('  Ensuring stg_excluded_groups table exists...');
+    await pool.request().query(`
+      IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE schema_id = SCHEMA_ID('${etlSchema}') AND name = 'stg_excluded_groups')
+      BEGIN
+        CREATE TABLE [${etlSchema}].[stg_excluded_groups] (
+          GroupId NVARCHAR(50) NOT NULL PRIMARY KEY,
+          Reason NVARCHAR(500) NULL,
+          CreatedAt DATETIME2 DEFAULT GETUTCDATE()
+        );
+        PRINT 'Created stg_excluded_groups table';
+      END
+    `);
+    console.log('  ✅ stg_excluded_groups table ready');
+    
+    // ==========================================================================
+    // STEP 1: DELETE existing production data (FK order - children first)
+    // ==========================================================================
+    console.log('\n' + '='.repeat(70));
+    if (options.groups && options.groups.length > 0) {
+      console.log('STEP 1: Deleting production data for SELECTED GROUPS (FK order)');
+    } else {
+      console.log('STEP 1: Deleting ALL production data (FK order - children first)');
+    }
+    console.log('='.repeat(70));
+    
+    let totalDeleted = 0;
+    
+    // Check if selective delete (by groups)
+    if (options.groups && options.groups.length > 0) {
+      // SELECTIVE DELETE: Only delete data for specified groups
+      // Create TWO group lists:
+      // 1. String format with 'G' prefix for nvarchar columns (Proposals, Hierarchies)
+      // 2. Numeric format (all letters stripped) for bigint columns (PremiumSplitVersions)
+      const groupsWithPrefix = options.groups.map(g => {
+        const trimmed = g.trim();
+        // If it already has a letter prefix, keep it; otherwise add 'G'
+        return /^[A-Za-z]/.test(trimmed) ? trimmed : `G${trimmed}`;
+      });
+      const groupsNumeric = options.groups.map(g => {
+        const trimmed = g.trim();
+        // Strip ALL leading letters to get numeric part (handles G, AB, etc.)
+        const numericPart = trimmed.replace(/^[A-Za-z]+/, '');
+        return numericPart;
+      });
+      
+      // For nvarchar columns (Proposals.GroupId, Hierarchies.GroupId)
+      const groupsListString = groupsWithPrefix.map(g => `'${g}'`).join(',');
+      // For bigint columns (PremiumSplitVersions.GroupId) - numeric only, no quotes
+      const groupsListNumeric = groupsNumeric.join(',');
+      
+      console.log(`\n  Deleting data for groups: ${groupsWithPrefix.join(', ')}`);
+      
+      // Delete in FK dependency order, filtering by group
+      // Each query deletes records that belong to the specified groups
+      // NOTE: Use groupsListString for nvarchar columns, groupsListNumeric for bigint columns
+      const selectiveDeleteQueries = [
+        // 1. CommissionAssignmentRecipients - via CommissionAssignmentVersions -> Proposals
+        {
+          name: 'CommissionAssignmentRecipients',
+          query: `DELETE car FROM [${productionSchema}].[CommissionAssignmentRecipients] car
+                  INNER JOIN [${productionSchema}].[CommissionAssignmentVersions] cav ON cav.Id = car.VersionId
+                  INNER JOIN [${productionSchema}].[Proposals] p ON p.Id = cav.ProposalId
+                  WHERE p.GroupId IN (${groupsListString})`
+        },
+        // 2. CommissionAssignmentVersions - via Proposals
+        {
+          name: 'CommissionAssignmentVersions',
+          query: `DELETE cav FROM [${productionSchema}].[CommissionAssignmentVersions] cav
+                  INNER JOIN [${productionSchema}].[Proposals] p ON p.Id = cav.ProposalId
+                  WHERE p.GroupId IN (${groupsListString})`
+        },
+        // 3. PolicyHierarchyAssignments - via Hierarchies (Hierarchies.GroupId is nvarchar)
+        {
+          name: 'PolicyHierarchyAssignments (via Hierarchies)',
+          query: `DELETE pha FROM [${productionSchema}].[PolicyHierarchyAssignments] pha
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = pha.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 4. SplitDistributions - via HierarchySplits -> StateRules -> HierarchyVersions -> Hierarchies
+        {
+          name: 'SplitDistributions',
+          query: `DELETE sd FROM [${productionSchema}].[SplitDistributions] sd
+                  INNER JOIN [${productionSchema}].[HierarchySplits] hs ON hs.Id = sd.HierarchySplitId
+                  INNER JOIN [${productionSchema}].[StateRules] sr ON sr.Id = hs.StateRuleId
+                  INNER JOIN [${productionSchema}].[HierarchyVersions] hv ON hv.Id = sr.HierarchyVersionId
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 5. HierarchySplits - via StateRules -> HierarchyVersions -> Hierarchies
+        {
+          name: 'HierarchySplits',
+          query: `DELETE hs FROM [${productionSchema}].[HierarchySplits] hs
+                  INNER JOIN [${productionSchema}].[StateRules] sr ON sr.Id = hs.StateRuleId
+                  INNER JOIN [${productionSchema}].[HierarchyVersions] hv ON hv.Id = sr.HierarchyVersionId
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 6. StateRuleStates - via StateRules -> HierarchyVersions -> Hierarchies
+        {
+          name: 'StateRuleStates',
+          query: `DELETE srs FROM [${productionSchema}].[StateRuleStates] srs
+                  INNER JOIN [${productionSchema}].[StateRules] sr ON sr.Id = srs.StateRuleId
+                  INNER JOIN [${productionSchema}].[HierarchyVersions] hv ON hv.Id = sr.HierarchyVersionId
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 7. StateRules - via HierarchyVersions -> Hierarchies
+        {
+          name: 'StateRules',
+          query: `DELETE sr FROM [${productionSchema}].[StateRules] sr
+                  INNER JOIN [${productionSchema}].[HierarchyVersions] hv ON hv.Id = sr.HierarchyVersionId
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 8. HierarchyParticipants - via HierarchyVersions -> Hierarchies
+        {
+          name: 'HierarchyParticipants',
+          query: `DELETE hp FROM [${productionSchema}].[HierarchyParticipants] hp
+                  INNER JOIN [${productionSchema}].[HierarchyVersions] hv ON hv.Id = hp.HierarchyVersionId
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 9. HierarchyVersions - via Hierarchies
+        {
+          name: 'HierarchyVersions',
+          query: `DELETE hv FROM [${productionSchema}].[HierarchyVersions] hv
+                  INNER JOIN [${productionSchema}].[Hierarchies] h ON h.Id = hv.HierarchyId
+                  WHERE h.GroupId IN (${groupsListString})`
+        },
+        // 10. PremiumSplitParticipants - via PremiumSplitVersions (bigint GroupId)
+        {
+          name: 'PremiumSplitParticipants',
+          query: `DELETE psp FROM [${productionSchema}].[PremiumSplitParticipants] psp
+                  INNER JOIN [${productionSchema}].[PremiumSplitVersions] psv ON psv.Id = psp.VersionId
+                  WHERE psv.GroupId IN (${groupsListNumeric})`
+        },
+        // 11. PremiumSplitVersions - direct GroupId (bigint)
+        {
+          name: 'PremiumSplitVersions',
+          query: `DELETE FROM [${productionSchema}].[PremiumSplitVersions] WHERE GroupId IN (${groupsListNumeric})`
+        },
+        // 12. Hierarchies - direct GroupId (nvarchar)
+        {
+          name: 'Hierarchies',
+          query: `DELETE FROM [${productionSchema}].[Hierarchies] WHERE GroupId IN (${groupsListString})`
+        },
+        // 13. ProposalProducts - via Proposals
+        {
+          name: 'ProposalProducts',
+          query: `DELETE pp FROM [${productionSchema}].[ProposalProducts] pp
+                  INNER JOIN [${productionSchema}].[Proposals] p ON p.Id = pp.ProposalId
+                  WHERE p.GroupId IN (${groupsListString})`
+        },
+        // 14. Proposals - direct GroupId (nvarchar)
+        {
+          name: 'Proposals',
+          query: `DELETE FROM [${productionSchema}].[Proposals] WHERE GroupId IN (${groupsListString})`
+        }
+      ];
+      
+      for (const { name, query } of selectiveDeleteQueries) {
+        try {
+          const result = await pool.request().query(query);
+          const deleted = result.rowsAffected[0] || 0;
+          totalDeleted += deleted;
+          if (deleted > 0 || verbose) {
+            console.log(`  🗑️  ${name}: ${deleted} rows deleted`);
+          }
+        } catch (err: any) {
+          console.error(`  ❌ Error deleting ${name}: ${err.message}`);
+        }
+      }
+      
+    } else {
+      // FULL DELETE: Delete all production data
+      const deletions = [
+        // Commission assignments (leaf tables)
+        { table: 'CommissionAssignmentRecipients', schema: productionSchema },
+        { table: 'CommissionAssignmentVersions', schema: productionSchema },
+        // Policy hierarchy assignments
+        { table: 'PolicyHierarchyAssignments', schema: productionSchema },
+        // Split distributions and hierarchy splits (deepest in hierarchy chain)
+        { table: 'SplitDistributions', schema: productionSchema },
+        { table: 'HierarchySplits', schema: productionSchema },
+        { table: 'StateRuleStates', schema: productionSchema },
+        { table: 'StateRules', schema: productionSchema },
+        // Hierarchy participants and versions
+        { table: 'HierarchyParticipants', schema: productionSchema },
+        { table: 'HierarchyVersions', schema: productionSchema },
+        // Premium split participants and versions
+        { table: 'PremiumSplitParticipants', schema: productionSchema },
+        { table: 'PremiumSplitVersions', schema: productionSchema },
+        // Hierarchies (after versions and participants)
+        { table: 'Hierarchies', schema: productionSchema },
+        // Proposal products and proposals
+        { table: 'ProposalProducts', schema: productionSchema },
+        { table: 'Proposals', schema: productionSchema },
+        // NOTE: Brokers are NOT deleted - they're shared across the system
+        // and referenced by EmployerGroups, Policies, etc.
+        // Broker export is ADDITIVE (insert missing only)
+      ];
+      
+      for (const { table, schema } of deletions) {
+        try {
+          // Check if table exists
+          const checkResult = await pool.request().query(`
+            SELECT COUNT(*) as cnt FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = '${schema}' AND TABLE_NAME = '${table}'
+          `);
+          
+          if (checkResult.recordset[0].cnt === 0) {
+            if (verbose) console.log(`  ⏭️  ${schema}.${table} does not exist, skipping`);
+            continue;
+          }
+          
+          const deleteResult = await pool.request().query(`DELETE FROM [${schema}].[${table}]`);
+          const deleted = deleteResult.rowsAffected[0] || 0;
+          totalDeleted += deleted;
+          console.log(`  🗑️  ${table}: ${deleted} rows deleted`);
+        } catch (err: any) {
+          console.error(`  ❌ Error deleting ${table}: ${err.message}`);
+        }
+      }
+    }
+    
+    console.log(`\n  Total deleted: ${totalDeleted} rows`);
+    
+    // ==========================================================================
+    // STEP 2: INSERT staging data (FK order - parents first)
+    // ==========================================================================
+    console.log('\n' + '='.repeat(70));
+    console.log('STEP 2: Exporting staging to production (FK order - parents first)');
+    console.log('='.repeat(70));
+    
+    // Check for missing brokers that proposals will reference
+    console.log('\n  Checking for brokers referenced by proposals...');
+    const missingBrokers = await pool.request().query(`
+      SELECT DISTINCT sp.BrokerUniquePartyId
+      FROM [${etlSchema}].[stg_proposals] sp
+      WHERE sp.BrokerUniquePartyId IS NOT NULL
+        AND sp.BrokerUniquePartyId NOT IN (
+          SELECT ExternalPartyId FROM [${productionSchema}].[Brokers] WHERE ExternalPartyId IS NOT NULL
+        )
+        AND sp.BrokerUniquePartyId NOT IN (
+          SELECT ExternalPartyId FROM [${etlSchema}].[stg_brokers] WHERE ExternalPartyId IS NOT NULL
+        )
+    `);
+    
+    if (missingBrokers.recordset.length > 0) {
+      console.log(`  ⚠️  WARNING: ${missingBrokers.recordset.length} brokers referenced by proposals not found in staging or production:`);
+      for (const row of missingBrokers.recordset.slice(0, 10)) {
+        console.log(`      - ${row.BrokerUniquePartyId}`);
+      }
+      if (missingBrokers.recordset.length > 10) {
+        console.log(`      ... and ${missingBrokers.recordset.length - 10} more`);
+      }
+    } else {
+      console.log('  ✅ All brokers referenced by proposals exist');
+    }
+    
+    // Export SQL files in FK dependency order (parents first)
+    const exportScripts = [
+      // 0. Brokers (required FK for Proposals.BrokerUniquePartyId) - ADDITIVE
+      'sql/export/02-export-brokers.sql',
+      // 0a. Broker licenses (additive)
+      'sql/export/13-export-licenses.sql',
+      // 1. Proposals (parent of splits, referenced by hierarchies)
+      'sql/export/07-export-proposals.sql',
+      // 2. Hierarchies, HierarchyVersions, HierarchyParticipants, StateRules, StateRuleStates, HierarchySplits, SplitDistributions
+      'sql/export/08-export-hierarchies.sql',
+      // 3. PremiumSplitVersions, PremiumSplitParticipants (references Proposals and Hierarchies)
+      'sql/export/11-export-splits.sql',
+      // 4. PolicyHierarchyAssignments (references Policies, Hierarchies, Brokers)
+      'sql/export/14-export-policy-hierarchy-assignments.sql',
+      // 5. CommissionAssignmentVersions, CommissionAssignmentRecipients
+      'sql/export/13-export-commission-assignments.sql',
+    ];
+    
+    let totalRowsAffected = 0;
+    const results: { script: string; rows: number }[] = [];
+    
+    for (const scriptPath of exportScripts) {
+      const fullPath = path.join(process.cwd(), scriptPath);
+      
+      if (!fs.existsSync(fullPath)) {
+        console.log(`  ⚠️  Skipping ${scriptPath} (not found)`);
+        continue;
+      }
+      
+      const result = await executeSqlFile(pool, fullPath, etlSchema, productionSchema, verbose);
+      totalRowsAffected += result.rowsAffected;
+      results.push({ script: path.basename(scriptPath), rows: result.rowsAffected });
+    }
+    
+    // Summary
+    console.log('\n' + '='.repeat(70));
+    console.log('EXPORT SUMMARY');
+    console.log('='.repeat(70));
+    console.log('\nExport Results:');
+    for (const r of results) {
+      console.log(`  ${r.script}: ${r.rows} rows`);
+    }
+    console.log(`\nTotal rows affected: ${totalRowsAffected}`);
+    
+    // Verification query
+    console.log('\nProduction Counts:');
+    const verification = await pool.request().query(`
+      SELECT 'Proposals' as Entity, COUNT(*) as [Count] FROM [${productionSchema}].[Proposals]
+      UNION ALL SELECT 'ProposalProducts', COUNT(*) FROM [${productionSchema}].[ProposalProducts]
+      UNION ALL SELECT 'Hierarchies', COUNT(*) FROM [${productionSchema}].[Hierarchies]
+      UNION ALL SELECT 'HierarchyVersions', COUNT(*) FROM [${productionSchema}].[HierarchyVersions]
+      UNION ALL SELECT 'HierarchyParticipants', COUNT(*) FROM [${productionSchema}].[HierarchyParticipants]
+      UNION ALL SELECT 'StateRules', COUNT(*) FROM [${productionSchema}].[StateRules]
+      UNION ALL SELECT 'StateRuleStates', COUNT(*) FROM [${productionSchema}].[StateRuleStates]
+      UNION ALL SELECT 'HierarchySplits', COUNT(*) FROM [${productionSchema}].[HierarchySplits]
+      UNION ALL SELECT 'SplitDistributions', COUNT(*) FROM [${productionSchema}].[SplitDistributions]
+      UNION ALL SELECT 'PremiumSplitVersions', COUNT(*) FROM [${productionSchema}].[PremiumSplitVersions]
+      UNION ALL SELECT 'PremiumSplitParticipants', COUNT(*) FROM [${productionSchema}].[PremiumSplitParticipants]
+      UNION ALL SELECT 'PolicyHierarchyAssignments', COUNT(*) FROM [${productionSchema}].[PolicyHierarchyAssignments]
+      UNION ALL SELECT 'CommissionAssignmentVersions', COUNT(*) FROM [${productionSchema}].[CommissionAssignmentVersions]
+      UNION ALL SELECT 'CommissionAssignmentRecipients', COUNT(*) FROM [${productionSchema}].[CommissionAssignmentRecipients]
+      ORDER BY 1
+    `);
+    
+    for (const row of verification.recordset) {
+      console.log(`  ${row.Entity}: ${row.Count}`);
+    }
+    
+  } finally {
+    await pool.close();
+  }
+  
+  console.log('\n✅ Export complete!');
+}
+
+// =============================================================================
 // CLI Entry Point
 // =============================================================================
 
 if (require.main === module) {
   const args = process.argv.slice(2);
   
+  // Parse --mode option
+  const modeArg = args.includes('--mode') 
+    ? args[args.indexOf('--mode') + 1] as ExecutionMode
+    : 'transform';
+  
+  // Validate mode
+  if (!['transform', 'export', 'full'].includes(modeArg)) {
+    console.error(`ERROR: Invalid mode '${modeArg}'. Must be one of: transform, export, full`);
+    process.exit(1);
+  }
+  
+  // Parse --groups option (comma-separated or multiple --groups flags)
+  let groups: string[] | undefined;
+  if (args.includes('--groups')) {
+    const groupsIdx = args.indexOf('--groups');
+    const groupsArg = args[groupsIdx + 1];
+    if (groupsArg && !groupsArg.startsWith('--')) {
+      // Support comma-separated: --groups 26683,12345,67890
+      // Also support space-separated until next flag
+      groups = groupsArg.split(',').map(g => g.trim()).filter(g => g.length > 0);
+    }
+  }
+  
   // Parse CLI arguments
   const options: BuilderOptions = {
+    mode: modeArg,
     batchSize: args.includes('--batch-size') 
       ? parseInt(args[args.indexOf('--batch-size') + 1]) 
       : undefined,
@@ -2345,7 +3623,14 @@ if (require.main === module) {
       : undefined,
     schema: args.includes('--schema')
       ? args[args.indexOf('--schema') + 1]
-      : 'etl'
+      : 'etl',
+    referenceSchema: args.includes('--reference-schema')
+      ? args[args.indexOf('--reference-schema') + 1]
+      : 'dbo',
+    productionSchema: args.includes('--production-schema')
+      ? args[args.indexOf('--production-schema') + 1]
+      : 'dbo',
+    groups: groups
   };
   
   // Get connection string from environment
@@ -2374,17 +3659,36 @@ if (require.main === module) {
     }
   };
 
-  // Choose execution mode
-  const executeFn = options.batchSize 
-    ? runProposalBuilderBatched 
-    : runProposalBuilder;
-
-  executeFn(config, options)
-    .then((output) => {
-      console.log('');
-      console.log('✅ Done!');
-      process.exit(0);
-    })
+  // Execute based on mode
+  async function execute() {
+    const mode = options.mode || 'transform';
+    
+    console.log(`\nExecution Mode: ${mode.toUpperCase()}`);
+    if (options.groups && options.groups.length > 0) {
+      console.log(`Groups Filter: ${options.groups.join(', ')}`);
+    }
+    console.log('');
+    
+    if (mode === 'transform' || mode === 'full') {
+      // Run transform (proposal building)
+      const transformFn = options.batchSize 
+        ? runProposalBuilderBatched 
+        : runProposalBuilder;
+      
+      await transformFn(config, options);
+    }
+    
+    if (mode === 'export' || mode === 'full') {
+      // Run export (staging to production)
+      await exportStagingToProduction(config, options);
+    }
+    
+    console.log('');
+    console.log('✅ Done!');
+  }
+  
+  execute()
+    .then(() => process.exit(0))
     .catch(err => {
       console.error('❌ Error:', err);
       process.exit(1);

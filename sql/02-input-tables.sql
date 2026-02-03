@@ -295,7 +295,7 @@ SELECT
     COALESCE(LTRIM(RTRIM(ci.CommissionsSchedule)), '') AS CommissionsSchedule,
     COALESCE(LTRIM(RTRIM(ci.HierDriver)), '') AS CommissionsDriver,
     TRY_CAST(NULLIF(LTRIM(RTRIM(ci.HierVersion)), '') AS INT) AS CommissionsLevel,
-    LTRIM(RTRIM(r.CreaditCardType)) AS CreditCardType,
+    LTRIM(RTRIM(r.CreditCardType)) AS CreditCardType,
     LTRIM(RTRIM(r.TransactionId)) AS TransactionId
 FROM [$(ETL_SCHEMA)].[raw_commissions_detail] r
 LEFT JOIN [$(ETL_SCHEMA)].[raw_certificate_info] ci 

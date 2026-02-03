@@ -14,6 +14,78 @@ PRINT '============================================================';
 PRINT '';
 
 -- =============================================================================
+-- Step 0: Ensure all PHA hierarchies exist in production (skip this step for now)
+-- =============================================================================
+PRINT 'Step 0: Creating missing PHA hierarchies...';
+
+INSERT INTO [$(PRODUCTION_SCHEMA)].[Hierarchies] (
+    Id, Name, Status, EffectiveDate, CreationTime, IsDeleted,
+    Type, HasOverrides, DeviationCount
+)
+SELECT DISTINCT
+    h.Id,
+    h.Name,
+    h.Status,
+    h.EffectiveDate,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted,
+    0 AS Type,  -- Default type
+    0 AS HasOverrides,  -- Default value
+    0 AS DeviationCount  -- Default value
+FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+WHERE pha.HierarchyId NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Hierarchies]);
+
+DECLARE @created_hierarchies INT = @@ROWCOUNT;
+PRINT 'Created ' + CAST(@created_hierarchies AS VARCHAR) + ' missing PHA hierarchies';
+
+-- Also create missing hierarchy versions
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchyVersions] (
+    Id, HierarchyId, Version, Status, EffectiveFrom, EffectiveTo, CreationTime, IsDeleted
+)
+SELECT DISTINCT
+    hv.Id,
+    hv.HierarchyId,
+    hv.Version,
+    hv.Status,
+    hv.EffectiveFrom,
+    hv.EffectiveTo,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv ON hv.HierarchyId = pha.HierarchyId
+WHERE hv.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyVersions]);
+
+DECLARE @created_versions INT = @@ROWCOUNT;
+PRINT 'Created ' + CAST(@created_versions AS VARCHAR) + ' missing hierarchy versions';
+
+-- Also create missing hierarchy participants
+INSERT INTO [$(PRODUCTION_SCHEMA)].[HierarchyParticipants] (
+    Id, HierarchyVersionId, EntityId, EntityName, Level, SortOrder, ScheduleCode, ScheduleId, CreationTime, IsDeleted
+)
+SELECT DISTINCT
+    hp.Id,
+    hp.HierarchyVersionId,
+    hp.EntityId,
+    hp.EntityName,
+    hp.Level,
+    1 AS SortOrder,  -- Default sort order
+    hp.ScheduleCode,
+    hp.ScheduleId,
+    GETUTCDATE() AS CreationTime,
+    0 AS IsDeleted
+FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
+INNER JOIN [$(ETL_SCHEMA)].[stg_hierarchy_participants] hp ON hp.HierarchyVersionId IN (
+    SELECT hv.Id FROM [$(ETL_SCHEMA)].[stg_hierarchy_versions] hv WHERE hv.HierarchyId = pha.HierarchyId
+)
+WHERE hp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[HierarchyParticipants]);
+
+DECLARE @created_participants INT = @@ROWCOUNT;
+PRINT 'Created ' + CAST(@created_participants AS VARCHAR) + ' missing hierarchy participants';
+
+PRINT '';
+
+-- =============================================================================
 -- Step 1: Export PolicyHierarchyAssignments
 -- Production has unique index on (PolicyId, HierarchyId, WritingBrokerId)
 -- so we aggregate multiple split sequences into one row per combination
@@ -32,7 +104,8 @@ PRINT 'Step 1: Exporting PolicyHierarchyAssignments (aggregated by unique key)..
         -- Sum split percentages for duplicate combinations
         SUM(SplitPercent) AS SplitPercent,
         TRY_CAST(WritingBrokerId AS BIGINT) AS WritingBrokerId,
-        MAX(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS IsNonConforming
+        MAX(CASE WHEN IsNonConforming = 1 THEN 1 ELSE 0 END) AS IsNonConforming,
+        MAX(COALESCE(EntryType, 0)) AS EntryType
     FROM [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] pha
     INNER JOIN [$(ETL_SCHEMA)].[stg_policies] p ON p.Id = pha.PolicyId
     WHERE pha.HierarchyId IS NOT NULL
@@ -52,6 +125,7 @@ INSERT INTO [$(PRODUCTION_SCHEMA)].[PolicyHierarchyAssignments] (
     SplitPercent,
     WritingBrokerId,
     IsNonConforming,
+    EntryType,
     CreationTime,
     IsDeleted
 )
@@ -63,6 +137,7 @@ SELECT
     aa.SplitPercent,
     aa.WritingBrokerId,
     aa.IsNonConforming,
+    aa.EntryType,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted
 FROM AggregatedAssignments aa

@@ -69,6 +69,7 @@ if (flags.transformsOnly) {
 }
 
 if (flags.exportOnly) {
+  flags.skipSchema = true;  // Don't wipe staging tables when only exporting!
   flags.skipIngest = true;
   flags.skipTransform = true;
 }
@@ -184,7 +185,8 @@ const exportScripts = [
   path.join(scriptsDir, 'export/05-export-groups.sql'),
   path.join(scriptsDir, 'export/06-export-products.sql'),
   path.join(scriptsDir, 'export/06a-export-plans.sql'),
-  path.join(scriptsDir, 'export/01-export-schedules.sql'),
+  // COMMENTED OUT - Preserving existing production schedules
+  // path.join(scriptsDir, 'export/01-export-schedules.sql'),
   path.join(scriptsDir, 'export/07-export-proposals.sql'),
   path.join(scriptsDir, 'export/08-export-hierarchies.sql'),
   path.join(scriptsDir, 'export/11-export-splits.sql'),
@@ -193,10 +195,12 @@ const exportScripts = [
   path.join(scriptsDir, 'export/14-export-policy-hierarchy-assignments.sql'),
   path.join(scriptsDir, 'export/12-export-assignments.sql'),
   path.join(scriptsDir, 'export/13-export-licenses.sql'),
-  path.join(scriptsDir, 'export/15-export-fee-schedules.sql'),
+  // COMMENTED OUT - Preserving existing production schedule data
+  // path.join(scriptsDir, 'export/15-export-fee-schedules.sql'),
   path.join(scriptsDir, 'export/16-export-broker-banking-infos.sql'),
-  path.join(scriptsDir, 'export/17-export-special-schedule-rates.sql'),
-  path.join(scriptsDir, 'export/18-export-schedule-rate-tiers.sql'),
+  // COMMENTED OUT - Preserving existing production schedule data
+  // path.join(scriptsDir, 'export/17-export-special-schedule-rates.sql'),
+  // path.join(scriptsDir, 'export/18-export-schedule-rate-tiers.sql'),
   path.join(scriptsDir, 'export/19-export-hierarchy-product-rates.sql'),
 ];
 

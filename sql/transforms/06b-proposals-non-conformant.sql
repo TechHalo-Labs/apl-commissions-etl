@@ -77,6 +77,7 @@ INSERT INTO [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] (
     SplitSequence,
     IsNonConforming,
     NonConformantReason,
+    EntryType,
     SourceTraceabilityReportId,
     CreationTime,
     IsDeleted
@@ -91,6 +92,7 @@ SELECT
     1 AS SplitSequence,
     1 AS IsNonConforming,
     'Multiple configs for same (Group, Date, Product, Plan) key' AS NonConformantReason,
+    0 AS EntryType,
     NULL AS SourceTraceabilityReportId,
     GETUTCDATE() AS CreationTime,
     0 AS IsDeleted

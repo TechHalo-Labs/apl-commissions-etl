@@ -1,0 +1,106 @@
+---
+description: How to audit staging data for the Proposals → Schedules chain before production export
+globs: sql/**/*.sql
+alwaysApply: false
+---
+
+# Staging Data Production Readiness Audit
+
+Run this audit to verify referential integrity in the Proposals → Schedules chain before exporting to production.
+
+## Chain Structure
+
+```
+Proposals → PremiumSplitVersions → PremiumSplitParticipants → Hierarchies 
+→ HierarchyVersions → StateRules → HierarchySplits → SplitDistributions → Schedules
+```
+
+## Audit Queries
+
+### 1. Entity Counts
+
+```sql
+SELECT 'stg_proposals' AS Entity, COUNT(*) AS Cnt FROM etl.stg_proposals
+UNION ALL SELECT 'stg_premium_split_versions', COUNT(*) FROM etl.stg_premium_split_versions
+UNION ALL SELECT 'stg_premium_split_participants', COUNT(*) FROM etl.stg_premium_split_participants
+UNION ALL SELECT 'stg_hierarchies', COUNT(*) FROM etl.stg_hierarchies
+UNION ALL SELECT 'stg_hierarchy_versions', COUNT(*) FROM etl.stg_hierarchy_versions
+UNION ALL SELECT 'stg_state_rules', COUNT(*) FROM etl.stg_state_rules
+UNION ALL SELECT 'stg_hierarchy_splits', COUNT(*) FROM etl.stg_hierarchy_splits
+UNION ALL SELECT 'stg_split_distributions', COUNT(*) FROM etl.stg_split_distributions
+ORDER BY 1;
+```
+
+### 2. End-to-End Chain Coverage
+
+```sql
+WITH ProposalChain AS (
+  SELECT DISTINCT p.Id AS ProposalId,
+    CASE WHEN s.Id IS NOT NULL THEN 1 ELSE 0 END AS HasValidSchedule
+  FROM etl.stg_proposals p
+  INNER JOIN etl.stg_premium_split_versions psv ON psv.ProposalId = p.Id
+  INNER JOIN etl.stg_premium_split_participants psp ON psp.VersionId = psv.Id
+  INNER JOIN etl.stg_hierarchies h ON h.Id = psp.HierarchyId
+  INNER JOIN etl.stg_hierarchy_versions hv ON hv.HierarchyId = h.Id
+  INNER JOIN etl.stg_state_rules sr ON sr.HierarchyVersionId = hv.Id
+  INNER JOIN etl.stg_hierarchy_splits hs ON hs.StateRuleId = sr.Id
+  INNER JOIN etl.stg_split_distributions sd ON sd.HierarchySplitId = hs.Id
+  LEFT JOIN dbo.Schedules s ON TRY_CAST(sd.ScheduleId AS BIGINT) = s.Id
+)
+SELECT COUNT(DISTINCT ProposalId) AS ProposalsInChain,
+  (SELECT COUNT(*) FROM etl.stg_proposals) AS TotalProposals,
+  CAST(COUNT(DISTINCT ProposalId) * 100.0 / (SELECT COUNT(*) FROM etl.stg_proposals) AS DECIMAL(5,2)) AS PctCoverage
+FROM ProposalChain;
+```
+
+### 3. Orphan Check
+
+```sql
+SELECT 'Orphan SplitVersions' AS Check_Name, COUNT(*) AS Cnt 
+FROM etl.stg_premium_split_versions psv
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_proposals p WHERE p.Id = psv.ProposalId)
+UNION ALL SELECT 'Orphan Participants', COUNT(*)
+FROM etl.stg_premium_split_participants psp
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_premium_split_versions psv WHERE psv.Id = psp.VersionId)
+UNION ALL SELECT 'Orphan HierarchyVersions', COUNT(*)
+FROM etl.stg_hierarchy_versions hv
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_hierarchies h WHERE h.Id = hv.HierarchyId)
+UNION ALL SELECT 'Orphan StateRules', COUNT(*)
+FROM etl.stg_state_rules sr
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_hierarchy_versions hv WHERE hv.Id = sr.HierarchyVersionId)
+UNION ALL SELECT 'Orphan HierarchySplits', COUNT(*)
+FROM etl.stg_hierarchy_splits hs
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_state_rules sr WHERE sr.Id = hs.StateRuleId)
+UNION ALL SELECT 'Orphan SplitDistributions', COUNT(*)
+FROM etl.stg_split_distributions sd
+WHERE NOT EXISTS (SELECT 1 FROM etl.stg_hierarchy_splits hs WHERE hs.Id = sd.HierarchySplitId);
+```
+
+### 4. ScheduleId Validation
+
+```sql
+SELECT 'Total Distributions' AS Metric, COUNT(*) AS Value FROM etl.stg_split_distributions
+UNION ALL SELECT 'With Numeric ScheduleId', COUNT(*) FROM etl.stg_split_distributions WHERE TRY_CAST(ScheduleId AS BIGINT) IS NOT NULL
+UNION ALL SELECT 'With NULL ScheduleId', COUNT(*) FROM etl.stg_split_distributions WHERE ScheduleId IS NULL
+UNION ALL SELECT 'Matching dbo.Schedules', COUNT(*) FROM etl.stg_split_distributions sd 
+  INNER JOIN dbo.Schedules s ON TRY_CAST(sd.ScheduleId AS BIGINT) = s.Id;
+```
+
+## Expected Results
+
+- **100%** Proposals with complete chain
+- **0** orphan records in all checks
+- **100%** numeric ScheduleIds matching `dbo.Schedules`
+
+## Key Link Relationships
+
+| Parent | Child | Join Column |
+|--------|-------|-------------|
+| stg_proposals | stg_premium_split_versions | ProposalId |
+| stg_premium_split_versions | stg_premium_split_participants | VersionId |
+| stg_premium_split_participants | stg_hierarchies | HierarchyId |
+| stg_hierarchies | stg_hierarchy_versions | HierarchyId |
+| stg_hierarchy_versions | stg_state_rules | HierarchyVersionId |
+| stg_state_rules | stg_hierarchy_splits | StateRuleId |
+| stg_hierarchy_splits | stg_split_distributions | HierarchySplitId |
+| stg_split_distributions | dbo.Schedules | ScheduleId (numeric) |

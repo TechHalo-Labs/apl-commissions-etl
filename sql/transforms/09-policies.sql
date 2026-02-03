@@ -25,7 +25,7 @@ INTO #tmp_min_seq
 FROM [$(ETL_SCHEMA)].[input_certificate_info]
 WHERE CertificateId IS NOT NULL 
   AND TRY_CAST(CertificateId AS BIGINT) > 0
-  AND RecStatus = 'A'  -- Only active split configurations
+  AND LTRIM(RTRIM(RecStatus)) = 'A'  -- Only active split configurations (trim trailing spaces)
 GROUP BY CAST(CertificateId AS BIGINT);
 
 PRINT 'Certificates found: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -59,7 +59,7 @@ INNER JOIN #tmp_min_seq ms ON ms.CertificateId = CAST(ici.CertificateId AS BIGIN
                            AND ici.CertSplitSeq = ms.MinSeq
 WHERE CAST(ici.CertificateId AS BIGINT) > 0
   AND ici.SplitBrokerSeq = 1
-  AND ici.RecStatus = 'A'  -- Only active split configurations
+  AND LTRIM(RTRIM(ici.RecStatus)) = 'A'  -- Only active split configurations (trim trailing spaces)
 GROUP BY CAST(ici.CertificateId AS BIGINT);
 
 PRINT 'Policy data rows: ' + CAST(@@ROWCOUNT AS VARCHAR);
@@ -83,7 +83,7 @@ SELECT
     CAST(CertificateId AS NVARCHAR(50)) AS PolicyNumber,
     CAST(CertificateId AS NVARCHAR(50)) AS CertificateNumber,
     0 AS PolicyType,
-    CASE CertStatus
+    CASE LTRIM(RTRIM(CertStatus))
         WHEN 'Active' THEN 0
         WHEN 'A' THEN 0
         WHEN 'Terminated' THEN 1
@@ -93,8 +93,8 @@ SELECT
         WHEN 'L' THEN 3  -- Lapsed
         ELSE 0
     END AS [Status],
-    WritingBrokerId AS BrokerId,
-    GroupId AS GroupId,  -- Keep original format (no G-prefix) to match key mapping
+    COALESCE(WritingBrokerId, 0) AS BrokerId,  -- Default to 0 if NULL
+    'G' + GroupId AS GroupId,  -- Add G-prefix to match proposal key mapping
     COALESCE(NULLIF(LTRIM(RTRIM(Company)), ''), 'APL') AS CarrierName,  -- Default to 'APL' if NULL
     Product AS ProductCode,
     CONCAT(COALESCE(ProductCategory, ''), ' - ', COALESCE(Product, '')) AS ProductName,

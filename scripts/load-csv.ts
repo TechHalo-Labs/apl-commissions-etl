@@ -17,24 +17,93 @@ const args = process.argv.slice(2);
 const limitIndex = args.indexOf('--limit');
 const ROW_LIMIT = limitIndex !== -1 ? parseInt(args[limitIndex + 1], 10) : 0;
 
-const config: sql.config = {
-  server: process.env.SQLSERVER_HOST || 'halo-sql.database.windows.net',
-  database: process.env.SQLSERVER_DATABASE || 'halo-sqldb',
-  user: process.env.SQLSERVER_USER || '***REMOVED***',
-  password: process.env.SQLSERVER_PASSWORD || '***REMOVED***',
-  options: {
-    encrypt: true,
-    trustServerCertificate: true,
-  },
-  requestTimeout: 600000, // 10 minutes for bulk operations
-  pool: {
-    max: 10,
-    min: 0,
-    idleTimeoutMillis: 30000,
-  },
-};
+/**
+ * Parse a SQL Server connection string into mssql config
+ */
+function parseConnectionString(connStr: string): Partial<sql.config> {
+  const parts: Record<string, string> = {};
+  connStr.split(';').forEach(part => {
+    const [key, ...valueParts] = part.split('=');
+    if (key && valueParts.length > 0) {
+      parts[key.trim().toLowerCase()] = valueParts.join('=').trim();
+    }
+  });
+  
+  return {
+    server: parts['server'] || parts['data source'],
+    database: parts['database'] || parts['initial catalog'],
+    user: parts['user id'] || parts['uid'] || parts['user'],
+    password: parts['password'] || parts['pwd'],
+    options: {
+      encrypt: parts['encrypt']?.toLowerCase() !== 'false',
+      trustServerCertificate: parts['trustservercertificate']?.toLowerCase() === 'true',
+    }
+  };
+}
 
-const csvDataPath = '/Users/kennpalm/Downloads/source/APL/apl-commissions-frontend/docs/data-map/rawdata';
+/**
+ * Get SQL Server configuration from environment
+ */
+function getSqlConfig(): sql.config {
+  const connStr = process.env.SQLSERVER;
+  
+  if (connStr) {
+    const parsed = parseConnectionString(connStr);
+    if (!parsed.server || !parsed.database || !parsed.user || !parsed.password) {
+      console.error('❌ Invalid $SQLSERVER connection string.');
+      process.exit(1);
+    }
+    return {
+      server: parsed.server,
+      database: parsed.database,
+      user: parsed.user,
+      password: parsed.password,
+      options: {
+        encrypt: parsed.options?.encrypt ?? true,
+        trustServerCertificate: parsed.options?.trustServerCertificate ?? true,
+      },
+      requestTimeout: 600000, // 10 minutes for bulk operations
+      connectionTimeout: 30000,
+      pool: {
+        max: 10,
+        min: 0,
+        idleTimeoutMillis: 30000,
+      },
+    };
+  }
+  
+  const server = process.env.SQLSERVER_HOST;
+  const database = process.env.SQLSERVER_DATABASE;
+  const user = process.env.SQLSERVER_USER;
+  const password = process.env.SQLSERVER_PASSWORD;
+  
+  if (!server || !database || !user || !password) {
+    console.error('❌ SQL Server connection not configured!');
+    console.error('Set SQLSERVER env var or SQLSERVER_HOST/DATABASE/USER/PASSWORD');
+    process.exit(1);
+  }
+  
+  return {
+    server,
+    database,
+    user,
+    password,
+    options: {
+      encrypt: true,
+      trustServerCertificate: true,
+    },
+    requestTimeout: 600000, // 10 minutes for bulk operations
+    pool: {
+      max: 10,
+      min: 0,
+      idleTimeoutMillis: 30000,
+    },
+  };
+}
+
+const config = getSqlConfig();
+
+const csvDataPath = '/tmp/etl-data';
 
 function log(message: string) {
   console.log(`[${new Date().toISOString()}] ${message}`);
@@ -47,20 +116,17 @@ interface CsvMapping {
 
 const csvMappings: CsvMapping[] = [
   // Updated broker/org files from client (Jan 2026)
-  { csvFile: 'IndividualRosterExtract_20260107.csv', tableName: 'raw_individual_brokers' },
-  { csvFile: 'OrganizationRosterExtract_20260107.csv', tableName: 'raw_org_brokers' },
-  { csvFile: 'BrokerLicenseExtract_20260107.csv', tableName: 'raw_licenses' },
-  { csvFile: 'BrokerEO_20260107.csv', tableName: 'raw_eo_insurance' },
-  { csvFile: 'Fees_20260107.csv', tableName: 'raw_fees' },
-  // Legacy broker files (fallback for brokers not in current extract)
-  { csvFile: 'individual-roster-old.csv', tableName: 'raw_individual_brokers_legacy' },
-  { csvFile: 'org-old.csv', tableName: 'raw_org_brokers_legacy' },
+  { csvFile: 'IndividualRosterExtract_20260131.csv', tableName: 'raw_individual_brokers' },
+  { csvFile: 'OrganizationRosterExtract_20260131.csv', tableName: 'raw_org_brokers' },
+  { csvFile: 'BrokerLicenseExtract_20260131.csv', tableName: 'raw_licenses' },
+  { csvFile: 'BrokerEO_20260131.csv', tableName: 'raw_eo_insurance' },
+  { csvFile: 'Fees_20260131.csv', tableName: 'raw_fees' },
   // Main data files
-  { csvFile: 'CertificateInfo.csv', tableName: 'raw_certificate_info' },
-  { csvFile: 'perf.csv', tableName: 'raw_schedule_rates' },
-  { csvFile: 'perf-group.csv', tableName: 'raw_perf_groups' },
-  { csvFile: 'premiums.csv', tableName: 'raw_premiums' },
+  { csvFile: 'CertificateInfo_20260131.csv', tableName: 'raw_certificate_info' },
+  { csvFile: 'APL-Perf_Schedule_model_20260131.csv', tableName: 'raw_schedule_rates' },
+  { csvFile: 'APL-Perf_Group_model_20260131.csv', tableName: 'raw_perf_groups' },
   { csvFile: 'CommissionsDetail_*.csv', tableName: 'raw_commissions_detail' },
+  { csvFile: 'CommHierarchy_20260131.csv', tableName: 'raw_comm_hierarchy' },
 ];
 
 function findMatchingFiles(pattern: string): string[] {

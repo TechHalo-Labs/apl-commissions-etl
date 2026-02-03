@@ -3,11 +3,11 @@ SET NOCOUNT ON;
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 -- Export Proposals from etl staging to dbo
--- Only exports proposals for CONFORMANT and NEARLY CONFORMANT groups
--- Filters using GroupConformanceStatistics
+-- Exports ALL proposals except those in excluded groups
+-- Conformance filtering REMOVED - using exclusion table only
 -- =====================================================
 
-PRINT 'Exporting missing Proposals to dbo.Proposals (conformant + nearly conformant groups only)...';
+PRINT 'Exporting missing Proposals to dbo.Proposals (all non-excluded groups)...';
 
 INSERT INTO [$(PRODUCTION_SCHEMA)].[Proposals] (
     Id, ProposalNumber, [Status], SubmittedDate, ProposedEffectiveDate,
@@ -33,7 +33,7 @@ SELECT
     COALESCE(sp.SpecialCase, 0) AS SpecialCase,
     COALESCE(sp.SpecialCaseCode, 0) AS SpecialCaseCode,
     sp.SitusState,
-    sp.BrokerUniquePartyId,  -- NEW: Use BrokerUniquePartyId instead of BrokerId
+    sp.BrokerUniquePartyId,
     -- Populate BrokerName from Brokers table using ExternalPartyId
     COALESCE(
         NULLIF(LTRIM(RTRIM(sp.BrokerName)), ''),
@@ -51,16 +51,16 @@ SELECT
     sp.CreationTime,
     sp.IsDeleted
 FROM [$(ETL_SCHEMA)].[stg_proposals] sp
-LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId  -- Join on ExternalPartyId
--- NEW: Filter by conformance (only export proposals for conformant + nearly conformant groups)
--- Use poc_etl schema for conformance statistics (has correct data)
-INNER JOIN [poc_etl].[GroupConformanceStatistics] gcs
-    ON gcs.GroupId = sp.GroupId
-    AND gcs.GroupClassification IN ('Conformant', 'Nearly Conformant (>=95%)')
+LEFT JOIN [$(PRODUCTION_SCHEMA)].[Brokers] b ON b.ExternalPartyId = sp.BrokerUniquePartyId
+-- NOTE: Conformance filtering REMOVED - all groups processed normally
+-- Only exclusion is via stg_excluded_groups table
 WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
   AND sp.BrokerUniquePartyId IS NOT NULL  -- Only export proposals with valid broker reference
-  -- Exclude groups flagged in stg_excluded_groups
-  AND sp.GroupId NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups])
+  AND sp.BrokerUniquePartyId <> ''        -- Exclude empty string broker references
+  -- VERIFY broker exists in production (FK constraint requirement)
+  AND sp.BrokerUniquePartyId IN (SELECT ExternalPartyId FROM [$(PRODUCTION_SCHEMA)].[Brokers] WHERE ExternalPartyId IS NOT NULL)
+  -- Exclude groups flagged in stg_excluded_groups (if table exists, e.g., Universal Trucking)
+  AND (sp.GroupId NOT IN (SELECT GroupId FROM [$(ETL_SCHEMA)].[stg_excluded_groups]) OR NOT EXISTS (SELECT 1 FROM sys.tables WHERE schema_id = SCHEMA_ID('$(ETL_SCHEMA)') AND name = 'stg_excluded_groups'))
   -- EXCLUDE broken proposals: proposals that have PremiumSplitParticipants without HierarchyId
   AND NOT EXISTS (
     SELECT 1 
@@ -73,6 +73,19 @@ WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
 DECLARE @proposalCount INT;
 SELECT @proposalCount = @@ROWCOUNT;
 PRINT 'Proposals exported: ' + CAST(@proposalCount AS VARCHAR);
+
+-- Report skipped proposals due to missing broker
+DECLARE @skippedBroker INT;
+SELECT @skippedBroker = COUNT(*) 
+FROM [$(ETL_SCHEMA)].[stg_proposals] sp
+WHERE sp.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Proposals])
+  AND (
+    sp.BrokerUniquePartyId IS NULL 
+    OR sp.BrokerUniquePartyId = ''
+    OR sp.BrokerUniquePartyId NOT IN (SELECT ExternalPartyId FROM [$(PRODUCTION_SCHEMA)].[Brokers] WHERE ExternalPartyId IS NOT NULL)
+  );
+IF @skippedBroker > 0
+  PRINT 'WARNING: ' + CAST(@skippedBroker AS VARCHAR) + ' proposals skipped (missing/invalid BrokerUniquePartyId)';
 
 DECLARE @totalProposals INT;
 SELECT @totalProposals = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Proposals];

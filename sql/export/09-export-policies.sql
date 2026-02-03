@@ -26,10 +26,11 @@ SELECT
     sp.StatusDate,
     COALESCE(sp.BrokerId, 0) AS BrokerId,
     sp.ContractId,
-    -- Add G-prefix to ALL GroupIds (including DTC 00000 → G00000)
+    -- GroupId: Use as-is if already has G-prefix, otherwise add it
     CASE 
         WHEN sp.GroupId IS NULL OR sp.GroupId = '' THEN NULL
-        ELSE CONCAT('G', sp.GroupId)
+        WHEN sp.GroupId LIKE 'G%' THEN sp.GroupId  -- Already has prefix
+        ELSE CONCAT('G', sp.GroupId)  -- Add prefix
     END AS GroupId,
     COALESCE(sp.CarrierName, 'APL') AS CarrierName,
     sp.CarrierId,

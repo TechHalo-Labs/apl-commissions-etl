@@ -19,7 +19,12 @@ INSERT INTO [$(PRODUCTION_SCHEMA)].[Brokers] (
 SELECT 
     sb.Id,
     sb.ExternalPartyId,
-    sb.Name,
+    -- If Name is NULL or empty, concatenate FirstName + LastName
+    CASE 
+        WHEN sb.Name IS NULL OR LTRIM(RTRIM(sb.Name)) = '' 
+        THEN LTRIM(RTRIM(COALESCE(sb.FirstName, '') + ' ' + COALESCE(sb.LastName, '')))
+        ELSE sb.Name 
+    END AS Name,
     sb.FirstName,
     sb.LastName,
     sb.MiddleName,
@@ -61,6 +66,38 @@ FROM [$(ETL_SCHEMA)].[stg_brokers] sb
 WHERE sb.Id NOT IN (SELECT Id FROM [$(PRODUCTION_SCHEMA)].[Brokers]);
 
 SET IDENTITY_INSERT [$(PRODUCTION_SCHEMA)].[Brokers] OFF;
+
+DECLARE @insertedCount INT = @@ROWCOUNT;
+PRINT 'Brokers inserted: ' + CAST(@insertedCount AS VARCHAR);
+GO
+
+-- Update ExternalPartyId for existing brokers (required for FK constraints)
+PRINT 'Updating ExternalPartyId for existing brokers...';
+
+UPDATE pb
+SET pb.ExternalPartyId = sb.ExternalPartyId
+FROM [$(PRODUCTION_SCHEMA)].[Brokers] pb
+INNER JOIN [$(ETL_SCHEMA)].[stg_brokers] sb ON sb.Id = pb.Id
+WHERE pb.ExternalPartyId IS NULL 
+   OR pb.ExternalPartyId <> sb.ExternalPartyId;
+
+DECLARE @updatedCount INT = @@ROWCOUNT;
+PRINT 'Brokers ExternalPartyId updated: ' + CAST(@updatedCount AS VARCHAR);
+GO
+
+-- Update Name for existing brokers with NULL/empty Name (use FirstName + LastName)
+PRINT 'Updating Name for existing brokers with NULL/empty Name...';
+
+UPDATE pb
+SET pb.Name = LTRIM(RTRIM(COALESCE(sb.FirstName, '') + ' ' + COALESCE(sb.LastName, '')))
+FROM [$(PRODUCTION_SCHEMA)].[Brokers] pb
+INNER JOIN [$(ETL_SCHEMA)].[stg_brokers] sb ON sb.Id = pb.Id
+WHERE (pb.Name IS NULL OR LTRIM(RTRIM(pb.Name)) = '')
+  AND (sb.FirstName IS NOT NULL OR sb.LastName IS NOT NULL);
+
+DECLARE @nameUpdatedCount INT = @@ROWCOUNT;
+PRINT 'Brokers Name updated: ' + CAST(@nameUpdatedCount AS VARCHAR);
+GO
 
 DECLARE @brokerCount INT;
 SELECT @brokerCount = COUNT(*) FROM [$(PRODUCTION_SCHEMA)].[Brokers];

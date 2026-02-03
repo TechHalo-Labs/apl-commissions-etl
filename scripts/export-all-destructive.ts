@@ -160,6 +160,7 @@ async function main() {
       'sql/export/09-export-policies.sql',
       'sql/export/10-export-premium-transactions.sql',
       'sql/export/14-export-policy-hierarchy-assignments.sql',
+      'sql/export/13-export-commission-assignments.sql',  // Commission assignments from staging
     ];
     
     for (const scriptPath of exportScripts) {
@@ -170,11 +171,6 @@ async function main() {
         console.log(`⚠️  Skipping ${scriptPath} (not found)`);
       }
     }
-    
-    console.log('\n📋 NOTE: Commission Assignments');
-    console.log('   Commission assignments are written directly by the proposal builder');
-    console.log('   They were already populated during proposal generation');
-    console.log('   No separate export needed - already in production tables');
     
     // Step 3: Verify counts
     console.log('\n\n📋 STEP 3: Verifying export counts');

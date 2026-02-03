@@ -855,6 +855,7 @@ CREATE TABLE [$(ETL_SCHEMA)].[stg_policy_hierarchy_assignments] (
     SplitSequence INT NOT NULL,
     IsNonConforming BIT DEFAULT 1,
     NonConformantReason NVARCHAR(500),
+    EntryType TINYINT DEFAULT 0,
     SourceTraceabilityReportId BIGINT,
     CreationTime DATETIME2 DEFAULT GETUTCDATE(),
     IsDeleted BIT DEFAULT 0,

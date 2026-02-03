@@ -68,7 +68,7 @@ CREATE TABLE [$(ETL_SCHEMA)].[raw_commissions_detail] (
     CommissionRate NVARCHAR(50),
     RealCommissionRate NVARCHAR(50),
     PaidBrokerId NVARCHAR(50),
-    CreaditCardType NVARCHAR(100),
+    CreditCardType NVARCHAR(100),
     TransactionId NVARCHAR(100)
 );
 PRINT 'Created [$(ETL_SCHEMA)].[raw_commissions_detail]';
@@ -128,7 +128,10 @@ CREATE TABLE [$(ETL_SCHEMA)].[raw_individual_brokers] (
     HireDate NVARCHAR(50),
     EmailAddress NVARCHAR(500),
     CurrentStatus NVARCHAR(50),
-    BrokerType NVARCHAR(100)
+    BrokerType NVARCHAR(100),
+    BankRoutingNumber NVARCHAR(50),
+    AccountNumber NVARCHAR(100),
+    AccountType NVARCHAR(50)
 );
 PRINT 'Created [$(ETL_SCHEMA)].[raw_individual_brokers]';
 
@@ -144,7 +147,10 @@ CREATE TABLE [$(ETL_SCHEMA)].[raw_org_brokers] (
     OrganizationName NVARCHAR(500),
     HireDate NVARCHAR(50),
     EmailAddress NVARCHAR(500),
-    CurrentStatus NVARCHAR(50)
+    CurrentStatus NVARCHAR(50),
+    BankRoutingNumber NVARCHAR(50),
+    AccountNumber NVARCHAR(100),
+    AccountType NVARCHAR(50)
 );
 PRINT 'Created [$(ETL_SCHEMA)].[raw_org_brokers]';
 

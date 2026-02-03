@@ -4,16 +4,26 @@
  * This script:
  * 1. Finds conformant groups from new_data.CertificateInfo
  * 2. For each conformant group, gets certificates in that group
- * 3. Populates PremiumTransactions from raw_premiums for those certificates
+ * 3. Maps certificates to production Policies by PolicyNumber
+ * 4. Populates PremiumTransactions from raw_premiums for those certificates
  * 
- * Debug mode: Processes only the first group
- * Production mode: Processes all conformant groups
+ * Usage:
+ *   npx tsx scripts/populate-premium-transactions-conformant.ts [options]
+ * 
+ * Options:
+ *   --debug, -d                  Process only the first group
+ *   --max-groups <number>        Limit processing to N groups
+ *   --transaction-date <date>    Override transaction date (YYYY-MM-DD format)
+ * 
+ * Examples:
+ *   npx tsx scripts/populate-premium-transactions-conformant.ts --debug
+ *   npx tsx scripts/populate-premium-transactions-conformant.ts --max-groups 5
+ *   npx tsx scripts/populate-premium-transactions-conformant.ts --transaction-date 2025-01-30
+ *   npx tsx scripts/populate-premium-transactions-conformant.ts --max-groups 10 --transaction-date 2025-01-30
  */
 
 import * as sql from 'mssql';
 import { loadConfig, getSqlConfig } from './lib/config-loader';
-import * as fs from 'fs';
-import * as path from 'path';
 
 interface ConformantGroup {
   GroupId: string;
@@ -42,7 +52,8 @@ interface PremiumTransaction {
 async function getConformantGroups(
   pool: sql.ConnectionPool,
   pocEtlSchema: string,
-  debugMode: boolean
+  debugMode: boolean,
+  maxGroups: number | null
 ): Promise<ConformantGroup[]> {
   console.log('\n📊 Finding conformant groups...');
 
@@ -167,14 +178,14 @@ async function getConformantGroups(
   `;
 
   const result = await pool.request().query(query);
-  const groups: ConformantGroup[] = result.recordset.map((row: any) => ({
+  let groups: ConformantGroup[] = result.recordset.map((row: any) => ({
     GroupId: row.GroupId,
     GroupName: row.GroupName,
     SitusState: row.SitusState,
     TotalCertificates: row.TotalCertificates,
     ConformantCertificates: row.ConformantCertificates,
     NonConformantCertificates: row.NonConformantCertificates,
-    ConformancePercentage: parseFloat(row.ConformancePercentage),
+    ConformancePercentage: Number.parseFloat(row.ConformancePercentage),
     GroupClassification: row.GroupClassification,
   }));
 
@@ -183,6 +194,11 @@ async function getConformantGroups(
   if (debugMode && groups.length > 0) {
     console.log(`   🔍 DEBUG MODE: Processing only first group: ${groups[0].GroupId}`);
     return [groups[0]];
+  }
+
+  if (maxGroups && maxGroups < groups.length) {
+    console.log(`   📊 Limiting to ${maxGroups} groups`);
+    groups = groups.slice(0, maxGroups);
   }
 
   return groups;
@@ -224,7 +240,8 @@ async function getPremiumTransactions(
   pool: sql.ConnectionPool,
   etlSchema: string,
   pocEtlSchema: string,
-  certificateIds: bigint[]
+  certificateIds: bigint[],
+  transactionDate: Date | null
 ): Promise<PremiumTransaction[]> {
   if (certificateIds.length === 0) {
     return [];
@@ -238,10 +255,14 @@ async function getPremiumTransactions(
 
   // First, try to get from raw_premiums
   try {
+    const transDateCol = transactionDate 
+      ? `CAST('${transactionDate.toISOString().split('T')[0]}' AS DATE)`
+      : 'TRY_CAST(p.DatePost AS DATE)';
+    
     const query = `
       SELECT DISTINCT
           TRY_CAST(p.Policy AS BIGINT) AS CertificateId,
-          TRY_CAST(p.DatePost AS DATE) AS TransactionDate,
+          ${transDateCol} AS TransactionDate,
           TRY_CAST(p.Amount AS DECIMAL(18,2)) AS PremiumAmount,
           TRY_CAST(p.DatePaidTo AS DATE) AS BillingPeriodStart,
           DATEADD(MONTH, 1, TRY_CAST(p.DatePaidTo AS DATE)) AS BillingPeriodEnd,
@@ -252,14 +273,14 @@ async function getPremiumTransactions(
         AND LTRIM(RTRIM(p.Policy)) <> ''
         AND TRY_CAST(p.Policy AS BIGINT) IN (${inClause})
         AND TRY_CAST(p.Amount AS DECIMAL(18,2)) IS NOT NULL
-        AND TRY_CAST(p.DatePost AS DATE) IS NOT NULL;
+        ${transactionDate ? '' : 'AND TRY_CAST(p.DatePost AS DATE) IS NOT NULL'};
     `;
 
     const result = await pool.request().query(query);
     const rawPremiums = result.recordset.map((row: any) => ({
       CertificateId: BigInt(row.CertificateId),
-      TransactionDate: row.TransactionDate,
-      PremiumAmount: parseFloat(row.PremiumAmount),
+      TransactionDate: transactionDate || row.TransactionDate,
+      PremiumAmount: Number.parseFloat(row.PremiumAmount),
       BillingPeriodStart: row.BillingPeriodStart,
       BillingPeriodEnd: row.BillingPeriodEnd,
       PaymentStatus: row.PaymentStatus,
@@ -274,10 +295,14 @@ async function getPremiumTransactions(
   if (transactions.length === 0) {
     console.log(`   📋 Falling back to CertificateInfo.CertPremium...`);
     
+    const transDateCol = transactionDate 
+      ? `CAST('${transactionDate.toISOString().split('T')[0]}' AS DATE)`
+      : 'TRY_CAST(ci.CertEffectiveDate AS DATE)';
+    
     const fallbackQuery = `
       SELECT DISTINCT
           TRY_CAST(ci.CertificateId AS BIGINT) AS CertificateId,
-          TRY_CAST(ci.CertEffectiveDate AS DATE) AS TransactionDate,
+          ${transDateCol} AS TransactionDate,
           TRY_CAST(ci.CertPremium AS DECIMAL(18,2)) AS PremiumAmount,
           TRY_CAST(ci.CertEffectiveDate AS DATE) AS BillingPeriodStart,
           DATEADD(MONTH, 1, TRY_CAST(ci.CertEffectiveDate AS DATE)) AS BillingPeriodEnd,
@@ -290,15 +315,15 @@ async function getPremiumTransactions(
         AND ci.RecStatus = 'A'
         AND TRY_CAST(ci.CertPremium AS DECIMAL(18,2)) IS NOT NULL
         AND TRY_CAST(ci.CertPremium AS DECIMAL(18,2)) > 0
-        AND TRY_CAST(ci.CertEffectiveDate AS DATE) IS NOT NULL;
+        ${transactionDate ? '' : 'AND TRY_CAST(ci.CertEffectiveDate AS DATE) IS NOT NULL'};
     `;
 
     try {
       const result = await pool.request().query(fallbackQuery);
       const policyPremiums = result.recordset.map((row: any) => ({
         CertificateId: BigInt(row.CertificateId),
-        TransactionDate: row.TransactionDate,
-        PremiumAmount: parseFloat(row.PremiumAmount),
+        TransactionDate: transactionDate || row.TransactionDate,
+        PremiumAmount: Number.parseFloat(row.PremiumAmount),
         BillingPeriodStart: row.BillingPeriodStart,
         BillingPeriodEnd: row.BillingPeriodEnd,
         PaymentStatus: row.PaymentStatus,
@@ -314,12 +339,53 @@ async function getPremiumTransactions(
 }
 
 /**
+ * Map certificate IDs to production Policy IDs
+ */
+async function mapCertificatesToPolicyIds(
+  pool: sql.ConnectionPool,
+  productionSchema: string,
+  certificateIds: bigint[]
+): Promise<Map<bigint, bigint>> {
+  if (certificateIds.length === 0) {
+    return new Map();
+  }
+
+  const certIdStrings = certificateIds.map(id => id.toString());
+  const inClause = certIdStrings.join(',');
+
+  const query = `
+    SELECT 
+        CAST(PolicyNumber AS BIGINT) AS CertificateId,
+        Id AS PolicyId
+    FROM [${productionSchema}].[Policies]
+    WHERE TRY_CAST(PolicyNumber AS BIGINT) IN (${inClause})
+      AND PolicyNumber IS NOT NULL
+      AND IsDeleted = 0;
+  `;
+
+  try {
+    const result = await pool.request().query(query);
+    const mapping = new Map<bigint, bigint>();
+    
+    for (const row of result.recordset) {
+      mapping.set(BigInt(row.CertificateId), BigInt(row.PolicyId));
+    }
+    
+    return mapping;
+  } catch (error: any) {
+    console.error(`   ⚠️  Error mapping certificates to policy IDs: ${error.message}`);
+    return new Map();
+  }
+}
+
+/**
  * Insert premium transactions into dbo.PremiumTransactions
  */
 async function insertPremiumTransactions(
   pool: sql.ConnectionPool,
   productionSchema: string,
-  transactions: PremiumTransaction[]
+  transactions: PremiumTransaction[],
+  certToPolicyMap: Map<bigint, bigint>
 ): Promise<number> {
   if (transactions.length === 0) {
     return 0;
@@ -328,7 +394,6 @@ async function insertPremiumTransactions(
   console.log(`   Inserting ${transactions.length} premium transactions using bulk INSERT INTO ... SELECT...`);
 
   const now = new Date();
-  const nowStr = now.toISOString();
   
   // Format dates for SQL
   const formatDate = (d: Date | null): string => {
@@ -342,7 +407,7 @@ async function insertPremiumTransactions(
 
   // Escape strings for SQL
   const escapeSql = (s: string): string => {
-    return s.replace(/'/g, "''");
+    return s.replaceAll("'", "''");
   };
 
   // Insert in batches to avoid huge SQL statements
@@ -354,6 +419,13 @@ async function insertPremiumTransactions(
     
     // Build VALUES clause directly in SQL (safe because we control the data source)
     const values = batch.map((tx) => {
+      // Map certificate ID to policy ID
+      const policyId = certToPolicyMap.get(tx.CertificateId);
+      if (!policyId) {
+        console.warn(`   ⚠️  No policy mapping for certificate ${tx.CertificateId}, skipping`);
+        return null;
+      }
+      
       const txDate = formatDate(tx.TransactionDate);
       const billStart = formatDate(tx.BillingPeriodStart);
       const billEnd = formatDate(tx.BillingPeriodEnd);
@@ -361,7 +433,7 @@ async function insertPremiumTransactions(
       const sourceSys = escapeSql(tx.SourceSystem || 'ETL');
       
       return `(
-        ${tx.CertificateId},
+        ${policyId},
         ${txDate},
         ${tx.PremiumAmount},
         ${billStart},
@@ -375,7 +447,12 @@ async function insertPremiumTransactions(
         ${formatDateTime(now)},
         0
       )`;
-    }).join(',\n');
+    }).filter(v => v !== null).join(',\n');
+
+    if (!values) {
+      console.log(`   ⚠️  Batch ${Math.floor(i / batchSize) + 1}: No valid transactions to insert`);
+      continue;
+    }
 
     const insertSql = `
       INSERT INTO [${productionSchema}].[PremiumTransactions] (
@@ -429,7 +506,8 @@ async function processGroup(
   etlSchema: string,
   pocEtlSchema: string,
   productionSchema: string,
-  group: ConformantGroup
+  group: ConformantGroup,
+  transactionDate: Date | null
 ): Promise<{ certificates: number; transactions: number; inserted: number }> {
   console.log(`\n📦 Processing group: ${group.GroupId} (${group.GroupName || 'N/A'})`);
   console.log(`   Certificates: ${group.TotalCertificates}`);
@@ -443,24 +521,83 @@ async function processGroup(
     return { certificates: 0, transactions: 0, inserted: 0 };
   }
 
+  // Map certificates to production policy IDs
+  console.log(`   Mapping certificates to production Policies...`);
+  const certToPolicyMap = await mapCertificatesToPolicyIds(pool, productionSchema, certificates);
+  console.log(`   Mapped ${certToPolicyMap.size} certificates to policy IDs`);
+
+  if (certToPolicyMap.size === 0) {
+    console.log(`   ⚠️  No certificates mapped to production policies, skipping`);
+    return { certificates: certificates.length, transactions: 0, inserted: 0 };
+  }
+
   // Get premium transactions for these certificates
-  const transactions = await getPremiumTransactions(pool, etlSchema, pocEtlSchema, certificates);
-  console.log(`   Found ${transactions.length} premium transactions in raw_premiums`);
+  const transactions = await getPremiumTransactions(pool, etlSchema, pocEtlSchema, certificates, transactionDate);
+  console.log(`   Found ${transactions.length} premium transactions`);
 
   if (transactions.length === 0) {
     console.log(`   ⚠️  No premium transactions found, skipping`);
     return { certificates: certificates.length, transactions: 0, inserted: 0 };
   }
 
+  // Filter to only transactions with valid policy mappings
+  const validTransactions = transactions.filter(tx => certToPolicyMap.has(tx.CertificateId));
+  console.log(`   ${validTransactions.length} transactions have valid policy mappings`);
+
+  if (validTransactions.length === 0) {
+    console.log(`   ⚠️  No transactions with valid policy mappings, skipping`);
+    return { certificates: certificates.length, transactions: transactions.length, inserted: 0 };
+  }
+
   // Insert into PremiumTransactions
-  const inserted = await insertPremiumTransactions(pool, productionSchema, transactions);
+  const inserted = await insertPremiumTransactions(pool, productionSchema, validTransactions, certToPolicyMap);
   console.log(`   ✅ Inserted ${inserted} new premium transactions`);
 
   return {
     certificates: certificates.length,
-    transactions: transactions.length,
+    transactions: validTransactions.length,
     inserted,
   };
+}
+
+/**
+ * Parse command line arguments
+ */
+function parseArgs(): {
+  debugMode: boolean;
+  maxGroups: number | null;
+  transactionDate: Date | null;
+} {
+  const args = process.argv.slice(2);
+  let debugMode = false;
+  let maxGroups: number | null = null;
+  let transactionDate: Date | null = null;
+
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    
+    if (arg === '--debug' || arg === '-d') {
+      debugMode = true;
+      i++;
+    } else if (arg === '--max-groups' && i + 1 < args.length) {
+      maxGroups = Number.parseInt(args[i + 1], 10);
+      if (Number.isNaN(maxGroups) || maxGroups <= 0) {
+        throw new TypeError('--max-groups must be a positive integer');
+      }
+      i += 2;
+    } else if (arg === '--transaction-date' && i + 1 < args.length) {
+      transactionDate = new Date(args[i + 1]);
+      if (Number.isNaN(transactionDate.getTime())) {
+        throw new TypeError('--transaction-date must be a valid date (YYYY-MM-DD)');
+      }
+      i += 2;
+    } else {
+      i++;
+    }
+  }
+
+  return { debugMode, maxGroups, transactionDate };
 }
 
 /**
@@ -471,11 +608,12 @@ async function main() {
   console.log('POPULATE PREMIUM TRANSACTIONS - CONFORMANT GROUPS');
   console.log('============================================================\n');
 
+  const { debugMode, maxGroups, transactionDate } = parseArgs();
+
   const config = loadConfig();
   const sqlConfig = getSqlConfig(config);
   const pool = await sql.connect(sqlConfig);
 
-  const debugMode = process.argv.includes('--debug') || process.argv.includes('-d');
   // Use poc_etl for staging tables (matches the SQL query)
   const etlSchema = config.database.pocMode ? 'poc_etl' : (config.database.schemas.processing || 'etl');
   const productionSchema = config.database.schemas.production || 'dbo';
@@ -484,10 +622,18 @@ async function main() {
     console.log('🔍 DEBUG MODE: Processing only first conformant group\n');
   }
 
+  if (maxGroups) {
+    console.log(`📊 MAX GROUPS: Processing up to ${maxGroups} groups\n`);
+  }
+
+  if (transactionDate) {
+    console.log(`📅 TRANSACTION DATE: Using ${transactionDate.toISOString().split('T')[0]} for all transactions\n`);
+  }
+
   try {
     // Get conformant groups (use poc_etl schema for staging tables)
     const pocEtlSchema = config.database.pocMode ? 'poc_etl' : (config.database.schemas.processing || 'etl');
-    const groups = await getConformantGroups(pool, pocEtlSchema, debugMode);
+    const groups = await getConformantGroups(pool, pocEtlSchema, debugMode, maxGroups);
 
     if (groups.length === 0) {
       console.log('❌ No conformant groups found');
@@ -502,7 +648,7 @@ async function main() {
     let totalInserted = 0;
 
     for (const group of groups) {
-      const result = await processGroup(pool, etlSchema, pocEtlSchema, productionSchema, group);
+      const result = await processGroup(pool, etlSchema, pocEtlSchema, productionSchema, group, transactionDate);
       totalCertificates += result.certificates;
       totalTransactions += result.transactions;
       totalInserted += result.inserted;

@@ -1,0 +1,188 @@
+# Referential Integrity Check Guide
+
+## Overview
+Referential integrity checks ensure that all foreign key relationships in the production database are valid and unbroken. This is critical after ETL operations to verify data consistency and prevent orphaned records.
+
+## When to Use
+- After any ETL export to production
+- Before commission calculations
+- When investigating data quality issues
+- After database maintenance operations
+- When validating backup integrity
+
+## Scope
+Checks the main production tables (`dbo.*`) for broken foreign key relationships:
+
+### Core Relationships Checked
+1. **Proposals → Brokers**: `BrokerId` references valid broker
+2. **Hierarchies → Proposals**: `ProposalId` references valid proposal
+3. **HierarchyVersions → Hierarchies**: `HierarchyId` references valid hierarchy
+4. **HierarchyParticipants → HierarchyVersions**: `HierarchyVersionId` references valid version
+5. **HierarchySplits → StateRules**: `StateRuleId` references valid state rule
+6. **Policies → EmployerGroups**: `GroupId` references valid group
+
+## Execution Command
+
+### Full Integrity Check
+```bash
+sqlcmd -S "$SQL_SERVER" -d "$SQL_DATABASE" -U "$SQL_USERNAME" -P "$SQL_PASSWORD" -C -I -Q "
+PRINT '=== REFERENTIAL INTEGRITY CHECKS ==='
+
+SELECT 'Broken Proposal→Broker refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.Proposals p
+LEFT JOIN dbo.Brokers b ON b.Id = p.BrokerId
+WHERE p.BrokerId IS NOT NULL AND b.Id IS NULL;
+
+SELECT 'Broken Hierarchy→Proposal refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.Hierarchies h
+LEFT JOIN dbo.Proposals p ON p.Id = h.ProposalId
+WHERE h.ProposalId IS NOT NULL AND p.Id IS NULL;
+
+SELECT 'Broken HierarchyVersion→Hierarchy refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.HierarchyVersions hv
+LEFT JOIN dbo.Hierarchies h ON h.Id = hv.HierarchyId
+WHERE h.Id IS NULL;
+
+SELECT 'Broken HierarchyParticipant→Version refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.HierarchyParticipants hp
+LEFT JOIN dbo.HierarchyVersions hv ON hv.Id = hp.HierarchyVersionId
+WHERE hv.Id IS NULL;
+
+SELECT 'Broken HierarchySplit→StateRule refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.HierarchySplits hs
+LEFT JOIN dbo.StateRules sr ON sr.Id = hs.StateRuleId
+WHERE sr.Id IS NULL;
+
+SELECT 'Broken Policy→Group refs' AS CheckType, COUNT(*) AS BrokenCount
+FROM dbo.Policies p
+LEFT JOIN dbo.EmployerGroups eg ON eg.Id = p.GroupId
+WHERE p.GroupId IS NOT NULL AND eg.Id IS NULL;
+
+PRINT ''
+PRINT '=== SUMMARY ==='
+
+-- Calculate total broken references
+CREATE TABLE #TempResults (BrokenCount INT);
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.Proposals p LEFT JOIN dbo.Brokers b ON b.Id = p.BrokerId WHERE p.BrokerId IS NOT NULL AND b.Id IS NULL;
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.Hierarchies h LEFT JOIN dbo.Proposals p ON p.Id = h.ProposalId WHERE h.ProposalId IS NOT NULL AND p.Id IS NULL;
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.HierarchyVersions hv LEFT JOIN dbo.Hierarchies h ON h.Id = hv.HierarchyId WHERE h.Id IS NULL;
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.HierarchyParticipants hp LEFT JOIN dbo.HierarchyVersions hv ON hv.Id = hp.HierarchyVersionId WHERE hv.Id IS NULL;
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.HierarchySplits hs LEFT JOIN dbo.StateRules sr ON sr.Id = hs.StateRuleId WHERE sr.Id IS NULL;
+INSERT INTO #TempResults SELECT COUNT(*) FROM dbo.Policies p LEFT JOIN dbo.EmployerGroups eg ON eg.Id = p.GroupId WHERE p.GroupId IS NOT NULL AND eg.Id IS NULL;
+
+DECLARE @totalBroken INT = (SELECT SUM(BrokenCount) FROM #TempResults);
+DROP TABLE #TempResults;
+
+IF @totalBroken = 0
+    PRINT '✅ REFERENTIAL INTEGRITY: PERFECT - All relationships valid'
+ELSE
+    PRINT '❌ REFERENTIAL INTEGRITY: BROKEN - ' + CAST(@totalBroken AS VARCHAR) + ' broken references found'
+"
+```
+
+## Expected Results
+
+### Success Case (All Valid)
+```
+CheckType                          BrokenCount
+---------------------------------- ------------
+Broken Proposal→Broker refs       0
+Broken Hierarchy→Proposal refs    0
+Broken HierarchyVersion→Hierarchy refs 0
+Broken HierarchyParticipant→Version refs 0
+Broken HierarchySplit→StateRule refs 0
+Broken Policy→Group refs          0
+
+=== SUMMARY ===
+✅ REFERENTIAL INTEGRITY: PERFECT - All relationships valid
+```
+
+### Failure Case (Broken References)
+```
+CheckType                          BrokenCount
+---------------------------------- ------------
+Broken Proposal→Broker refs       15
+Broken Hierarchy→Proposal refs    0
+Broken HierarchyVersion→Hierarchy refs 0
+Broken HierarchyParticipant→Version refs 3
+Broken HierarchySplit→StateRule refs 0
+Broken Policy→Group refs          0
+
+=== SUMMARY ===
+❌ REFERENTIAL INTEGRITY: BROKEN - 18 broken references found
+```
+
+## Interpretation
+
+### Broken Reference Types
+- **Proposal→Broker**: Proposals reference non-existent brokers
+- **Hierarchy→Proposal**: Hierarchies reference non-existent proposals
+- **HierarchyVersion→Hierarchy**: Versions reference non-existent hierarchies
+- **HierarchyParticipant→Version**: Participants reference non-existent versions
+- **HierarchySplit→StateRule**: Splits reference non-existent state rules
+- **Policy→Group**: Policies reference non-existent employer groups
+
+### Common Causes
+1. **Incomplete Export**: Export process missed some dependent records
+2. **Timing Issues**: Export order didn't respect foreign key dependencies
+3. **Data Corruption**: Records deleted without updating references
+4. **ETL Logic Errors**: Transform logic created invalid references
+
+## Remediation Steps
+
+### If Broken References Found
+1. **Identify Root Cause**: Check which export step failed
+2. **Re-export Missing Records**: Run targeted export for missing entities
+3. **Fix ETL Logic**: Update transform scripts to prevent future issues
+4. **Manual Cleanup**: Delete orphaned records if appropriate
+5. **Re-run Full Export**: Complete fresh export from staging
+
+### Prevention
+- Always run integrity checks after exports
+- Use transactional exports to maintain consistency
+- Implement foreign key constraints in staging
+- Add integrity checks to automated pipelines
+
+## Integration with ETL Pipeline
+
+### Add to Export Scripts
+Include this check at the end of export operations:
+```sql
+-- At end of export-all-destructive.sql
+:r .\path\to\referential-integrity-check.sql
+```
+
+### Automated Monitoring
+Schedule regular integrity checks:
+```bash
+# Daily integrity check
+sqlcmd -i referential-integrity-check.sql > daily-integrity-report.txt
+```
+
+## Related Rules
+- **data-export-validation**: Validates export completeness
+- **staging-data-quality**: Checks staging table integrity
+- **production-backup-verification**: Ensures backups maintain integrity
+
+## Quick Verification Queries
+
+### Count Broken References Only
+```sql
+SELECT SUM(BrokenCount) AS TotalBrokenReferences FROM (
+    SELECT COUNT(*) AS BrokenCount FROM dbo.Proposals p LEFT JOIN dbo.Brokers b ON b.Id = p.BrokerId WHERE p.BrokerId IS NOT NULL AND b.Id IS NULL
+    UNION ALL SELECT COUNT(*) FROM dbo.Hierarchies h LEFT JOIN dbo.Proposals p ON p.Id = h.ProposalId WHERE h.ProposalId IS NOT NULL AND p.Id IS NULL
+    UNION ALL SELECT COUNT(*) FROM dbo.HierarchyVersions hv LEFT JOIN dbo.Hierarchies h ON h.Id = hv.HierarchyId WHERE h.Id IS NULL
+    UNION ALL SELECT COUNT(*) FROM dbo.HierarchyParticipants hp LEFT JOIN dbo.HierarchyVersions hv ON hv.Id = hp.HierarchyVersionId WHERE hv.Id IS NULL
+    UNION ALL SELECT COUNT(*) FROM dbo.HierarchySplits hs LEFT JOIN dbo.StateRules sr ON sr.Id = hs.StateRuleId WHERE sr.Id IS NULL
+    UNION ALL SELECT COUNT(*) FROM dbo.Policies p LEFT JOIN dbo.EmployerGroups eg ON eg.Id = p.GroupId WHERE p.GroupId IS NOT NULL AND eg.Id IS NULL
+) AS BrokenRefs;
+```
+
+### Find Specific Broken Records
+```sql
+-- Example: Find broken proposal-broker references
+SELECT p.Id, p.ProposalNumber, p.BrokerId
+FROM dbo.Proposals p
+LEFT JOIN dbo.Brokers b ON b.Id = p.BrokerId
+WHERE p.BrokerId IS NOT NULL AND b.Id IS NULL;
+```
