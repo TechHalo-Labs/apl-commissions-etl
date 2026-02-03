@@ -442,8 +442,8 @@ if (require.main === module) {
     ? (args[args.indexOf('--mode') + 1] as ExecutionMode)
     : 'transform';
 
-  if (!['transform', 'export', 'full'].includes(modeArg)) {
-    console.error(`ERROR: Invalid mode '${modeArg}'. Must be one of: transform, export, full`);
+  if (!['transform', 'export', 'full', 'validate'].includes(modeArg)) {
+    console.error(`ERROR: Invalid mode '${modeArg}'. Must be one of: transform, export, full, validate`);
     process.exit(1);
   }
 
@@ -519,6 +519,28 @@ if (require.main === module) {
       console.log(`Groups Filter: ${options.groups.join(', ')}`);
     }
     console.log('');
+
+    if (mode === 'validate') {
+      // Validate-only mode: skip transform, just run validation
+      const groupsToValidate = validateGroupsArg.length > 0
+        ? validateGroupsArg
+        : (options.groups || []);
+      
+      if (groupsToValidate.length === 0) {
+        console.error('ERROR: --mode validate requires --validate-groups or --groups');
+        process.exit(1);
+      }
+      
+      console.log(`Validating ${groupsToValidate.length} group(s)`);
+      const results = await validateGroups(config, groupsToValidate);
+      const failed = results.filter(r => r.unmatchedRows > 0);
+      const passed = results.length - failed.length;
+      console.log(`\nValidation summary: ${passed}/${results.length} passed`);
+      if (failed.length > 0) {
+        console.log(`Failed groups: ${failed.map(r => r.groupId).join(', ')}`);
+        throw new Error(`Validation failed for ${failed.length} group(s)`);
+      }
+    }
 
     if (mode === 'transform' || mode === 'full') {
       await runProposalBuilderV2(config, options, validateGroupsArg, validateAllFlag, configPath);
