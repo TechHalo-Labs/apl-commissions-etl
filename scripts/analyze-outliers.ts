@@ -78,16 +78,20 @@ async function analyzeGroupOutliers(
   // Get config distribution based on PRODUCT (simpler and more reliable)
   // Different products often indicate different commission structures
   const configQuery = await pool.request().query(`
-    WITH ProductCounts AS (
-      SELECT 
-        ci.Product,
-        COUNT(DISTINCT ci.CertificateId) AS CertCount,
-        STRING_AGG(DISTINCT ci.PlanCode, ',') AS PlanCodes
+    WITH ProductCerts AS (
+      SELECT DISTINCT ci.Product, ci.CertificateId, ci.PlanCode
       FROM [etl].[input_certificate_info] ci
       WHERE LTRIM(RTRIM(ci.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
         AND ci.CertStatus = 'A'
         AND ci.RecStatus = 'A'
-      GROUP BY ci.Product
+    ),
+    ProductCounts AS (
+      SELECT 
+        Product,
+        COUNT(DISTINCT CertificateId) AS CertCount,
+        (SELECT STRING_AGG(pc, ',') FROM (SELECT DISTINCT PlanCode AS pc FROM ProductCerts p2 WHERE p2.Product = p1.Product) x) AS PlanCodes
+      FROM ProductCerts p1
+      GROUP BY Product
     )
     SELECT 
       Product AS ConfigHash,
