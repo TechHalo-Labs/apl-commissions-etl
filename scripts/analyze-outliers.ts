@@ -75,8 +75,7 @@ async function analyzeGroupOutliers(
   const groupIdNumeric = groupId.replace(/^[A-Za-z]+/, '');
   const groupIdWithPrefix = `G${groupIdNumeric}`;
 
-  // Get config distribution for this group - simplified approach using existing SplitConfigHash
-  // This uses the raw_certificate_info which already has split data
+  // Get config distribution for this group - simplified approach
   const configQuery = await pool.request().query(`
     WITH CertData AS (
       SELECT 
@@ -99,13 +98,13 @@ async function analyzeGroupOutliers(
         STRING_AGG(
           CONCAT(CertSplitSeq, ':', CertSplitPercent, ':', ISNULL(SplitBrokerId,''), ':', ISNULL(CommissionsSchedule,'')),
           '|'
-        ) WITHIN GROUP (ORDER BY CertSplitSeq, SplitBrokerId) AS ConfigSignature
+        ) AS ConfigSignature
       FROM CertData
       GROUP BY CertificateId
     ),
     -- Get unique configs with their products
     ConfigProducts AS (
-      SELECT 
+      SELECT DISTINCT
         cs.ConfigSignature,
         cs.CertificateId,
         cd.Product,
@@ -118,9 +117,9 @@ async function analyzeGroupOutliers(
       SELECT 
         ConfigSignature,
         COUNT(DISTINCT CertificateId) AS CertCount,
-        STRING_AGG(DISTINCT Product, ',') WITHIN GROUP (ORDER BY Product) AS Products,
-        STRING_AGG(DISTINCT PlanCode, ',') WITHIN GROUP (ORDER BY PlanCode) AS PlanCodes
-      FROM ConfigProducts
+        STRING_AGG(Product, ',') AS Products,
+        STRING_AGG(PlanCode, ',') AS PlanCodes
+      FROM (SELECT DISTINCT ConfigSignature, CertificateId, Product, PlanCode FROM ConfigProducts) sub
       GROUP BY ConfigSignature
     )
     SELECT 
