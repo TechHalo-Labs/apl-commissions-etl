@@ -251,24 +251,33 @@ async function main() {
       console.log('STEP 2: Would insert from staging');
       console.log('═'.repeat(60));
       
-      const tables = [
-        { name: 'stg_proposals', label: 'Proposals' },
-        { name: 'stg_premium_split_versions', label: 'PremiumSplitVersions' },
-        { name: 'stg_premium_split_participants', label: 'PremiumSplitParticipants' },
-        { name: 'stg_hierarchies', label: 'Hierarchies' },
-        { name: 'stg_hierarchy_versions', label: 'HierarchyVersions' },
-        { name: 'stg_hierarchy_participants', label: 'HierarchyParticipants' },
-        { name: 'stg_policies', label: 'Policies' },
-        { name: 'stg_policy_hierarchy_assignments', label: 'PolicyHierarchyAssignments' },
-      ];
+      // Count what would be inserted
+      let result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_proposals] WHERE GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into Proposals`);
       
-      for (const t of tables) {
-        const result = await pool.request().query(`
-          SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[${t.name}]
-          WHERE GroupId IN (${groupList})
-        `);
-        console.log(`  Would insert ${result.recordset[0].cnt} into ${t.label}`);
-      }
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_proposal_products] pp INNER JOIN [${options.sourceSchema}].[stg_proposals] p ON p.Id = pp.ProposalId WHERE p.GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into ProposalProducts`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_premium_split_versions] WHERE GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into PremiumSplitVersions`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_premium_split_participants] WHERE GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into PremiumSplitParticipants`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchies] WHERE GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into Hierarchies`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchy_versions] hv INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId WHERE h.GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into HierarchyVersions`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchy_participants] hp INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hp.HierarchyId WHERE h.GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into HierarchyParticipants`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_policies] WHERE GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into Policies`);
+      
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_policy_hierarchy_assignments] pha INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId WHERE h.GroupId IN (${groupList})`);
+      console.log(`  Would insert ${result.recordset[0].cnt} into PolicyHierarchyAssignments`);
       
       console.log('\n✅ DRY RUN complete - no changes made');
       return;
