@@ -317,13 +317,11 @@ async function main() {
     // ProposalProducts
     insertCount = await pool.request().query(`
       INSERT INTO [${options.targetSchema}].[ProposalProducts] (
-        Id, ProposalId, ProductId, ProductCode, ProductName,
-        PlanCode, PlanName, EffectiveDate,
+        Id, ProposalId, ProductCode, ProductName,
         CreationTime, IsDeleted
       )
       SELECT 
-        pp.Id, pp.ProposalId, pp.ProductId, pp.ProductCode, pp.ProductName,
-        pp.PlanCode, pp.PlanName, pp.EffectiveDate,
+        pp.Id, pp.ProposalId, pp.ProductCode, pp.ProductName,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_proposal_products] pp
       INNER JOIN [${options.sourceSchema}].[stg_proposals] p ON p.Id = pp.ProposalId
