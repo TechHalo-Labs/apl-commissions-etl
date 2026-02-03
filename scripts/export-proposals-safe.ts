@@ -339,7 +339,8 @@ async function main() {
       )
       SELECT 
         Id, GroupId, GroupName, ProposalId, ProposalNumber,
-        VersionNumber, EffectiveFrom, EffectiveTo,
+        TRY_CAST(REPLACE(VersionNumber, 'V', '') AS INT),
+        CAST(EffectiveFrom AS DATE), CAST(EffectiveTo AS DATE),
         TotalSplitPercent, Status,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_premium_split_versions]
@@ -388,7 +389,9 @@ async function main() {
         CreationTime, IsDeleted
       )
       SELECT 
-        hv.Id, hv.HierarchyId, hv.VersionNumber, hv.EffectiveFrom, hv.EffectiveTo, hv.Status,
+        hv.Id, hv.HierarchyId, 
+        TRY_CAST(hv.VersionNumber AS INT),
+        CAST(hv.EffectiveFrom AS DATE), CAST(hv.EffectiveTo AS DATE), hv.Status,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_hierarchy_versions] hv
       INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
