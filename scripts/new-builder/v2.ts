@@ -44,6 +44,40 @@ interface ValidationResult {
   overlappingRows: number;
 }
 
+interface OverlappingCert {
+  certificateId: string;
+  groupId: string;
+  product: string;
+  planCode: string;
+  certEffectiveDate: Date;
+  matchingProposalIds: string[];
+}
+
+function parseAuditLogForIssues(auditPath: string): { overlapping: string[], unmatched: string[] } {
+  const content = fs.readFileSync(auditPath, 'utf8');
+  const lines = content.split('\n');
+  
+  const overlapping: string[] = [];
+  const unmatched: string[] = [];
+  
+  for (const line of lines) {
+    // Match lines like: "Validating G0033... ❌ non-PHA=47, OVERLAPPING=12"
+    const overlapMatch = line.match(/Validating (G\d+)\.\.\. ❌.*OVERLAPPING=(\d+)/);
+    if (overlapMatch) {
+      overlapping.push(overlapMatch[1]);
+      continue;
+    }
+    
+    // Match lines like: "Validating G15793... ❌ non-PHA=39, unmatched=3"
+    const unmatchedMatch = line.match(/Validating (G\d+)\.\.\. ❌.*unmatched=(\d+)/);
+    if (unmatchedMatch) {
+      unmatched.push(unmatchedMatch[1]);
+    }
+  }
+  
+  return { overlapping, unmatched };
+}
+
 function loadEntropyOptions(configPath?: string): EntropyOptions {
   const appSettingsPath = configPath || path.join(process.cwd(), 'appsettings.json');
   if (!fs.existsSync(appSettingsPath)) {
@@ -331,6 +365,179 @@ async function loadMaxProposalProductId(config: DatabaseConfig, options: Builder
   }
 }
 
+async function fixOverlappingProposals(
+  config: DatabaseConfig,
+  options: BuilderOptions,
+  groups: string[],
+  dryRun: boolean
+): Promise<{ groupId: string; fixed: number }[]> {
+  const schema = options.schema || 'etl';
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 300000,
+    connectionTimeout: 30000
+  });
+  
+  const results: { groupId: string; fixed: number }[] = [];
+  
+  try {
+    for (const rawGroupId of groups) {
+      const trimmed = rawGroupId.trim();
+      const groupIdNumeric = trimmed.replace(/^[A-Za-z]+/, '');
+      const groupIdWithPrefix = `G${groupIdNumeric}`;
+      
+      process.stdout.write(`  Processing ${groupIdWithPrefix}... `);
+      
+      // Find overlapping certificates for this group
+      const overlappingQuery = await pool.request().query(`
+        WITH Raw AS (
+          SELECT
+            LTRIM(RTRIM(GroupId)) AS GroupId,
+            LTRIM(RTRIM(Product)) AS Product,
+            LTRIM(RTRIM(PlanCode)) AS PlanCode,
+            TRY_CONVERT(DATE, NULLIF(LTRIM(RTRIM(CertEffectiveDate)), '')) AS CertEffectiveDate,
+            LTRIM(RTRIM(CertificateId)) AS CertificateId
+          FROM [${schema}].[raw_certificate_info]
+          WHERE LTRIM(RTRIM(GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
+            AND LTRIM(RTRIM(CertStatus)) = 'A'
+            AND LTRIM(RTRIM(RecStatus)) = 'A'
+        ),
+        PhaCerts AS (
+          SELECT DISTINCT pha.PolicyId AS CertificateId
+          FROM [${schema}].[stg_policy_hierarchy_assignments] pha
+          INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+          WHERE h.GroupId = '${groupIdWithPrefix}'
+        ),
+        NonPha AS (
+          SELECT r.*
+          FROM Raw r
+          LEFT JOIN PhaCerts p ON p.CertificateId = r.CertificateId
+          WHERE p.CertificateId IS NULL
+        ),
+        Matches AS (
+          SELECT np.CertificateId, np.Product, np.PlanCode, np.CertEffectiveDate, p.Id AS ProposalId
+          FROM NonPha np
+          INNER JOIN [${schema}].[stg_proposals] p
+            ON p.GroupId = '${groupIdWithPrefix}'
+           AND np.CertEffectiveDate > p.EffectiveDateFrom
+           AND np.CertEffectiveDate <= p.EffectiveDateTo
+           AND (
+             p.ProductCodes IS NULL OR LTRIM(RTRIM(p.ProductCodes)) = '' OR LTRIM(RTRIM(p.ProductCodes)) = '*'
+             OR EXISTS (
+               SELECT 1 FROM STRING_SPLIT(p.ProductCodes, ',') s
+               WHERE LTRIM(RTRIM(s.value)) = np.Product
+             )
+           )
+           AND (
+             p.PlanCodes IS NULL OR LTRIM(RTRIM(p.PlanCodes)) = '' OR LTRIM(RTRIM(p.PlanCodes)) = '*'
+             OR EXISTS (
+               SELECT 1 FROM STRING_SPLIT(p.PlanCodes, ',') s
+               WHERE LTRIM(RTRIM(s.value)) = np.PlanCode
+             )
+           )
+        ),
+        Overlapping AS (
+          SELECT np.CertificateId, np.Product, np.PlanCode, np.CertEffectiveDate,
+                 STRING_AGG(m.ProposalId, ',') AS MatchingProposalIds,
+                 COUNT(DISTINCT m.ProposalId) AS ProposalCount
+          FROM NonPha np
+          INNER JOIN Matches m ON m.CertificateId = np.CertificateId
+           AND m.Product = np.Product
+           AND m.PlanCode = np.PlanCode
+           AND m.CertEffectiveDate = np.CertEffectiveDate
+          GROUP BY np.CertificateId, np.Product, np.PlanCode, np.CertEffectiveDate
+          HAVING COUNT(DISTINCT m.ProposalId) > 1
+        )
+        SELECT DISTINCT CertificateId, '${groupIdWithPrefix}' AS GroupId, Product, PlanCode, CertEffectiveDate, MatchingProposalIds
+        FROM Overlapping
+      `);
+      
+      const overlappingCerts = overlappingQuery.recordset;
+      
+      if (overlappingCerts.length === 0) {
+        console.log(`✓ no overlaps found`);
+        results.push({ groupId: groupIdWithPrefix, fixed: 0 });
+        continue;
+      }
+      
+      console.log(`found ${overlappingCerts.length} overlapping certs`);
+      
+      if (dryRun) {
+        console.log(`    [DRY RUN] Would route ${overlappingCerts.length} certs to PHA`);
+        results.push({ groupId: groupIdWithPrefix, fixed: overlappingCerts.length });
+        continue;
+      }
+      
+      // Route overlapping certificates to PHA
+      // First, check if a PHA hierarchy already exists for this group
+      const existingHierarchy = await pool.request().query(`
+        SELECT TOP 1 Id, Name FROM [${schema}].[stg_hierarchies]
+        WHERE GroupId = '${groupIdWithPrefix}' AND Name LIKE '%PHA%'
+      `);
+      
+      let hierarchyId: string;
+      let hierarchyVersionId: string;
+      
+      if (existingHierarchy.recordset.length > 0) {
+        hierarchyId = existingHierarchy.recordset[0].Id;
+        // Get existing version
+        const existingVersion = await pool.request().query(`
+          SELECT TOP 1 Id FROM [${schema}].[stg_hierarchy_versions]
+          WHERE HierarchyId = '${hierarchyId}'
+        `);
+        hierarchyVersionId = existingVersion.recordset[0]?.Id || `${hierarchyId}-V1`;
+      } else {
+        // Create new PHA hierarchy
+        hierarchyId = `${groupIdWithPrefix}-PHA-OVERLAP`;
+        hierarchyVersionId = `${hierarchyId}-V1`;
+        
+        await pool.request().query(`
+          INSERT INTO [${schema}].[stg_hierarchies] (Id, Name, GroupId, Status, CurrentVersionId, CreationTime, IsDeleted)
+          VALUES ('${hierarchyId}', '${groupIdWithPrefix} Overlapping Proposals PHA', '${groupIdWithPrefix}', 1, '${hierarchyVersionId}', GETUTCDATE(), 0)
+        `);
+        
+        await pool.request().query(`
+          INSERT INTO [${schema}].[stg_hierarchy_versions] (Id, HierarchyId, Version, Status, EffectiveFrom, EffectiveTo, CreationTime, IsDeleted)
+          VALUES ('${hierarchyVersionId}', '${hierarchyId}', 1, 1, '1900-01-01', '2099-12-31', GETUTCDATE(), 0)
+        `);
+      }
+      
+      // Insert PHA records for each overlapping certificate
+      let insertedCount = 0;
+      for (const cert of overlappingCerts) {
+        const phaId = `PHA-OVERLAP-${cert.CertificateId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Check if PHA already exists for this cert
+        const existingPha = await pool.request().query(`
+          SELECT 1 FROM [${schema}].[stg_policy_hierarchy_assignments]
+          WHERE PolicyId = '${cert.CertificateId}' AND HierarchyId = '${hierarchyId}'
+        `);
+        
+        if (existingPha.recordset.length === 0) {
+          await pool.request().query(`
+            INSERT INTO [${schema}].[stg_policy_hierarchy_assignments] (
+              Id, PolicyId, HierarchyId, SplitSequence, SplitPercent,
+              IsNonConforming, NonConformantReason, CreationTime, IsDeleted
+            )
+            VALUES (
+              '${phaId}', '${cert.CertificateId}', '${hierarchyId}', 1, 100,
+              1, 'Overlapping proposals: ${cert.MatchingProposalIds}', GETUTCDATE(), 0
+            )
+          `);
+          insertedCount++;
+        }
+      }
+      
+      console.log(`    ✓ Routed ${insertedCount} certs to PHA`);
+      results.push({ groupId: groupIdWithPrefix, fixed: insertedCount });
+    }
+    
+    return results;
+  } finally {
+    await pool.close();
+  }
+}
+
 async function processCertificates(
   builder: ProposalBuilder,
   config: DatabaseConfig,
@@ -468,8 +675,8 @@ if (require.main === module) {
     ? (args[args.indexOf('--mode') + 1] as ExecutionMode)
     : 'transform';
 
-  if (!['transform', 'export', 'full', 'validate'].includes(modeArg)) {
-    console.error(`ERROR: Invalid mode '${modeArg}'. Must be one of: transform, export, full, validate`);
+  if (!['transform', 'export', 'full', 'validate', 'fix-overlaps'].includes(modeArg)) {
+    console.error(`ERROR: Invalid mode '${modeArg}'. Must be one of: transform, export, full, validate, fix-overlaps`);
     process.exit(1);
   }
 
@@ -477,6 +684,11 @@ if (require.main === module) {
   let validateGroupsArg: string[] = [];
   let validateAllFlag = args.includes('--full-validation');
   let validateAllGroups = args.includes('--all');
+  
+  // Parse --from-audit for fix-overlaps mode
+  const fromAuditPath = args.includes('--from-audit')
+    ? args[args.indexOf('--from-audit') + 1]
+    : undefined;
   let idx = 0;
   while (idx < args.length) {
     if (args[idx] === '--groups') {
@@ -579,6 +791,44 @@ if (require.main === module) {
       }
       if (failed.length > 0) {
         throw new Error(`Validation failed for ${failed.length} group(s)`);
+      }
+    }
+
+    if (mode === 'fix-overlaps') {
+      // Fix overlapping proposals by routing affected certs to PHA
+      let groupsToFix: string[] = [];
+      
+      if (fromAuditPath) {
+        // Parse audit log to find groups with issues
+        console.log(`Parsing audit log: ${fromAuditPath}`);
+        const issues = parseAuditLogForIssues(fromAuditPath);
+        groupsToFix = issues.overlapping;
+        console.log(`Found ${issues.overlapping.length} groups with overlapping proposals`);
+        if (issues.unmatched.length > 0) {
+          console.log(`Note: ${issues.unmatched.length} groups with unmatched certs (not fixed by this mode)`);
+        }
+      } else if (options.groups && options.groups.length > 0) {
+        groupsToFix = options.groups;
+      } else {
+        console.error('ERROR: --mode fix-overlaps requires --from-audit <path> or --groups');
+        process.exit(1);
+      }
+      
+      if (groupsToFix.length === 0) {
+        console.log('No groups to fix.');
+      } else {
+        console.log(`\nFixing overlapping proposals for ${groupsToFix.length} group(s):`);
+        if (groupsToFix.length <= 20) {
+          console.log(`  ${groupsToFix.join(', ')}`);
+        } else {
+          console.log(`  ${groupsToFix.slice(0, 20).join(', ')}... and ${groupsToFix.length - 20} more`);
+        }
+        console.log('');
+        
+        const fixResults = await fixOverlappingProposals(config, options, groupsToFix, options.dryRun);
+        
+        const totalFixed = fixResults.reduce((sum, r) => sum + r.fixed, 0);
+        console.log(`\n${options.dryRun ? '[DRY RUN] Would fix' : 'Fixed'} ${totalFixed} overlapping certificates across ${fixResults.filter(r => r.fixed > 0).length} groups`);
       }
     }
 
