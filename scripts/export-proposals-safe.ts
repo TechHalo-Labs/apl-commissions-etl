@@ -420,14 +420,14 @@ async function main() {
     // Policies
     insertCount = await pool.request().query(`
       INSERT INTO [${options.targetSchema}].[Policies] (
-        Id, PolicyNumber, GroupId, GroupName, ProductCode, PlanCode,
+        Id, PolicyNumber, GroupId, ProductCode, PlanCode,
         EffectiveDate, TerminationDate, Status, BrokerId, ProposalId,
         SitusState, ProposalAssignmentSource,
         CreationTime, IsDeleted
       )
       SELECT 
-        Id, PolicyNumber, GroupId, GroupName, ProductCode, PlanCode,
-        EffectiveDate, TerminationDate, Status, BrokerId, ProposalId,
+        Id, PolicyNumber, GroupId, ProductCode, PlanCode,
+        CAST(EffectiveDate AS DATE), CAST(ExpirationDate AS DATE), Status, BrokerId, ProposalId,
         [State], ProposalAssignmentSource,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_policies]
