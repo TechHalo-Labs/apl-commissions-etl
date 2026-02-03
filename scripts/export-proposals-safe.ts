@@ -270,7 +270,7 @@ async function main() {
       result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchy_versions] hv INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId WHERE h.GroupId IN (${groupList})`);
       console.log(`  Would insert ${result.recordset[0].cnt} into HierarchyVersions`);
       
-      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchy_participants] hp INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hp.HierarchyId WHERE h.GroupId IN (${groupList})`);
+      result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_hierarchy_participants] hp INNER JOIN [${options.sourceSchema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId WHERE h.GroupId IN (${groupList})`);
       console.log(`  Would insert ${result.recordset[0].cnt} into HierarchyParticipants`);
       
       result = await pool.request().query(`SELECT COUNT(*) AS cnt FROM [${options.sourceSchema}].[stg_policies] WHERE GroupId IN (${groupList})`);
@@ -402,11 +402,12 @@ async function main() {
         CreationTime, IsDeleted
       )
       SELECT 
-        hp.Id, hp.HierarchyId, hp.HierarchyVersionId, hp.EntityId, hp.EntityName,
+        hp.Id, hv.HierarchyId, hp.HierarchyVersionId, hp.EntityId, hp.EntityName,
         hp.Level, hp.SplitPercent, hp.ScheduleId, hp.ScheduleCode,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_hierarchy_participants] hp
-      INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hp.HierarchyId
+      INNER JOIN [${options.sourceSchema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+      INNER JOIN [${options.sourceSchema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
       WHERE h.GroupId IN (${groupList})
     `);
     console.log(`  Inserted ${insertCount.rowsAffected[0]} HierarchyParticipants`);
