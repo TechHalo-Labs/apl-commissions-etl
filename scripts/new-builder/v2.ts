@@ -41,6 +41,7 @@ interface ValidationResult {
   groupId: string;
   nonPhaRows: number;
   unmatchedRows: number;
+  overlappingRows: number;
 }
 
 function loadEntropyOptions(configPath?: string): EntropyOptions {
@@ -208,23 +209,38 @@ async function validateGroups(config: DatabaseConfig, groups: string[]): Promise
              AND m.Product = np.Product
              AND m.PlanCode = np.PlanCode
              AND m.CertEffectiveDate = np.CertEffectiveDate
-           WHERE m.ProposalId IS NULL) AS UnmatchedRows;
+           WHERE m.ProposalId IS NULL) AS UnmatchedRows,
+          (SELECT COUNT(*) FROM (
+            SELECT np.CertificateId, np.Product, np.PlanCode, np.CertEffectiveDate
+            FROM NonPha np
+            INNER JOIN Matches m ON m.CertificateId = np.CertificateId
+             AND m.Product = np.Product
+             AND m.PlanCode = np.PlanCode
+             AND m.CertEffectiveDate = np.CertEffectiveDate
+            GROUP BY np.CertificateId, np.Product, np.PlanCode, np.CertEffectiveDate
+            HAVING COUNT(DISTINCT m.ProposalId) > 1
+          ) overlaps) AS OverlappingRows;
       `);
 
       const nonPhaRows = counts.recordset[0]?.NonPhaRows || 0;
       const unmatchedRows = counts.recordset[0]?.UnmatchedRows || 0;
+      const overlappingRows = counts.recordset[0]?.OverlappingRows || 0;
       
       results.push({
         groupId: groupIdWithPrefix,
         nonPhaRows,
-        unmatchedRows
+        unmatchedRows,
+        overlappingRows
       });
 
       // Log result immediately for this group
-      if (unmatchedRows > 0) {
-        console.log(`❌ non-PHA=${nonPhaRows}, unmatched=${unmatchedRows}`);
+      if (unmatchedRows > 0 || overlappingRows > 0) {
+        const issues = [];
+        if (unmatchedRows > 0) issues.push(`unmatched=${unmatchedRows}`);
+        if (overlappingRows > 0) issues.push(`OVERLAPPING=${overlappingRows}`);
+        console.log(`❌ non-PHA=${nonPhaRows}, ${issues.join(', ')}`);
       } else if (nonPhaRows > 0) {
-        console.log(`✓ non-PHA=${nonPhaRows}, all matched`);
+        console.log(`✓ non-PHA=${nonPhaRows}, all matched (no overlaps)`);
       } else {
         console.log(`✓ all routed to PHA`);
       }
@@ -418,11 +434,18 @@ async function runProposalBuilderV2(
     if (groupsToValidate.length > 0) {
       console.log(`\nValidation: checking ${groupsToValidate.length} group(s)`);
       const results = await validateGroups(config, groupsToValidate);
-      const failed = results.filter(r => r.unmatchedRows > 0);
+      const unmatched = results.filter(r => r.unmatchedRows > 0);
+      const overlapping = results.filter(r => r.overlappingRows > 0);
+      const failed = results.filter(r => r.unmatchedRows > 0 || r.overlappingRows > 0);
       const passed = results.length - failed.length;
       console.log(`\nValidation summary: ${passed}/${results.length} passed`);
+      if (unmatched.length > 0) {
+        console.log(`Groups with unmatched certs: ${unmatched.map(r => r.groupId).join(', ')}`);
+      }
+      if (overlapping.length > 0) {
+        console.log(`⚠️  Groups with OVERLAPPING proposals: ${overlapping.map(r => `${r.groupId}(${r.overlappingRows})`).join(', ')}`);
+      }
       if (failed.length > 0) {
-        console.log(`Failed groups: ${failed.map(r => r.groupId).join(', ')}`);
         throw new Error(`Validation failed for ${failed.length} group(s)`);
       }
     }
@@ -540,11 +563,18 @@ if (require.main === module) {
       
       console.log(`Validating ${groupsToValidate.length} group(s)`);
       const results = await validateGroups(config, groupsToValidate);
-      const failed = results.filter(r => r.unmatchedRows > 0);
+      const unmatched = results.filter(r => r.unmatchedRows > 0);
+      const overlapping = results.filter(r => r.overlappingRows > 0);
+      const failed = results.filter(r => r.unmatchedRows > 0 || r.overlappingRows > 0);
       const passed = results.length - failed.length;
       console.log(`\nValidation summary: ${passed}/${results.length} passed`);
+      if (unmatched.length > 0) {
+        console.log(`Groups with unmatched certs: ${unmatched.map(r => r.groupId).join(', ')}`);
+      }
+      if (overlapping.length > 0) {
+        console.log(`⚠️  Groups with OVERLAPPING proposals: ${overlapping.map(r => `${r.groupId}(${r.overlappingRows})`).join(', ')}`);
+      }
       if (failed.length > 0) {
-        console.log(`Failed groups: ${failed.map(r => r.groupId).join(', ')}`);
         throw new Error(`Validation failed for ${failed.length} group(s)`);
       }
     }
