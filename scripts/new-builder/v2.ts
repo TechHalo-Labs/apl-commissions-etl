@@ -790,10 +790,25 @@ if (require.main === module) {
   // Parse --deep for deep chain validation
   const deepValidation = args.includes('--deep');
   
-  // Parse --offset for resuming validation
+  // Parse --offset for resuming validation or parallel execution
   const offsetArg = args.includes('--offset')
     ? Number.parseInt(args[args.indexOf('--offset') + 1], 10)
     : 0;
+  
+  // Parse --limit-groups for parallel execution (limits number of groups processed)
+  const limitGroupsArg = args.includes('--limit-groups')
+    ? Number.parseInt(args[args.indexOf('--limit-groups') + 1], 10)
+    : undefined;
+  
+  // Parse --runner-id for parallel execution logging
+  const runnerIdArg = args.includes('--runner-id')
+    ? args[args.indexOf('--runner-id') + 1]
+    : undefined;
+  
+  // Parse --experiment for parallel execution logging
+  const experimentArg = args.includes('--experiment')
+    ? args[args.indexOf('--experiment') + 1]
+    : undefined;
   let idx = 0;
   while (idx < args.length) {
     if (args[idx] === '--groups') {
@@ -970,7 +985,53 @@ if (require.main === module) {
     }
 
     if (mode === 'transform' || mode === 'full') {
+      // If --all flag is set with parallel params, load and slice groups
+      if (validateAllGroups && (offsetArg > 0 || limitGroupsArg)) {
+        console.log('Loading all groups from database for parallel execution...');
+        const allGroups = await loadDistinctGroups(config, options);
+        console.log(`Total groups: ${allGroups.length}`);
+        
+        // Apply offset and limit
+        let slicedGroups = allGroups;
+        if (offsetArg > 0) {
+          console.log(`Skipping first ${offsetArg} groups (--offset)`);
+          slicedGroups = slicedGroups.slice(offsetArg);
+        }
+        if (limitGroupsArg) {
+          console.log(`Limiting to ${limitGroupsArg} groups (--limit-groups)`);
+          slicedGroups = slicedGroups.slice(0, limitGroupsArg);
+        }
+        
+        if (slicedGroups.length === 0) {
+          console.log('No groups to process after offset/limit applied.');
+        } else {
+          console.log(`Processing ${slicedGroups.length} groups (${offsetArg} to ${offsetArg + slicedGroups.length - 1})`);
+          options.groups = slicedGroups;
+        }
+      }
+      
       await runProposalBuilderV2(config, options, validateGroupsArg, validateAllFlag, configPath);
+      
+      // If runner-id specified, write summary to log file
+      if (runnerIdArg && experimentArg) {
+        const fs = await import('fs');
+        const path = await import('path');
+        const logDir = path.join(process.cwd(), 'logs', experimentArg);
+        if (!fs.existsSync(logDir)) {
+          fs.mkdirSync(logDir, { recursive: true });
+        }
+        const logPath = path.join(logDir, `runner-${runnerIdArg}.json`);
+        const summary = {
+          runnerId: runnerIdArg,
+          experiment: experimentArg,
+          offset: offsetArg,
+          limit: limitGroupsArg,
+          groupsProcessed: options.groups?.length || 0,
+          completedAt: new Date().toISOString()
+        };
+        fs.writeFileSync(logPath, JSON.stringify(summary, null, 2));
+        console.log(`Summary written to: ${logPath}`);
+      }
     }
 
     if (mode === 'export' || mode === 'full') {
