@@ -1634,67 +1634,83 @@ export class ProposalBuilder {
       // ========================================================================
       // PASS 3: Create continuation proposals for non-overlapping products
       // ========================================================================
-      // If proposal A has products [1,2,3] and proposal B has [3,4,5]:
-      // - Products 1,2 from A need to continue past B's start (CONTINUATION)
-      // This is the original logic for creating continuations
+      // If proposal A's end was truncated because of overlap with later proposal B:
+      // - Product+plan pairs in A that DON'T overlap with B need to continue
+      // - The continuation starts the day after A ends
       
-      for (let i = 0; i < proposals.length - 1; i++) {
+      for (let i = 0; i < proposals.length; i++) {
         const current = proposals[i];
-        const next = proposals[i + 1];
-
         const currentPairs = getProductPlanSet(current.Id);
-        const nextPairs = getProductPlanSet(next.Id);
 
-        // Find product+plan pairs only in current (not in next)
-        const onlyInCurrentPairs = [...currentPairs].filter(p => !nextPairs.has(p));
-
-        // If current's end was truncated (not 2099) and has unique products, create continuation
-        if (current.EffectiveDateTo.getTime() < new Date('2099-01-01').getTime() && onlyInCurrentPairs.length > 0) {
-          const continuationPairs = onlyInCurrentPairs.map(parsePairKey);
-          const continuationProducts = Array.from(new Set(continuationPairs.map(pair => pair.productCode)));
-          const continuationPlans = Array.from(new Set(continuationPairs.map(pair => pair.planCode)));
-          const continuationLabel = continuationPairs.slice(0, 5).map(pair => `${pair.productCode}/${pair.planCode}`).join(', ');
-
-          this.proposalCounter++;
-          const contId = `${current.Id}-CONT`;
-          
-          console.log(`  Pass 3: Creating continuation ${contId} for: ${continuationLabel}${onlyInCurrentPairs.length > 5 ? '...' : ''}`);
-
-          // Create continuation proposal starting from next's start
-          const contStart = new Date(next.EffectiveDateFrom);
-          contStart.setDate(contStart.getDate() + 1);  // Day after current ends
-          
-          continuationProposals.push({
-            Id: contId,
-            ProposalNumber: contId,
-            Status: current.Status,
-            SubmittedDate: contStart,
-            ProposedEffectiveDate: contStart,
-            SitusState: current.SitusState,
-            GroupId: current.GroupId,
-            GroupName: current.GroupName,
-            BrokerId: current.BrokerId,
-            BrokerName: current.BrokerName,
-            BrokerUniquePartyId: current.BrokerUniquePartyId,
-            ProductCodes: continuationProducts.join(','),
-            PlanCodes: continuationPlans.join(','),
-            SplitConfigHash: current.SplitConfigHash,
-            DateRangeFrom: contStart.getFullYear(),
-            DateRangeTo: 2099,
-            EffectiveDateFrom: contStart,
-            EffectiveDateTo: new Date('2099-01-01'),
-            Notes: `Continuation of ${current.Id} for product+plan pairs not in ${next.Id}`
-          });
-
-          // Create continuation entities
-          this.createContinuationEntities(
-            current, 
-            contId, 
-            continuationPairs, 
-            contStart, 
-            output
-          );
+        // Only process if current was truncated (doesn't extend to 2099)
+        if (current.EffectiveDateTo.getTime() >= new Date('2099-01-01').getTime()) {
+          continue;
         }
+
+        // Find the proposal that caused the truncation (first later one with overlap)
+        let truncatingProposal: StagingProposal | null = null;
+        for (let j = i + 1; j < proposals.length; j++) {
+          const later = proposals[j];
+          const laterPairs = getProductPlanSet(later.Id);
+          if (hasOverlap(currentPairs, laterPairs)) {
+            truncatingProposal = later;
+            break;
+          }
+        }
+
+        if (!truncatingProposal) continue;
+
+        const truncatingPairs = getProductPlanSet(truncatingProposal.Id);
+
+        // Find product+plan pairs that are ONLY in current (not in truncating)
+        const onlyInCurrentPairs = [...currentPairs].filter(p => !truncatingPairs.has(p));
+
+        if (onlyInCurrentPairs.length === 0) continue;
+
+        const continuationPairs = onlyInCurrentPairs.map(parsePairKey);
+        const continuationProducts = Array.from(new Set(continuationPairs.map(pair => pair.productCode)));
+        const continuationPlans = Array.from(new Set(continuationPairs.map(pair => pair.planCode)));
+        const continuationLabel = continuationPairs.slice(0, 5).map(pair => `${pair.productCode}/${pair.planCode}`).join(', ');
+
+        this.proposalCounter++;
+        const contId = `${current.Id}-CONT`;
+        
+        // Continuation starts the day after current ends
+        const contStart = new Date(current.EffectiveDateTo);
+        contStart.setDate(contStart.getDate() + 1);
+        
+        console.log(`  Continuation: ${contId} from ${contStart.toISOString().split('T')[0]} for: ${continuationLabel}${onlyInCurrentPairs.length > 5 ? '...' : ''}`);
+
+        continuationProposals.push({
+          Id: contId,
+          ProposalNumber: contId,
+          Status: current.Status,
+          SubmittedDate: contStart,
+          ProposedEffectiveDate: contStart,
+          SitusState: current.SitusState,
+          GroupId: current.GroupId,
+          GroupName: current.GroupName,
+          BrokerId: current.BrokerId,
+          BrokerName: current.BrokerName,
+          BrokerUniquePartyId: current.BrokerUniquePartyId,
+          ProductCodes: continuationProducts.join(','),
+          PlanCodes: continuationPlans.join(','),
+          SplitConfigHash: current.SplitConfigHash,
+          DateRangeFrom: contStart.getFullYear(),
+          DateRangeTo: 2099,
+          EffectiveDateFrom: contStart,
+          EffectiveDateTo: new Date('2099-01-01'),
+          Notes: `Continuation of ${current.Id} for product+plan pairs not in ${truncatingProposal.Id}`
+        });
+
+        // Create continuation entities
+        this.createContinuationEntities(
+          current, 
+          contId, 
+          continuationPairs, 
+          contStart, 
+          output
+        );
       }
       
       console.log(`  ✓ Fixed date ranges for group ${groupId}: ${proposals.length} proposals processed`);
