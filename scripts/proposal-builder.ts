@@ -1463,27 +1463,15 @@ export class ProposalBuilder {
     this.fixOverlappingDateRanges(output);
 
     // Deduplicate key mappings by primary key (GroupId, EffectiveYear, ProductCode, PlanCode)
-    // For duplicates, prefer the proposal with the EARLIEST effective date
-    // This ensures certs from the beginning of the year find a matching proposal
-    // The validation query will use the date range check to find the exact proposal
-    const proposalStartDates = new Map<string, Date>();
-    for (const p of output.proposals) {
-      proposalStartDates.set(p.Id, p.EffectiveDateFrom);
-    }
-    
+    // IMPORTANT: This must happen AFTER fixOverlappingDateRanges since continuations add mappings
+    // For duplicates, prefer the CONTINUATION proposal (it has the correct future coverage)
     const keyMappingMap = new Map<string, StagingProposalKeyMapping>();
     for (const mapping of output.proposalKeyMappings) {
       const key = `${mapping.GroupId}|${mapping.EffectiveYear}|${mapping.ProductCode}|${mapping.PlanCode}`;
+      // For duplicates, prefer continuation proposals (they have "-CONT" suffix)
       const existing = keyMappingMap.get(key);
-      if (!existing) {
+      if (!existing || mapping.ProposalId.includes('-CONT')) {
         keyMappingMap.set(key, mapping);
-      } else {
-        // Prefer proposal with earlier start date
-        const existingStart = proposalStartDates.get(existing.ProposalId) || new Date('2099-01-01');
-        const newStart = proposalStartDates.get(mapping.ProposalId) || new Date('2099-01-01');
-        if (newStart < existingStart) {
-          keyMappingMap.set(key, mapping);
-        }
       }
     }
     output.proposalKeyMappings = Array.from(keyMappingMap.values());
@@ -1518,7 +1506,6 @@ export class ProposalBuilder {
       return { productCode, planCode };
     };
 
-    // Build product+plan sets for each proposal (from internal proposals)
     const proposalPairsById = new Map<string, Set<string>>();
     for (const proposal of this.proposals) {
       proposalPairsById.set(proposal.id, new Set(proposal.productPlanPairs));
@@ -1538,191 +1525,91 @@ export class ProposalBuilder {
     const continuationProposals: StagingProposal[] = [];
 
     for (const [groupId, proposals] of proposalsByGroup) {
-      if (proposals.length <= 1) {
-        // Single proposal - extend to full date range
-        if (proposals.length === 1) {
-          const p = proposals[0];
-          p.EffectiveDateFrom = new Date('1901-01-01');
-          p.EffectiveDateTo = new Date('2099-01-01');
-          this.updateRelatedEntitiesDateRange(output, p.Id, p.EffectiveDateFrom, p.EffectiveDateTo);
-        }
-        continue;
-      }
+      if (proposals.length <= 1) continue;
 
-      // Sort by EffectiveDateFrom ascending (original cert-based dates)
+      // Sort by EffectiveDateFrom ascending
       proposals.sort((a, b) => a.EffectiveDateFrom.getTime() - b.EffectiveDateFrom.getTime());
-      
-      // Store original start dates (these are based on cert effective dates)
-      const originalStartDates = new Map<string, Date>();
-      for (const p of proposals) {
-        originalStartDates.set(p.Id, new Date(p.EffectiveDateFrom));
-      }
 
-      // ========================================================================
-      // PASS 2: Extend where safe (no product+plan overlap)
-      // ========================================================================
-      // For each proposal, try to extend start backward and end forward
-      // Only extend if no other proposal shares any product+plan in that direction
-
-      // Get product+plan sets for each proposal
-      const getProductPlanSet = (proposalId: string): Set<string> => {
-        // Try internal proposals first
-        let pairs = proposalPairsById.get(proposalId);
-        if (!pairs) {
-          // Fall back to parsing from StagingProposal
-          const stagingProposal = proposals.find(p => p.Id === proposalId);
-          if (stagingProposal) {
-            pairs = new Set<string>();
-            const products = stagingProposal.ProductCodes.split(',');
-            const plans = stagingProposal.PlanCodes.split(',');
-            for (const product of products) {
-              for (const plan of plans) {
-                pairs.add(`${product.trim()}||${plan.trim()}`);
-              }
-            }
-          } else {
-            pairs = new Set<string>();
-          }
-        }
-        return pairs;
-      };
-
-      // Check if two proposals share any product+plan
-      const hasOverlap = (pairs1: Set<string>, pairs2: Set<string>): boolean => {
-        for (const pair of pairs1) {
-          if (pairs2.has(pair)) return true;
-        }
-        return false;
-      };
-
-      for (let i = 0; i < proposals.length; i++) {
+      for (let i = 0; i < proposals.length - 1; i++) {
         const current = proposals[i];
-        const currentPairs = getProductPlanSet(current.Id);
-        const currentOriginalStart = originalStartDates.get(current.Id)!;
+        const next = proposals[i + 1];
 
-        // Extend START backward
-        // Find the LAST earlier proposal that overlaps on products
-        // If found, start at day after that proposal's original start (they share time boundary)
-        // If not found, extend to 1901-01-01
-        let newStart: Date = new Date('1901-01-01');
-        for (let j = i - 1; j >= 0; j--) {
-          const earlier = proposals[j];
-          const earlierPairs = getProductPlanSet(earlier.Id);
-          if (hasOverlap(currentPairs, earlierPairs)) {
-            // Found overlapping earlier proposal - can't extend past this one's start
-            // Keep our original start date (they share a time boundary)
-            newStart = currentOriginalStart;
-            break;
-          }
-        }
-        current.EffectiveDateFrom = newStart;
+        const currentPairs = proposalPairsById.get(current.Id) || new Set<string>();
+        const nextPairs = proposalPairsById.get(next.Id) || new Set<string>();
 
-        // Extend END forward
-        // Find the FIRST later proposal that overlaps on products
-        // If found, end at day before that proposal's original start
-        // If not found, extend to 2099-01-01
-        let newEnd: Date = new Date('2099-01-01');
-        for (let j = i + 1; j < proposals.length; j++) {
-          const later = proposals[j];
-          const laterPairs = getProductPlanSet(later.Id);
-          if (hasOverlap(currentPairs, laterPairs)) {
-            // Found overlapping later proposal - end before its original start
-            const laterOriginalStart = originalStartDates.get(later.Id)!;
-            newEnd = new Date(laterOriginalStart);
-            newEnd.setDate(newEnd.getDate() - 1);
-            break;
-          }
-        }
-        current.EffectiveDateTo = newEnd;
+        // Find overlapping vs non-overlapping product+plan pairs
+        const overlappingPairs = [...currentPairs].filter(p => nextPairs.has(p));
+        const onlyInCurrentPairs = [...currentPairs].filter(p => !nextPairs.has(p));
 
-        // Update related entities (PSV, PSP)
-        this.updateRelatedEntitiesDateRange(output, current.Id, current.EffectiveDateFrom, current.EffectiveDateTo);
-        
-        const startStr = current.EffectiveDateFrom.toISOString().split('T')[0];
-        const endStr = current.EffectiveDateTo.toISOString().split('T')[0];
-        console.log(`  ${current.Id} → ${startStr} to ${endStr} (products: ${current.ProductCodes})`);
-      }
-
-      // ========================================================================
-      // PASS 3: Create continuation proposals for non-overlapping products
-      // ========================================================================
-      // If proposal A's end was truncated because of overlap with later proposal B:
-      // - Product+plan pairs in A that DON'T overlap with B need to continue
-      // - The continuation starts the day after A ends
-      
-      for (let i = 0; i < proposals.length; i++) {
-        const current = proposals[i];
-        const currentPairs = getProductPlanSet(current.Id);
-
-        // Only process if current was truncated (doesn't extend to 2099)
-        if (current.EffectiveDateTo.getTime() >= new Date('2099-01-01').getTime()) {
+        if (overlappingPairs.length === 0) {
+          // No overlap by product+plan pairs; keep current open-ended and skip continuation
           continue;
         }
 
-        // Find the proposal that caused the truncation (first later one with overlap)
-        let truncatingProposal: StagingProposal | null = null;
-        for (let j = i + 1; j < proposals.length; j++) {
-          const later = proposals[j];
-          const laterPairs = getProductPlanSet(later.Id);
-          if (hasOverlap(currentPairs, laterPairs)) {
-            truncatingProposal = later;
-            break;
+        const dayBefore = new Date(next.EffectiveDateFrom);
+        dayBefore.setDate(dayBefore.getDate() - 1);
+
+        // Truncate current proposal's date range (overlapping pairs superseded)
+        current.EffectiveDateTo = dayBefore;
+
+        // Update corresponding PremiumSplitVersions and Participants
+        const psv = output.premiumSplitVersions.find(v => v.ProposalId === current.Id);
+        if (psv) {
+          psv.EffectiveTo = dayBefore;
+          for (const psp of output.premiumSplitParticipants) {
+            if (psp.VersionId === psv.Id) {
+              psp.EffectiveTo = dayBefore;
+            }
           }
         }
-
-        if (!truncatingProposal) continue;
-
-        const truncatingPairs = getProductPlanSet(truncatingProposal.Id);
-
-        // Find product+plan pairs that are ONLY in current (not in truncating)
-        const onlyInCurrentPairs = [...currentPairs].filter(p => !truncatingPairs.has(p));
-
-        if (onlyInCurrentPairs.length === 0) continue;
-
-        const continuationPairs = onlyInCurrentPairs.map(parsePairKey);
-        const continuationProducts = Array.from(new Set(continuationPairs.map(pair => pair.productCode)));
-        const continuationPlans = Array.from(new Set(continuationPairs.map(pair => pair.planCode)));
-        const continuationLabel = continuationPairs.slice(0, 5).map(pair => `${pair.productCode}/${pair.planCode}`).join(', ');
-
-        this.proposalCounter++;
-        const contId = `${current.Id}-CONT`;
         
-        // Continuation starts the day after current ends
-        const contStart = new Date(current.EffectiveDateTo);
-        contStart.setDate(contStart.getDate() + 1);
-        
-        console.log(`  Continuation: ${contId} from ${contStart.toISOString().split('T')[0]} for: ${continuationLabel}${onlyInCurrentPairs.length > 5 ? '...' : ''}`);
+        console.log(`  ✓ Truncated ${current.Id} to ${dayBefore.toISOString().split('T')[0]} (${overlappingPairs.length} product+plan pairs superseded by ${next.Id})`);
 
-        continuationProposals.push({
-          Id: contId,
-          ProposalNumber: contId,
-          Status: current.Status,
-          SubmittedDate: contStart,
-          ProposedEffectiveDate: contStart,
-          SitusState: current.SitusState,
-          GroupId: current.GroupId,
-          GroupName: current.GroupName,
-          BrokerId: current.BrokerId,
-          BrokerName: current.BrokerName,
-          BrokerUniquePartyId: current.BrokerUniquePartyId,
-          ProductCodes: continuationProducts.join(','),
-          PlanCodes: continuationPlans.join(','),
-          SplitConfigHash: current.SplitConfigHash,
-          DateRangeFrom: contStart.getFullYear(),
-          DateRangeTo: 2099,
-          EffectiveDateFrom: contStart,
-          EffectiveDateTo: new Date('2099-01-01'),
-          Notes: `Continuation of ${current.Id} for product+plan pairs not in ${truncatingProposal.Id}`
-        });
+        if (onlyInCurrentPairs.length > 0) {
+          const continuationPairs = onlyInCurrentPairs.map(parsePairKey);
+          const continuationProducts = Array.from(new Set(continuationPairs.map(pair => pair.productCode)));
+          const continuationPlans = Array.from(new Set(continuationPairs.map(pair => pair.planCode)));
+          const continuationLabel = continuationPairs.map(pair => `${pair.productCode}/${pair.planCode}`).join(', ');
 
-        // Create continuation entities
-        this.createContinuationEntities(
-          current, 
-          contId, 
-          continuationPairs, 
-          contStart, 
-          output
-        );
+          // These product+plan pairs need a CONTINUATION proposal
+          // They continue with current's hierarchy/schedules past the cutoff
+          this.proposalCounter++;
+          const contId = `${current.Id}-CONT`;
+          
+          console.log(`  ✓ Creating continuation proposal ${contId} for pairs: ${continuationLabel}`);
+
+          // Create continuation proposal
+          continuationProposals.push({
+            Id: contId,
+            ProposalNumber: contId,
+            Status: current.Status,
+            SubmittedDate: next.EffectiveDateFrom,
+            ProposedEffectiveDate: next.EffectiveDateFrom,
+            SitusState: current.SitusState,
+            GroupId: current.GroupId,
+            GroupName: current.GroupName,
+            BrokerId: current.BrokerId,
+            BrokerName: current.BrokerName,
+            BrokerUniquePartyId: current.BrokerUniquePartyId,
+            ProductCodes: continuationProducts.join(','),
+            PlanCodes: continuationPlans.join(','),
+            SplitConfigHash: current.SplitConfigHash, // Same hierarchy config
+            DateRangeFrom: next.EffectiveDateFrom.getFullYear(),
+            DateRangeTo: 2099,
+            EffectiveDateFrom: next.EffectiveDateFrom,
+            EffectiveDateTo: new Date('2099-01-01'),
+            Notes: `Continuation of ${current.Id} for product+plan pairs not in ${next.Id}`
+          });
+
+          // Create continuation hierarchy, PSV, PSP, key mappings
+          this.createContinuationEntities(
+            current, 
+            contId, 
+            continuationPairs, 
+            next.EffectiveDateFrom, 
+            output
+          );
+        }
       }
       
       console.log(`  ✓ Fixed date ranges for group ${groupId}: ${proposals.length} proposals processed`);
@@ -1730,23 +1617,6 @@ export class ProposalBuilder {
 
     // Add continuation proposals to output
     output.proposals.push(...continuationProposals);
-  }
-
-  /**
-   * Update PSV and PSP date ranges for a proposal
-   */
-  private updateRelatedEntitiesDateRange(output: StagingOutput, proposalId: string, from: Date, to: Date): void {
-    const psv = output.premiumSplitVersions.find(v => v.ProposalId === proposalId);
-    if (psv) {
-      psv.EffectiveFrom = from;
-      psv.EffectiveTo = to;
-      for (const psp of output.premiumSplitParticipants) {
-        if (psp.VersionId === psv.Id) {
-          psp.EffectiveFrom = from;
-          psp.EffectiveTo = to;
-        }
-      }
-    }
   }
 
   /**
