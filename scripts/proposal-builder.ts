@@ -1462,19 +1462,12 @@ export class ProposalBuilder {
     // This may create CONTINUATION proposals with their own key mappings
     this.fixOverlappingDateRanges(output);
 
-    // Deduplicate key mappings by primary key (GroupId, EffectiveYear, ProductCode, PlanCode)
-    // IMPORTANT: This must happen AFTER fixOverlappingDateRanges since continuations add mappings
-    // For duplicates, prefer the CONTINUATION proposal (it has the correct future coverage)
-    const keyMappingMap = new Map<string, StagingProposalKeyMapping>();
-    for (const mapping of output.proposalKeyMappings) {
-      const key = `${mapping.GroupId}|${mapping.EffectiveYear}|${mapping.ProductCode}|${mapping.PlanCode}`;
-      // For duplicates, prefer continuation proposals (they have "-CONT" suffix)
-      const existing = keyMappingMap.get(key);
-      if (!existing || mapping.ProposalId.includes('-CONT')) {
-        keyMappingMap.set(key, mapping);
-      }
-    }
-    output.proposalKeyMappings = Array.from(keyMappingMap.values());
+    // DO NOT deduplicate key mappings - multiple proposals can cover the same (GroupId, Year, Product, Plan)
+    // The validation query checks if the cert date falls within the proposal's date range,
+    // so having multiple mappings for the same year is correct when proposals cover different parts of that year.
+    // 
+    // Example: PROP-25565-1 covers Jan-Jun 2024, PROP-25565-1-CONT covers Jun-Dec 2024
+    // Both should have key mappings for Year 2024, and the date range check selects the right one.
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`  ✓ Generated all staging entities in ${elapsed}s`);
