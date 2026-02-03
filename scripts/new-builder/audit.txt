@@ -1,0 +1,551 @@
+Loading all groups from database...
+Found 1103 groups
+Validating 1103 group(s)
+  [1/1103] Validating G0000... ✓ all routed to PHA
+  [2/1103] Validating G00033... ✓ all routed to PHA
+  [3/1103] Validating G0014... ✓ all routed to PHA
+  [4/1103] Validating G00161... ✓ non-PHA=12, all matched (no overlaps)
+  [5/1103] Validating G0033... ❌ non-PHA=47, OVERLAPPING=12
+  [6/1103] Validating G0265... ✓ all routed to PHA
+  [7/1103] Validating G0370... ✓ all routed to PHA
+  [8/1103] Validating G0524... ✓ all routed to PHA
+  [9/1103] Validating G0565... ✓ all routed to PHA
+  [10/1103] Validating G0566... ✓ all routed to PHA
+  [11/1103] Validating G0596... ✓ all routed to PHA
+  [12/1103] Validating G0597... ✓ all routed to PHA
+  [13/1103] Validating G0678... ✓ all routed to PHA
+  [14/1103] Validating G0766... ✓ all routed to PHA
+  [15/1103] Validating G0770... ✓ all routed to PHA
+  [16/1103] Validating G0821... ✓ all routed to PHA
+  [17/1103] Validating G0915... ✓ all routed to PHA
+  [18/1103] Validating G0940... ✓ all routed to PHA
+  [19/1103] Validating G0959... ✓ all routed to PHA
+  [20/1103] Validating G10025... ✓ all routed to PHA
+  [21/1103] Validating G10057... ✓ all routed to PHA
+  [22/1103] Validating G10067... ✓ all routed to PHA
+  [23/1103] Validating G10103... ✓ non-PHA=432, all matched (no overlaps)
+  [24/1103] Validating G10183... ✓ non-PHA=8, all matched (no overlaps)
+  [25/1103] Validating G10222... ✓ all routed to PHA
+  [26/1103] Validating G10240... ✓ all routed to PHA
+  [27/1103] Validating G10318... ✓ all routed to PHA
+  [28/1103] Validating G10326... ✓ all routed to PHA
+  [29/1103] Validating G10355... ✓ all routed to PHA
+  [30/1103] Validating G10356... ✓ all routed to PHA
+  [31/1103] Validating G10364... ✓ all routed to PHA
+  [32/1103] Validating G1044... ✓ all routed to PHA
+  [33/1103] Validating G10451... ✓ all routed to PHA
+  [34/1103] Validating G10506... ✓ all routed to PHA
+  [35/1103] Validating G10558... ✓ all routed to PHA
+  [36/1103] Validating G10619... ✓ all routed to PHA
+  [37/1103] Validating G10662... ✓ all routed to PHA
+  [38/1103] Validating G10773... ✓ all routed to PHA
+  [39/1103] Validating G10795... ✓ all routed to PHA
+  [40/1103] Validating G10811... ✓ all routed to PHA
+  [41/1103] Validating G10878... ✓ non-PHA=8, all matched (no overlaps)
+  [42/1103] Validating G1095... ✓ all routed to PHA
+  [43/1103] Validating G11047... ✓ all routed to PHA
+  [44/1103] Validating G11059... ✓ all routed to PHA
+  [45/1103] Validating G11065... ✓ all routed to PHA
+  [46/1103] Validating G11066... ✓ all routed to PHA
+  [47/1103] Validating G11071... ✓ all routed to PHA
+  [48/1103] Validating G11073... ✓ all routed to PHA
+  [49/1103] Validating G11080... ✓ all routed to PHA
+  [50/1103] Validating G11083... ✓ all routed to PHA
+  [51/1103] Validating G11094... ✓ all routed to PHA
+  [52/1103] Validating G11110... ✓ all routed to PHA
+  [53/1103] Validating G11175... ✓ non-PHA=20, all matched (no overlaps)
+  [54/1103] Validating G11178... ✓ all routed to PHA
+  [55/1103] Validating G11198... ✓ all routed to PHA
+  [56/1103] Validating G11233... ✓ non-PHA=24, all matched (no overlaps)
+  [57/1103] Validating G11291... ✓ all routed to PHA
+  [58/1103] Validating G11317... ✓ all routed to PHA
+  [59/1103] Validating G11372... ✓ all routed to PHA
+  [60/1103] Validating G11375... ✓ all routed to PHA
+  [61/1103] Validating G11406... ✓ all routed to PHA
+  [62/1103] Validating G11417... ✓ all routed to PHA
+  [63/1103] Validating G11428... ✓ all routed to PHA
+  [64/1103] Validating G11482... ✓ non-PHA=18, all matched (no overlaps)
+  [65/1103] Validating G11493... ✓ all routed to PHA
+  [66/1103] Validating G11494... ✓ non-PHA=33, all matched (no overlaps)
+  [67/1103] Validating G11655... ✓ non-PHA=47, all matched (no overlaps)
+  [68/1103] Validating G11685... ✓ all routed to PHA
+  [69/1103] Validating G11720... ✓ non-PHA=26, all matched (no overlaps)
+  [70/1103] Validating G11760... ✓ all routed to PHA
+  [71/1103] Validating G11807... ✓ all routed to PHA
+  [72/1103] Validating G11808... ✓ all routed to PHA
+  [73/1103] Validating G11892... ✓ all routed to PHA
+  [74/1103] Validating G11895... ✓ all routed to PHA
+  [75/1103] Validating G11901... ✓ all routed to PHA
+  [76/1103] Validating G11964... ✓ all routed to PHA
+  [77/1103] Validating G12000... ✓ all routed to PHA
+  [78/1103] Validating G12010... ✓ non-PHA=46, all matched (no overlaps)
+  [79/1103] Validating G12028... ✓ all routed to PHA
+  [80/1103] Validating G12044... ✓ all routed to PHA
+  [81/1103] Validating G12068... ✓ all routed to PHA
+  [82/1103] Validating G12070... ✓ all routed to PHA
+  [83/1103] Validating G12085... ✓ all routed to PHA
+  [84/1103] Validating G12104... ✓ all routed to PHA
+  [85/1103] Validating G12117... ✓ all routed to PHA
+  [86/1103] Validating G12155... ✓ all routed to PHA
+  [87/1103] Validating G12207... ✓ all routed to PHA
+  [88/1103] Validating G12219... ✓ non-PHA=6, all matched (no overlaps)
+  [89/1103] Validating G12223... ✓ non-PHA=12, all matched (no overlaps)
+  [90/1103] Validating G12229... ✓ all routed to PHA
+  [91/1103] Validating G12263... ✓ all routed to PHA
+  [92/1103] Validating G12264... ✓ all routed to PHA
+  [93/1103] Validating G12274... ✓ non-PHA=7, all matched (no overlaps)
+  [94/1103] Validating G12283... ✓ non-PHA=27, all matched (no overlaps)
+  [95/1103] Validating G12317... ✓ all routed to PHA
+  [96/1103] Validating G12319... ✓ all routed to PHA
+  [97/1103] Validating G1234... ✓ all routed to PHA
+  [98/1103] Validating G1246... ✓ all routed to PHA
+  [99/1103] Validating G12473... ✓ all routed to PHA
+  [100/1103] Validating G12485... ✓ all routed to PHA
+  [101/1103] Validating G12508... ✓ all routed to PHA
+  [102/1103] Validating G12552... ✓ all routed to PHA
+  [103/1103] Validating G12582... ✓ non-PHA=164, all matched (no overlaps)
+  [104/1103] Validating G12696... ✓ non-PHA=27, all matched (no overlaps)
+  [105/1103] Validating G12792... ✓ non-PHA=22, all matched (no overlaps)
+  [106/1103] Validating G12813... ✓ all routed to PHA
+  [107/1103] Validating G12825... ✓ non-PHA=7, all matched (no overlaps)
+  [108/1103] Validating G12850... ✓ non-PHA=18, all matched (no overlaps)
+  [109/1103] Validating G12893... ✓ non-PHA=69, all matched (no overlaps)
+  [110/1103] Validating G12895... ❌ non-PHA=106, OVERLAPPING=14
+  [111/1103] Validating G12906... ✓ non-PHA=914, all matched (no overlaps)
+  [112/1103] Validating G12907... ✓ all routed to PHA
+  [113/1103] Validating G12911... ✓ all routed to PHA
+  [114/1103] Validating G13002... ✓ all routed to PHA
+  [115/1103] Validating G13007... ✓ non-PHA=15, all matched (no overlaps)
+  [116/1103] Validating G13008... ✓ all routed to PHA
+  [117/1103] Validating G13012... ✓ non-PHA=74, all matched (no overlaps)
+  [118/1103] Validating G13032... ✓ non-PHA=14, all matched (no overlaps)
+  [119/1103] Validating G13033... ✓ non-PHA=36, all matched (no overlaps)
+  [120/1103] Validating G13041... ❌ non-PHA=390, OVERLAPPING=2
+  [121/1103] Validating G13042... ✓ non-PHA=18, all matched (no overlaps)
+  [122/1103] Validating G13060... ✓ non-PHA=62, all matched (no overlaps)
+  [123/1103] Validating G13087... ✓ non-PHA=6, all matched (no overlaps)
+  [124/1103] Validating G13094... ✓ non-PHA=3, all matched (no overlaps)
+  [125/1103] Validating G13112... ✓ non-PHA=20, all matched (no overlaps)
+  [126/1103] Validating G13117... ✓ all routed to PHA
+  [127/1103] Validating G13121... ✓ non-PHA=21, all matched (no overlaps)
+  [128/1103] Validating G13139... ✓ non-PHA=170, all matched (no overlaps)
+  [129/1103] Validating G13149... ✓ all routed to PHA
+  [130/1103] Validating G13154... ✓ all routed to PHA
+  [131/1103] Validating G13170... ✓ all routed to PHA
+  [132/1103] Validating G13238... ✓ non-PHA=5, all matched (no overlaps)
+  [133/1103] Validating G13243... ✓ all routed to PHA
+  [134/1103] Validating G13247... ✓ all routed to PHA
+  [135/1103] Validating G13248... ✓ all routed to PHA
+  [136/1103] Validating G13250... ✓ all routed to PHA
+  [137/1103] Validating G13254... ✓ non-PHA=26, all matched (no overlaps)
+  [138/1103] Validating G13264... ✓ non-PHA=30, all matched (no overlaps)
+  [139/1103] Validating G13271... ✓ all routed to PHA
+  [140/1103] Validating G13284... ❌ non-PHA=746, OVERLAPPING=125
+  [141/1103] Validating G13286... ✓ all routed to PHA
+  [142/1103] Validating G13309... ✓ all routed to PHA
+  [143/1103] Validating G13311... ✓ non-PHA=565, all matched (no overlaps)
+  [144/1103] Validating G13321... ✓ all routed to PHA
+  [145/1103] Validating G13333... ✓ non-PHA=204, all matched (no overlaps)
+  [146/1103] Validating G13334... ✓ all routed to PHA
+  [147/1103] Validating G13337... ✓ non-PHA=12, all matched (no overlaps)
+  [148/1103] Validating G13343... ✓ all routed to PHA
+  [149/1103] Validating G13409... ✓ non-PHA=24, all matched (no overlaps)
+  [150/1103] Validating G13410... ✓ all routed to PHA
+  [151/1103] Validating G13419... ✓ non-PHA=43, all matched (no overlaps)
+  [152/1103] Validating G13454... ✓ all routed to PHA
+  [153/1103] Validating G13571... ✓ non-PHA=88, all matched (no overlaps)
+  [154/1103] Validating G13590... ✓ all routed to PHA
+  [155/1103] Validating G13606... ✓ all routed to PHA
+  [156/1103] Validating G13611... ✓ all routed to PHA
+  [157/1103] Validating G13633... ✓ non-PHA=50, all matched (no overlaps)
+  [158/1103] Validating G13634... ✓ all routed to PHA
+  [159/1103] Validating G13636... ✓ all routed to PHA
+  [160/1103] Validating G13645... ✓ all routed to PHA
+  [161/1103] Validating G13647... ✓ all routed to PHA
+  [162/1103] Validating G13666... ✓ all routed to PHA
+  [163/1103] Validating G13667... ✓ non-PHA=43, all matched (no overlaps)
+  [164/1103] Validating G13682... ✓ all routed to PHA
+  [165/1103] Validating G13686... ✓ non-PHA=12, all matched (no overlaps)
+  [166/1103] Validating G13710... ✓ all routed to PHA
+  [167/1103] Validating G13715... ✓ non-PHA=7, all matched (no overlaps)
+  [168/1103] Validating G13736... ✓ non-PHA=28, all matched (no overlaps)
+  [169/1103] Validating G13742... ✓ all routed to PHA
+  [170/1103] Validating G13748... ✓ non-PHA=267, all matched (no overlaps)
+  [171/1103] Validating G13754... ✓ all routed to PHA
+  [172/1103] Validating G13761... ✓ all routed to PHA
+  [173/1103] Validating G13777... ✓ all routed to PHA
+  [174/1103] Validating G13780... ✓ all routed to PHA
+  [175/1103] Validating G13819... ✓ non-PHA=119, all matched (no overlaps)
+  [176/1103] Validating G13844... ✓ all routed to PHA
+  [177/1103] Validating G13868... ✓ all routed to PHA
+  [178/1103] Validating G13877... ✓ all routed to PHA
+  [179/1103] Validating G13888... ❌ non-PHA=51, OVERLAPPING=2
+  [180/1103] Validating G13911... ✓ non-PHA=12, all matched (no overlaps)
+  [181/1103] Validating G13914... ✓ all routed to PHA
+  [182/1103] Validating G13970... ✓ all routed to PHA
+  [183/1103] Validating G13994... ✓ all routed to PHA
+  [184/1103] Validating G14014... ✓ non-PHA=153, all matched (no overlaps)
+  [185/1103] Validating G14031... ✓ non-PHA=45, all matched (no overlaps)
+  [186/1103] Validating G14039... ✓ all routed to PHA
+  [187/1103] Validating G14091... ✓ non-PHA=28, all matched (no overlaps)
+  [188/1103] Validating G14211... ✓ non-PHA=171, all matched (no overlaps)
+  [189/1103] Validating G14241... ✓ non-PHA=24, all matched (no overlaps)
+  [190/1103] Validating G14248... ✓ all routed to PHA
+  [191/1103] Validating G14262... ✓ non-PHA=21, all matched (no overlaps)
+  [192/1103] Validating G14280... ✓ all routed to PHA
+  [193/1103] Validating G14341... ✓ all routed to PHA
+  [194/1103] Validating G14360... ✓ all routed to PHA
+  [195/1103] Validating G14399... ✓ all routed to PHA
+  [196/1103] Validating G14417... ✓ non-PHA=12, all matched (no overlaps)
+  [197/1103] Validating G14418... ✓ non-PHA=28, all matched (no overlaps)
+  [198/1103] Validating G14420... ✓ non-PHA=10, all matched (no overlaps)
+  [199/1103] Validating G14421... ✓ all routed to PHA
+  [200/1103] Validating G14425... ✓ non-PHA=9, all matched (no overlaps)
+  [201/1103] Validating G14426... ✓ all routed to PHA
+  [202/1103] Validating G14429... ✓ all routed to PHA
+  [203/1103] Validating G14446... ✓ all routed to PHA
+  [204/1103] Validating G14449... ✓ all routed to PHA
+  [205/1103] Validating G14456... ✓ non-PHA=10, all matched (no overlaps)
+  [206/1103] Validating G14481... ✓ all routed to PHA
+  [207/1103] Validating G14526... ✓ all routed to PHA
+  [208/1103] Validating G14532... ✓ non-PHA=5, all matched (no overlaps)
+  [209/1103] Validating G14543... ✓ non-PHA=21, all matched (no overlaps)
+  [210/1103] Validating G14555... ✓ non-PHA=1036, all matched (no overlaps)
+  [211/1103] Validating G14563... ✓ non-PHA=7, all matched (no overlaps)
+  [212/1103] Validating G14611... ✓ non-PHA=1319, all matched (no overlaps)
+  [213/1103] Validating G14647... ✓ non-PHA=5, all matched (no overlaps)
+  [214/1103] Validating G14756... ✓ non-PHA=65, all matched (no overlaps)
+  [215/1103] Validating G14774... ✓ all routed to PHA
+  [216/1103] Validating G14800... ✓ all routed to PHA
+  [217/1103] Validating G14807... ✓ all routed to PHA
+  [218/1103] Validating G14823... ✓ all routed to PHA
+  [219/1103] Validating G14828... ✓ non-PHA=20, all matched (no overlaps)
+  [220/1103] Validating G14871... ✓ non-PHA=34, all matched (no overlaps)
+  [221/1103] Validating G14872... ✓ non-PHA=118, all matched (no overlaps)
+  [222/1103] Validating G14875... ✓ non-PHA=3, all matched (no overlaps)
+  [223/1103] Validating G14896... ✓ all routed to PHA
+  [224/1103] Validating G14907... ✓ all routed to PHA
+  [225/1103] Validating G14916... ✓ non-PHA=42, all matched (no overlaps)
+  [226/1103] Validating G14920... ✓ all routed to PHA
+  [227/1103] Validating G14926... ✓ all routed to PHA
+  [228/1103] Validating G14941... ✓ non-PHA=31, all matched (no overlaps)
+  [229/1103] Validating G14960... ✓ non-PHA=34, all matched (no overlaps)
+  [230/1103] Validating G14976... ✓ all routed to PHA
+  [231/1103] Validating G15003... ✓ all routed to PHA
+  [232/1103] Validating G15004... ✓ non-PHA=41, all matched (no overlaps)
+  [233/1103] Validating G15014... ✓ non-PHA=12, all matched (no overlaps)
+  [234/1103] Validating G15057... ✓ all routed to PHA
+  [235/1103] Validating G15145... ✓ non-PHA=186, all matched (no overlaps)
+  [236/1103] Validating G15173... ✓ non-PHA=23, all matched (no overlaps)
+  [237/1103] Validating G15175... ✓ non-PHA=15, all matched (no overlaps)
+  [238/1103] Validating G15185... ✓ non-PHA=10584, all matched (no overlaps)
+  [239/1103] Validating G15197... ✓ all routed to PHA
+  [240/1103] Validating G15226... ✓ non-PHA=30, all matched (no overlaps)
+  [241/1103] Validating G15242... ✓ all routed to PHA
+  [242/1103] Validating G15248... ✓ all routed to PHA
+  [243/1103] Validating G15249... ✓ all routed to PHA
+  [244/1103] Validating G15251... ✓ all routed to PHA
+  [245/1103] Validating G15267... ✓ non-PHA=36, all matched (no overlaps)
+  [246/1103] Validating G15290... ✓ all routed to PHA
+  [247/1103] Validating G15306... ✓ all routed to PHA
+  [248/1103] Validating G15371... ✓ non-PHA=666, all matched (no overlaps)
+  [249/1103] Validating G15372... ✓ non-PHA=54, all matched (no overlaps)
+  [250/1103] Validating G1539... ✓ all routed to PHA
+  [251/1103] Validating G15391... ✓ non-PHA=192, all matched (no overlaps)
+  [252/1103] Validating G15412... ✓ all routed to PHA
+  [253/1103] Validating G15434... ✓ non-PHA=184, all matched (no overlaps)
+  [254/1103] Validating G15472... ✓ all routed to PHA
+  [255/1103] Validating G15479... ✓ non-PHA=18, all matched (no overlaps)
+  [256/1103] Validating G15493... ✓ non-PHA=1794, all matched (no overlaps)
+  [257/1103] Validating G15504... ✓ non-PHA=6, all matched (no overlaps)
+  [258/1103] Validating G15575... ✓ non-PHA=8, all matched (no overlaps)
+  [259/1103] Validating G15629... ✓ non-PHA=12, all matched (no overlaps)
+  [260/1103] Validating G15637... ✓ non-PHA=8, all matched (no overlaps)
+  [261/1103] Validating G15651... ✓ non-PHA=24, all matched (no overlaps)
+  [262/1103] Validating G15668... ✓ non-PHA=590, all matched (no overlaps)
+  [263/1103] Validating G15710... ✓ non-PHA=108, all matched (no overlaps)
+  [264/1103] Validating G15724... ✓ non-PHA=70, all matched (no overlaps)
+  [265/1103] Validating G15728... ✓ non-PHA=22, all matched (no overlaps)
+  [266/1103] Validating G15793... ❌ non-PHA=39, unmatched=3
+  ⚠️ Validation samples for G15793:
+    - Cert 2039232 MEDLINK4F1 10,000 Tue Jun 01 2021 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 2039232 MEDLINK4F1 10,000 Tue Jun 01 2021 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 2039232 MEDLINK4F1 10,000 Tue Jun 01 2021 00:00:00 GMT+0000 (Coordinated Universal Time)
+  [267/1103] Validating G15832... ✓ non-PHA=20, all matched (no overlaps)
+  [268/1103] Validating G15866... ✓ non-PHA=10, all matched (no overlaps)
+  [269/1103] Validating G15879... ✓ non-PHA=76, all matched (no overlaps)
+  [270/1103] Validating G15916... ✓ all routed to PHA
+  [271/1103] Validating G1593... ✓ all routed to PHA
+  [272/1103] Validating G15931... ✓ non-PHA=119, all matched (no overlaps)
+  [273/1103] Validating G15932... ✓ non-PHA=38, all matched (no overlaps)
+  [274/1103] Validating G15940... ✓ non-PHA=16, all matched (no overlaps)
+  [275/1103] Validating G15948... ✓ all routed to PHA
+  [276/1103] Validating G15985... ✓ non-PHA=16, all matched (no overlaps)
+  [277/1103] Validating G16048... ✓ non-PHA=264, all matched (no overlaps)
+  [278/1103] Validating G16068... ✓ all routed to PHA
+  [279/1103] Validating G16078... ✓ all routed to PHA
+  [280/1103] Validating G16084... ✓ non-PHA=32, all matched (no overlaps)
+  [281/1103] Validating G16179... ✓ non-PHA=134, all matched (no overlaps)
+  [282/1103] Validating G16183... ✓ all routed to PHA
+  [283/1103] Validating G16193... ✓ non-PHA=18, all matched (no overlaps)
+  [284/1103] Validating G16216... ✓ non-PHA=102, all matched (no overlaps)
+  [285/1103] Validating G16265... ✓ non-PHA=446, all matched (no overlaps)
+  [286/1103] Validating G16323... ❌ non-PHA=97, unmatched=3
+  ⚠️ Validation samples for G16323:
+    - Cert 982003 GC3 LEV5 OPTION 2 WITH HICUR, DTBR Sat Mar 01 2014 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 2614399 GC3 LEV5 OPTION 1 WITH DTBR, HICUR Thu May 01 2025 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 2645779 GC3 LEV5 OPTION 1 WITH DTBR, HICUR Tue Jul 01 2025 00:00:00 GMT+0000 (Coordinated Universal Time)
+  [287/1103] Validating G16327... ❌ non-PHA=20, OVERLAPPING=3
+  [288/1103] Validating G16347... ✓ all routed to PHA
+  [289/1103] Validating G16350... ✓ non-PHA=202, all matched (no overlaps)
+  [290/1103] Validating G16372... ✓ non-PHA=60, all matched (no overlaps)
+  [291/1103] Validating G16381... ✓ non-PHA=92, all matched (no overlaps)
+  [292/1103] Validating G16429... ✓ non-PHA=110, all matched (no overlaps)
+  [293/1103] Validating G16433... ✓ non-PHA=388, all matched (no overlaps)
+  [294/1103] Validating G16438... ✓ all routed to PHA
+  [295/1103] Validating G16446... ✓ non-PHA=50, all matched (no overlaps)
+  [296/1103] Validating G16447... ✓ non-PHA=250, all matched (no overlaps)
+  [297/1103] Validating G16456... ✓ non-PHA=4, all matched (no overlaps)
+  [298/1103] Validating G16479... ✓ non-PHA=14, all matched (no overlaps)
+  [299/1103] Validating G16487... ✓ non-PHA=48, all matched (no overlaps)
+  [300/1103] Validating G16497... ✓ non-PHA=14, all matched (no overlaps)
+  [301/1103] Validating G16499... ✓ all routed to PHA
+  [302/1103] Validating G16524... ✓ non-PHA=165, all matched (no overlaps)
+  [303/1103] Validating G16556... ✓ non-PHA=13, all matched (no overlaps)
+  [304/1103] Validating G16564... ✓ non-PHA=3, all matched (no overlaps)
+  [305/1103] Validating G16644... ✓ non-PHA=3, all matched (no overlaps)
+  [306/1103] Validating G16698... ✓ non-PHA=750, all matched (no overlaps)
+  [307/1103] Validating G16733... ✓ all routed to PHA
+  [308/1103] Validating G16743... ✓ all routed to PHA
+  [309/1103] Validating G16799... ✓ non-PHA=12, all matched (no overlaps)
+  [310/1103] Validating G16957... ✓ non-PHA=10, all matched (no overlaps)
+  [311/1103] Validating G16970... ✓ all routed to PHA
+  [312/1103] Validating G16991... ✓ non-PHA=24, all matched (no overlaps)
+  [313/1103] Validating G17017... ✓ non-PHA=48, all matched (no overlaps)
+  [314/1103] Validating G17067... ✓ non-PHA=10, all matched (no overlaps)
+  [315/1103] Validating G17082... ✓ non-PHA=8, all matched (no overlaps)
+  [316/1103] Validating G17111... ✓ non-PHA=220, all matched (no overlaps)
+  [317/1103] Validating G17125... ✓ all routed to PHA
+  [318/1103] Validating G17163... ✓ non-PHA=8, all matched (no overlaps)
+  [319/1103] Validating G17165... ✓ non-PHA=8, all matched (no overlaps)
+  [320/1103] Validating G17188... ✓ non-PHA=12, all matched (no overlaps)
+  [321/1103] Validating G17204... ✓ non-PHA=10, all matched (no overlaps)
+  [322/1103] Validating G17220... ✓ all routed to PHA
+  [323/1103] Validating G17260... ✓ non-PHA=12, all matched (no overlaps)
+  [324/1103] Validating G17273... ✓ non-PHA=124, all matched (no overlaps)
+  [325/1103] Validating G17287... ✓ all routed to PHA
+  [326/1103] Validating G17291... ✓ non-PHA=10, all matched (no overlaps)
+  [327/1103] Validating G17294... ✓ non-PHA=10, all matched (no overlaps)
+  [328/1103] Validating G17314... ✓ non-PHA=36, all matched (no overlaps)
+  [329/1103] Validating G17328... ✓ non-PHA=154, all matched (no overlaps)
+  [330/1103] Validating G17384... ✓ all routed to PHA
+  [331/1103] Validating G17387... ✓ non-PHA=148, all matched (no overlaps)
+  [332/1103] Validating G17545... ✓ non-PHA=184, all matched (no overlaps)
+  [333/1103] Validating G17580... ✓ non-PHA=60, all matched (no overlaps)
+  [334/1103] Validating G17588... ❌ non-PHA=8, unmatched=8
+  ⚠️ Validation samples for G17588:
+    - Cert 1115066 A3 ACCIDENT - HIGH, $400 HOS Thu Oct 01 2015 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 1115066 A3 ACCIDENT - HIGH, $400 HOS Thu Oct 01 2015 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 1154711 A3 ACCIDENT - LOW, $150 ICU Mon Feb 01 2016 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 1154711 A3 ACCIDENT - LOW, $150 ICU Mon Feb 01 2016 00:00:00 GMT+0000 (Coordinated Universal Time)
+    - Cert 1219752 A3 ACCIDENT - HIGH, $400 HOS Thu Sep 01 2016 00:00:00 GMT+0000 (Coordinated Universal Time)
+  [335/1103] Validating G17623... ✓ non-PHA=6, all matched (no overlaps)
+  [336/1103] Validating G17626... ✓ all routed to PHA
+  [337/1103] Validating G17628... ✓ non-PHA=138, all matched (no overlaps)
+  [338/1103] Validating G17641... ✓ non-PHA=24, all matched (no overlaps)
+  [339/1103] Validating G17656... ✓ non-PHA=6, all matched (no overlaps)
+  [340/1103] Validating G17697... ✓ non-PHA=21, all matched (no overlaps)
+  [341/1103] Validating G17708... ✓ all routed to PHA
+  [342/1103] Validating G17723... ✓ non-PHA=28, all matched (no overlaps)
+  [343/1103] Validating G17768... ✓ non-PHA=16, all matched (no overlaps)
+  [344/1103] Validating G17837... ✓ non-PHA=26, all matched (no overlaps)
+  [345/1103] Validating G17886... ✓ non-PHA=86, all matched (no overlaps)
+  [346/1103] Validating G17896... ✓ non-PHA=26, all matched (no overlaps)
+  [347/1103] Validating G17907... ✓ non-PHA=17, all matched (no overlaps)
+  [348/1103] Validating G17939... ✓ all routed to PHA
+  [349/1103] Validating G1794... ✓ all routed to PHA
+  [350/1103] Validating G17948... ✓ all routed to PHA
+  [351/1103] Validating G18072... ✓ all routed to PHA
+  [352/1103] Validating G18123... ✓ non-PHA=50, all matched (no overlaps)
+  [353/1103] Validating G18126... ✓ non-PHA=540, all matched (no overlaps)
+  [354/1103] Validating G18158... ✓ non-PHA=32, all matched (no overlaps)
+  [355/1103] Validating G18190... ✓ all routed to PHA
+  [356/1103] Validating G18196... ✓ non-PHA=64, all matched (no overlaps)
+  [357/1103] Validating G18278... ✓ non-PHA=28, all matched (no overlaps)
+  [358/1103] Validating G18361... ✓ non-PHA=1478, all matched (no overlaps)
+  [359/1103] Validating G18383... ✓ non-PHA=103, all matched (no overlaps)
+  [360/1103] Validating G18392... ✓ non-PHA=1086, all matched (no overlaps)
+  [361/1103] Validating G18396... ✓ non-PHA=16, all matched (no overlaps)
+  [362/1103] Validating G18426... ✓ non-PHA=49, all matched (no overlaps)
+  [363/1103] Validating G18428... ✓ non-PHA=32, all matched (no overlaps)
+  [364/1103] Validating G18460... ✓ non-PHA=75, all matched (no overlaps)
+  [365/1103] Validating G18486... ✓ non-PHA=21, all matched (no overlaps)
+  [366/1103] Validating G18496... ✓ non-PHA=142, all matched (no overlaps)
+  [367/1103] Validating G18514... ✓ non-PHA=14, all matched (no overlaps)
+  [368/1103] Validating G18528... ✓ all routed to PHA
+  [369/1103] Validating G18566... ✓ non-PHA=104, all matched (no overlaps)
+  [370/1103] Validating G18610... ✓ non-PHA=15, all matched (no overlaps)
+  [371/1103] Validating G18862... ✓ non-PHA=50, all matched (no overlaps)
+  [372/1103] Validating G18924... ✓ non-PHA=11, all matched (no overlaps)
+  [373/1103] Validating G18947... ✓ non-PHA=10, all matched (no overlaps)
+  [374/1103] Validating G18966... ✓ non-PHA=10, all matched (no overlaps)
+  [375/1103] Validating G19045... ✓ non-PHA=94, all matched (no overlaps)
+  [376/1103] Validating G19055... ✓ non-PHA=51, all matched (no overlaps)
+  [377/1103] Validating G19205... ✓ all routed to PHA
+  [378/1103] Validating G19220... ✓ non-PHA=52, all matched (no overlaps)
+  [379/1103] Validating G19232... ✓ non-PHA=122, all matched (no overlaps)
+  [380/1103] Validating G1931... ✓ all routed to PHA
+  [381/1103] Validating G19336... ✓ non-PHA=22, all matched (no overlaps)
+  [382/1103] Validating G19400... ✓ non-PHA=33, all matched (no overlaps)
+  [383/1103] Validating G19543... ✓ non-PHA=48, all matched (no overlaps)
+  [384/1103] Validating G19549... ✓ all routed to PHA
+  [385/1103] Validating G19618... ✓ non-PHA=10, all matched (no overlaps)
+  [386/1103] Validating G19658... ✓ non-PHA=66, all matched (no overlaps)
+  [387/1103] Validating G19741... ✓ all routed to PHA
+  [388/1103] Validating G19746... ✓ non-PHA=24, all matched (no overlaps)
+  [389/1103] Validating G19863... ✓ all routed to PHA
+  [390/1103] Validating G19870... ✓ non-PHA=114, all matched (no overlaps)
+  [391/1103] Validating G19949... ✓ non-PHA=66, all matched (no overlaps)
+  [392/1103] Validating G1995... ✓ all routed to PHA
+  [393/1103] Validating G19973... ✓ non-PHA=98, all matched (no overlaps)
+  [394/1103] Validating G20031... ✓ non-PHA=1024, all matched (no overlaps)
+  [395/1103] Validating G20075... ✓ non-PHA=42, all matched (no overlaps)
+  [396/1103] Validating G20279... ✓ all routed to PHA
+  [397/1103] Validating G20337... ✓ non-PHA=12, all matched (no overlaps)
+  [398/1103] Validating G20390... ✓ all routed to PHA
+  [399/1103] Validating G20406... ✓ non-PHA=18, all matched (no overlaps)
+  [400/1103] Validating G20419... ✓ non-PHA=26, all matched (no overlaps)
+  [401/1103] Validating G20478... ✓ non-PHA=30, all matched (no overlaps)
+  [402/1103] Validating G20489... ✓ non-PHA=162, all matched (no overlaps)
+  [403/1103] Validating G20524... ✓ non-PHA=5, all matched (no overlaps)
+  [404/1103] Validating G20525... ✓ non-PHA=14, all matched (no overlaps)
+  [405/1103] Validating G20598... ✓ non-PHA=6, all matched (no overlaps)
+  [406/1103] Validating G20657... ✓ non-PHA=46, all matched (no overlaps)
+  [407/1103] Validating G20711... ✓ non-PHA=63, all matched (no overlaps)
+  [408/1103] Validating G20727... ✓ all routed to PHA
+  [409/1103] Validating G20834... ✓ non-PHA=12, all matched (no overlaps)
+  [410/1103] Validating G20851... ✓ non-PHA=14, all matched (no overlaps)
+  [411/1103] Validating G20868... ✓ non-PHA=6, all matched (no overlaps)
+  [412/1103] Validating G20987... ✓ non-PHA=63, all matched (no overlaps)
+  [413/1103] Validating G21000... ✓ non-PHA=21, all matched (no overlaps)
+  [414/1103] Validating G2101... ✓ all routed to PHA
+  [415/1103] Validating G21035... ✓ non-PHA=44, all matched (no overlaps)
+  [416/1103] Validating G21049... ✓ non-PHA=194, all matched (no overlaps)
+  [417/1103] Validating G21055... ✓ all routed to PHA
+  [418/1103] Validating G21086... ✓ non-PHA=92, all matched (no overlaps)
+  [419/1103] Validating G21089... ✓ all routed to PHA
+  [420/1103] Validating G21101... ✓ non-PHA=194, all matched (no overlaps)
+  [421/1103] Validating G21110... ✓ non-PHA=21, all matched (no overlaps)
+  [422/1103] Validating G21114... ✓ non-PHA=56, all matched (no overlaps)
+  [423/1103] Validating G21122... ✓ non-PHA=55, all matched (no overlaps)
+  [424/1103] Validating G21139... ✓ all routed to PHA
+  [425/1103] Validating G21144... y✓ non-PHA=155, all matched (no overlaps)
+  [426/1103] Validating G21189...✓ non-PHA=188, all matched (no overlaps)
+  [427/1103] Validating G21198... ✓ non-PHA=48, all matched (no overlaps)
+  [428/1103] Validating G21254... ✓ non-PHA=1126, all matched (no overlaps)
+  [429/1103] Validating G21287... ✓ non-PHA=15, all matched (no overlaps)
+  [430/1103] Validating G21351... ✓ non-PHA=8, all matched (no overlaps)
+  [431/1103] Validating G21356... ✓ non-PHA=46, all matched (no overlaps)
+  [432/1103] Validating G21361... ✓ non-PHA=28, all matched (no overlaps)
+  [433/1103] Validating G21367... ✓ all routed to PHA
+  [434/1103] Validating G21495... ✓ non-PHA=14, all matched (no overlaps)
+  [435/1103] Validating G21501... ✓ non-PHA=16, all matched (no overlaps)
+  [436/1103] Validating G21615... ✓ all routed to PHA
+  [437/1103] Validating G21638... ✓ all routed to PHA
+  [438/1103] Validating G21643... ✓ non-PHA=12, all matched (no overlaps)
+  [439/1103] Validating G21649... ✓ all routed to PHA
+  [440/1103] Validating G21689... ✓ non-PHA=66, all matched (no overlaps)
+  [441/1103] Validating G21746... ✓ non-PHA=26, all matched (no overlaps)
+  [442/1103] Validating G21769... ✓ all routed to PHA
+  [443/1103] Validating G21797... ❌ non-PHA=137, OVERLAPPING=8
+  [444/1103] Validating G21806... ✓ non-PHA=22, all matched (no overlaps)
+  [445/1103] Validating G21867... ✓ non-PHA=18, all matched (no overlaps)
+  [446/1103] Validating G21905... ✓ all routed to PHA
+  [447/1103] Validating G21956... ✓ non-PHA=18, all matched (no overlaps)
+  [448/1103] Validating G2197... ✓ all routed to PHA
+  [449/1103] Validating G21983... ✓ non-PHA=8, all matched (no overlaps)
+  [450/1103] Validating G22040... ✓ all routed to PHA
+  [451/1103] Validating G22100... ✓ non-PHA=24, all matched (no overlaps)
+  [452/1103] Validating G22108... ✓ non-PHA=40, all matched (no overlaps)
+  [453/1103] Validating G22137... ✓ non-PHA=159, all matched (no overlaps)
+  [454/1103] Validating G22138... ✓ non-PHA=67, all matched (no overlaps)
+  [455/1103] Validating G22142... ✓ non-PHA=159, all matched (no overlaps)
+  [456/1103] Validating G22144... ✓ non-PHA=180, all matched (no overlaps)
+  [457/1103] Validating G22147... ✓ non-PHA=55, all matched (no overlaps)
+  [458/1103] Validating G22149... ✓ non-PHA=14, all matched (no overlaps)
+  [459/1103] Validating G22196... ✓ all routed to PHA
+  [460/1103] Validating G22208... ✓ non-PHA=39, all matched (no overlaps)
+  [461/1103] Validating G22210... ✓ all routed to PHA
+  [462/1103] Validating G22235... ✓ non-PHA=8, all matched (no overlaps)
+  [463/1103] Validating G22272... ✓ non-PHA=8, all matched (no overlaps)
+  [464/1103] Validating G22306... ✓ non-PHA=58, all matched (no overlaps)
+  [465/1103] Validating G22349... ✓ non-PHA=12, all matched (no overlaps)
+  [466/1103] Validating G22426... ✓ non-PHA=47, all matched (no overlaps)
+  [467/1103] Validating G22457... ✓ non-PHA=13, all matched (no overlaps)
+  [468/1103] Validating G22505... ✓ non-PHA=36, all matched (no overlaps)
+  [469/1103] Validating G22519... ✓ non-PHA=12, all matched (no overlaps)
+  [470/1103] Validating G22525... ✓ non-PHA=20, all matched (no overlaps)
+  [471/1103] Validating G22534... ✓ non-PHA=59, all matched (no overlaps)
+  [472/1103] Validating G22587... ✓ non-PHA=229, all matched (no overlaps)
+  [473/1103] Validating G22609... ✓ non-PHA=183, all matched (no overlaps)
+  [474/1103] Validating G22616... ✓ non-PHA=27, all matched (no overlaps)
+  [475/1103] Validating G22619... ✓ non-PHA=15, all matched (no overlaps)
+  [476/1103] Validating G22645... ✓ non-PHA=35, all matched (no overlaps)
+  [477/1103] Validating G22687... ✓ all routed to PHA
+  [478/1103] Validating G22756... ✓ non-PHA=10, all matched (no overlaps)
+  [479/1103] Validating G22772... ✓ non-PHA=60, all matched (no overlaps)
+  [480/1103] Validating G2289... ✓ all routed to PHA
+  [481/1103] Validating G22898... ✓ non-PHA=70, all matched (no overlaps)
+  [482/1103] Validating G22987... ✓ non-PHA=14, all matched (no overlaps)
+  [483/1103] Validating G23001... ✓ all routed to PHA
+  [484/1103] Validating G23002... ✓ non-PHA=32, all matched (no overlaps)
+  [485/1103] Validating G23047... ✓ non-PHA=8, all matched (no overlaps)
+  [486/1103] Validating G23112... ✓ all routed to PHA
+  [487/1103] Validating G23130... ✓ non-PHA=70, all matched (no overlaps)
+  [488/1103] Validating G23143... ✓ non-PHA=1022, all matched (no overlaps)
+  [489/1103] Validating G23145... ✓ all routed to PHA
+  [490/1103] Validating G23155... ✓ all routed to PHA
+  [491/1103] Validating G23156... ✓ non-PHA=133, all matched (no overlaps)
+  [492/1103] Validating G23197... ✓ non-PHA=6, all matched (no overlaps)
+  [493/1103] Validating G23205... ✓ non-PHA=20, all matched (no overlaps)
+  [494/1103] Validating G23216... ✓ non-PHA=13, all matched (no overlaps)
+  [495/1103] Validating G23236... ✓ non-PHA=32, all matched (no overlaps)
+  [496/1103] Validating G23238... ✓ non-PHA=14, all matched (no overlaps)
+  [497/1103] Validating G23244... ✓ non-PHA=16, all matched (no overlaps)
+  [498/1103] Validating G23256... ✓ non-PHA=30, all matched (no overlaps)
+  [499/1103] Validating G23293... ✓ non-PHA=132, all matched (no overlaps)
+  [500/1103] Validating G23295... ✓ all routed to PHA
+  [501/1103] Validating G23299... ✓ non-PHA=11, all matched (no overlaps)
+  [502/1103] Validating G23306... ✓ non-PHA=26, all matched (no overlaps)
+  [503/1103] Validating G23314... ✓ non-PHA=32, all matched (no overlaps)
+  [504/1103] Validating G23325... ✓ non-PHA=45, all matched (no overlaps)
+  [505/1103] Validating G23341... ✓ non-PHA=48, all matched (no overlaps)
+  [506/1103] Validating G23348... ✓ non-PHA=14, all matched (no overlaps)
+  [507/1103] Validating G23350... ✓ non-PHA=58, all matched (no overlaps)
+  [508/1103] Validating G23404... ✓ non-PHA=16, all matched (no overlaps)
+  [509/1103] Validating G23405... ✓ non-PHA=6, all matched (no overlaps)
+  [510/1103] Validating G23409... ✓ all routed to PHA
+  [511/1103] Validating G23410... ✓ non-PHA=15, all matched (no overlaps)
+  [512/1103] Validating G23411... ✓ non-PHA=147, all matched (no overlaps)
+  [513/1103] Validating G23420... ✓ non-PHA=98, all matched (no overlaps)
+  [514/1103] Validating G23427... ✓ non-PHA=115, all matched (no overlaps)
+  [515/1103] Validating G23428... ✓ non-PHA=44, all matched (no overlaps)
+  [516/1103] Validating G23429... ✓ non-PHA=20, all matched (no overlaps)
+  [517/1103] Validating G23431... ✓ non-PHA=22, all matched (no overlaps)
+  [518/1103] Validating G23435... ✓ non-PHA=88, all matched (no overlaps)
+  [519/1103] Validating G23436... ✓ non-PHA=53, all matched (no overlaps)
+  [520/1103] Validating G23442... ✓ non-PHA=87, all matched (no overlaps)
+  [521/1103] Validating G23444... ✓ non-PHA=58, all matched (no overlaps)
+  [522/1103] Validating G23448... ✓ non-PHA=8, all matched (no overlaps)
+  [523/1103] Validating G23461... ✓ non-PHA=61, all matched (no overlaps)
+  [524/1103] Validating G23464... ✓ non-PHA=45, all matched (no overlaps)
+  [525/1103] Validating G23479... ✓ non-PHA=22, all matched (no overlaps)
+  [526/1103] Validating G23493... ✓ non-PHA=12, all matched (no overlaps)
+  [527/1103] Validating G23505... ✓ non-PHA=10, all matched (no overlaps)
+  [528/1103] Validating G23558... ✓ non-PHA=24, all matched (no overlaps)
+  [529/1103] Validating G23609... ✓ non-PHA=94, all matched (no overlaps)
+  [530/1103] Validating G23612... ✓ all routed to PHA
+  [531/1103] Validating G23647... ✓ all routed to PHA
+  [532/1103] Validating G23687... ✓ non-PHA=141, all matched (no overlaps)
+  [533/1103] Validating G23759... ✓ non-PHA=22, all matched (no overlaps)
+  [534/1103] Validating G23790... ✓ non-PHA=21, all matched (no overlaps)
