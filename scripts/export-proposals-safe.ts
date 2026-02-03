@@ -390,7 +390,7 @@ async function main() {
       )
       SELECT 
         hv.Id, hv.HierarchyId, 
-        TRY_CAST(hv.VersionNumber AS INT),
+        hv.Version,
         CAST(hv.EffectiveFrom AS DATE), CAST(hv.EffectiveTo AS DATE), hv.Status,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_hierarchy_versions] hv
