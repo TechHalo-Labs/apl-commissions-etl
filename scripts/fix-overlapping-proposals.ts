@@ -236,7 +236,11 @@ async function main() {
   }
 
   const config = parseConnectionString(connectionString);
-  const pool = await sql.connect(config);
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 300000, // 5 minutes
+    connectionTimeout: 30000
+  });
 
   try {
     console.log('='.repeat(60));
