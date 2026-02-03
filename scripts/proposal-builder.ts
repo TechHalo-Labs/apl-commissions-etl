@@ -2911,12 +2911,27 @@ async function clearStagingData(
       INNER JOIN [${schema}].[stg_proposals] p ON p.Id = cav.ProposalId
       WHERE p.GroupId IN (${groupsListString})
     `);
+    // Clear PHA participants - use both join-based and ID-pattern-based clearing
+    // First: join-based (handles properly-linked records)
     await pool.request().query(`
       DELETE php FROM [${schema}].[stg_policy_hierarchy_participants] php
       INNER JOIN [${schema}].[stg_policy_hierarchy_assignments] pha ON pha.Id = php.PolicyHierarchyAssignmentId
       INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
       WHERE h.GroupId IN (${groupsListString})
     `);
+    // Second: ID-pattern-based (handles orphaned records from old runs)
+    // Process in batches to avoid huge OR conditions
+    const groupNumericParts = Array.from(new Set(
+      [...groupsWithPrefix, ...groupsWithNumericPrefix].map(g => g.replace(/^G/i, ''))
+    ));
+    const phpBatchSize = 50;
+    for (let i = 0; i < groupNumericParts.length; i += phpBatchSize) {
+      const batch = groupNumericParts.slice(i, i + phpBatchSize);
+      const likeConditions = batch.map(n => `Id LIKE 'PHP-${n}-%'`).join(' OR ');
+      await pool.request().query(`
+        DELETE FROM [${schema}].[stg_policy_hierarchy_participants] WHERE ${likeConditions}
+      `);
+    }
     await pool.request().query(`
       DELETE pha FROM [${schema}].[stg_policy_hierarchy_assignments] pha
       INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = pha.HierarchyId
