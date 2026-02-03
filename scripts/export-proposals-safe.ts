@@ -291,6 +291,7 @@ async function main() {
     console.log('═'.repeat(60));
     
     // Proposals
+    // Note: DateRangeFrom/DateRangeTo in staging are INT (year), convert to DATE for production
     let insertCount = await pool.request().query(`
       INSERT INTO [${options.targetSchema}].[Proposals] (
         Id, ProposalNumber, Status, SubmittedDate, ProposedEffectiveDate,
@@ -300,10 +301,13 @@ async function main() {
         CreationTime, IsDeleted
       )
       SELECT 
-        Id, ProposalNumber, Status, SubmittedDate, ProposedEffectiveDate,
+        Id, ProposalNumber, Status, 
+        CAST(SubmittedDate AS DATE), CAST(ProposedEffectiveDate AS DATE),
         SitusState, GroupId, GroupName, ProductCodes, PlanCodes,
-        SplitConfigHash, DateRangeFrom, DateRangeTo,
-        EffectiveDateFrom, EffectiveDateTo, Notes,
+        SplitConfigHash, 
+        CASE WHEN DateRangeFrom IS NOT NULL THEN DATEFROMPARTS(DateRangeFrom, 1, 1) ELSE NULL END,
+        CASE WHEN DateRangeTo IS NOT NULL THEN DATEFROMPARTS(DateRangeTo, 12, 31) ELSE NULL END,
+        CAST(EffectiveDateFrom AS DATE), CAST(EffectiveDateTo AS DATE), Notes,
         GETUTCDATE(), 0
       FROM [${options.sourceSchema}].[stg_proposals]
       WHERE GroupId IN (${groupList})
