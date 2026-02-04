@@ -3,7 +3,8 @@
 -- =============================================================================
 -- Flags groups that should be excluded from export:
 -- 1. Groups with Name like 'Universal Truck%'
--- 2. Groups with GroupId in ('00000','0000','G00000','G0000')
+-- 2. Groups with GroupId like 'G7%' and 6 characters long (e.g., G71234)
+-- 3. Groups with GroupId like '7%' and 5 characters long (e.g., 71234)
 -- =============================================================================
 
 SET NOCOUNT ON;
@@ -45,15 +46,18 @@ SELECT DISTINCT
     sg.Name AS GroupName,
     CASE 
         WHEN sg.Name LIKE 'Universal Truck%' THEN 'Universal Trucking group'
-        WHEN sg.Id IN ('G00000', 'G0000', '00000', '0000') THEN 'DTC/Invalid GroupId'
+        WHEN sg.Id LIKE 'G7%' AND LEN(sg.Id) = 6 THEN 'G7xxxxx pattern (6 char)'
+        WHEN sg.Id LIKE '7%' AND LEN(sg.Id) = 5 THEN '7xxxx pattern (5 char)'
         ELSE 'Other exclusion criteria'
     END AS ExclusionReason
 FROM [$(ETL_SCHEMA)].[stg_groups] sg
 WHERE 
     -- Universal Trucking groups
     sg.Name LIKE 'Universal Truck%'
-    -- DTC/Invalid GroupIds
-    OR sg.Id IN ('G00000', 'G0000', '00000', '0000')
+    -- GroupId like G7% and 6 characters (e.g., G71234)
+    OR (sg.Id LIKE 'G7%' AND LEN(sg.Id) = 6)
+    -- GroupId like 7% and 5 characters (e.g., 71234)
+    OR (sg.Id LIKE '7%' AND LEN(sg.Id) = 5)
 
 DECLARE @excluded_count INT = @@ROWCOUNT;
 PRINT '  ✓ Populated ' + CAST(@excluded_count AS VARCHAR) + ' excluded groups';

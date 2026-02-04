@@ -1473,12 +1473,13 @@ export class ProposalBuilder {
         });
 
         // Create hierarchy participants for PHA
+        // Use groupKey in ID for pattern-based cleanup, plus unique suffix
         for (const tier of split.tiers) {
           this.hpCounter++;
           const scheduleId = tier.schedule ? this.scheduleIdByExternalId.get(tier.schedule.trim()) || null : null;
           
           output.hierarchyParticipants.push({
-            Id: `HP-PHA-${phaGroupKey}-${this.hpCounter}`,
+            Id: `HP-PHA-${phaGroupKey}-${this.phaCounter}-${tier.level}`,
             HierarchyVersionId: phaHierarchyVersionId,
             EntityId: tier.brokerId,
             EntityName: tier.brokerName,
@@ -2971,6 +2972,15 @@ async function clearStagingData(
       INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
       WHERE h.GroupId IN (${groupsListString})
     `);
+    // Also clean up by ID pattern for PHA hierarchy participants (handles orphaned records)
+    const hpBatchSize = 50;
+    for (let i = 0; i < groupNumericParts.length; i += hpBatchSize) {
+      const batch = groupNumericParts.slice(i, i + hpBatchSize);
+      const likeConditions = batch.map(n => `Id LIKE 'HP-PHA-${n}-%'`).join(' OR ');
+      await pool.request().query(`
+        DELETE FROM [${schema}].[stg_hierarchy_participants] WHERE ${likeConditions}
+      `);
+    }
     await pool.request().query(`
       DELETE hv FROM [${schema}].[stg_hierarchy_versions] hv
       INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId

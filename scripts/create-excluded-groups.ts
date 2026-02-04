@@ -43,12 +43,20 @@ async function main() {
       SELECT DISTINCT
           sg.Id AS GroupId,
           sg.Name AS GroupName,
-          'Universal Trucking group' AS ExclusionReason
+          CASE 
+              WHEN sg.Name LIKE 'Universal Truck%' THEN 'Universal Trucking group'
+              WHEN sg.Id LIKE 'G7%' AND LEN(sg.Id) = 6 THEN 'G7xxxxx pattern (6 char)'
+              WHEN sg.Id LIKE '7%' AND LEN(sg.Id) = 5 THEN '7xxxx pattern (5 char)'
+              ELSE 'Other exclusion criteria'
+          END AS ExclusionReason
       FROM [${etlSchema}].[stg_groups] sg
       WHERE 
-          -- Universal Trucking groups ONLY
-          -- NOTE: G0000 and G00000 (DTC groups) are now INCLUDED
-          sg.Name LIKE 'Universal Truck%';
+          -- Universal Trucking groups
+          sg.Name LIKE 'Universal Truck%'
+          -- GroupId like G7% and 6 characters (e.g., G71234)
+          OR (sg.Id LIKE 'G7%' AND LEN(sg.Id) = 6)
+          -- GroupId like 7% and 5 characters (e.g., 71234)
+          OR (sg.Id LIKE '7%' AND LEN(sg.Id) = 5);
     `);
 
     const excludedCount = insertResult.rowsAffected[0] || 0;

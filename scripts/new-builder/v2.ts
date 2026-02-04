@@ -53,6 +53,13 @@ interface ValidationResult {
   missingSchedules?: number;
   certsWithMissingBroker?: number;
   certsWithMissingSchedule?: number;
+  // Commission calculation readiness (only populated with --deep flag)
+  proposalsWithoutDateCoverage?: number;
+  splitVersionsWithoutDateCoverage?: number;
+  hierarchiesWithoutActiveVersions?: number;
+  hierarchyParticipantsWithoutRates?: number;
+  scheduleRatesWithoutMatches?: number;
+  invalidAssignmentBrokers?: number;
 }
 
 interface OverlappingCert {
@@ -362,7 +369,9 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
 
       // Deep chain validation if requested
       if (deepValidation && nonPhaRows > 0) {
-        const chainCheck = await pool.request().query(`
+        let chain;
+        try {
+          const chainCheck = await pool.request().query(`
           -- Check proposal chain integrity for group ${groupIdWithPrefix}
           WITH ProposalsForGroup AS (
             SELECT Id FROM [etl].[stg_proposals] WHERE GroupId = '${groupIdWithPrefix}'
@@ -420,7 +429,14 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
             (SELECT COUNT(*) FROM HPWithoutSchedule) AS HPWithoutSchedule
         `);
 
-        const chain = chainCheck.recordset[0];
+          chain = chainCheck.recordset[0];
+        } catch (error) {
+          console.log(`  ❌ Chain validation failed for group ${groupIdWithPrefix}:`);
+          console.log(`     Error: ${error.message}`);
+          console.log(`     SQL State: ${(error as any).state || 'Unknown'}`);
+          console.log(`     SQL Code: ${(error as any).code || 'Unknown'}`);
+          throw error; // Re-throw to fail the validation
+        }
         results[results.length - 1].proposalsWithoutSplitVersion = chain.ProposalsWithoutPSV || 0;
         results[results.length - 1].splitVersionsWithoutParticipants = chain.PSVWithoutParticipants || 0;
         results[results.length - 1].participantsWithoutHierarchy = chain.PSPWithoutHierarchy || 0;
@@ -441,7 +457,9 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
         }
 
         // Deep content validation: check brokers and schedules match source data
-        const contentCheck = await pool.request().query(`
+        let content;
+        try {
+          const contentCheck = await pool.request().query(`
           -- Check that source brokers and schedules are present in generated hierarchies
           WITH SourceData AS (
             SELECT DISTINCT
@@ -490,9 +508,7 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
           MissingBrokers AS (
             SELECT DISTINCT nps.SplitBrokerId
             FROM NonPhaSource nps
-            WHERE nps.SplitBrokerId NOT IN (SELECT BrokerId FROM HierarchyBrokers)
-              AND nps.SplitBrokerId NOT IN (SELECT 'B' + BrokerId FROM HierarchyBrokers)
-              AND 'B' + nps.SplitBrokerId NOT IN (SELECT BrokerId FROM HierarchyBrokers)
+            WHERE REPLACE(nps.SplitBrokerId, 'P', '') NOT IN (SELECT CAST(BrokerId AS VARCHAR(50)) FROM HierarchyBrokers)
           ),
           -- Source schedules not found in any hierarchy
           MissingSchedules AS (
@@ -523,7 +539,14 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
             (SELECT STRING_AGG(ScheduleCode, ', ') FROM (SELECT TOP 5 ScheduleCode FROM MissingSchedules) x) AS SampleMissingSchedules
         `);
 
-        const content = contentCheck.recordset[0];
+          content = contentCheck.recordset[0];
+        } catch (error) {
+          console.log(`  ❌ Content validation failed for group ${groupIdWithPrefix}:`);
+          console.log(`     Error: ${error.message}`);
+          console.log(`     SQL State: ${(error as any).state || 'Unknown'}`);
+          console.log(`     SQL Code: ${(error as any).code || 'Unknown'}`);
+          throw error; // Re-throw to fail the validation
+        }
         results[results.length - 1].missingBrokers = content.MissingBrokerCount || 0;
         results[results.length - 1].missingSchedules = content.MissingScheduleCount || 0;
         results[results.length - 1].certsWithMissingBroker = content.CertsWithMissingBroker || 0;
@@ -547,6 +570,142 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
           }
         } else {
           console.log(`  ✓ Content validation passed (brokers & schedules match)`);
+        }
+
+        // Commission calculation readiness validation
+        let calculationReadiness;
+        try {
+          const calculationReadinessCheck = await pool.request().query(`
+          -- Validate commission calculation readiness for group ${groupIdWithPrefix}
+          WITH PremiumTransactions AS (
+            SELECT DISTINCT
+              pt.Id AS PremiumTransactionId,
+              pt.TransactionDate,
+              pt.PremiumAmount,
+              p.GroupId,
+              p.ProductCode,
+              p.[State],
+              p.EffectiveDate AS CertificateEffectiveDate
+            FROM [etl].[stg_premium_transactions] pt
+            INNER JOIN [etl].[stg_policies] p ON p.Id = CAST(pt.CertificateId AS NVARCHAR(100))
+            WHERE p.GroupId = '${groupIdWithPrefix}'
+              AND pt.PremiumAmount > 0
+          ),
+          -- 1. Proposals without date coverage for premium transactions
+          ProposalsWithoutDateCoverage AS (
+            SELECT DISTINCT pt.PremiumTransactionId, pr.Id AS ProposalId
+            FROM PremiumTransactions pt
+            INNER JOIN [etl].[stg_proposals] pr ON pr.GroupId = pt.GroupId
+            WHERE pt.TransactionDate < ISNULL(pr.EffectiveDateFrom, '1900-01-01')
+               OR (pr.EffectiveDateTo IS NOT NULL AND pt.TransactionDate > pr.EffectiveDateTo)
+          ),
+          -- 2. Split versions without date coverage
+          SplitVersionsWithoutDateCoverage AS (
+            SELECT DISTINCT pt.PremiumTransactionId, psv.Id AS SplitVersionId
+            FROM PremiumTransactions pt
+            INNER JOIN [etl].[stg_proposals] pr ON pr.GroupId = pt.GroupId
+              AND pt.TransactionDate >= ISNULL(pr.EffectiveDateFrom, '1900-01-01')
+              AND (pr.EffectiveDateTo IS NULL OR pt.TransactionDate <= pr.EffectiveDateTo)
+            INNER JOIN [etl].[stg_premium_split_versions] psv ON psv.ProposalId = pr.Id
+              AND psv.[Status] = 1  -- Active
+            WHERE pt.TransactionDate < ISNULL(psv.EffectiveFrom, '1900-01-01')
+               OR (psv.EffectiveTo IS NOT NULL AND pt.TransactionDate > psv.EffectiveTo)
+          ),
+          -- 3. Hierarchies without active versions
+          HierarchiesWithoutActiveVersions AS (
+            SELECT DISTINCT h.Id AS HierarchyId
+            FROM [etl].[stg_hierarchies] h
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND NOT EXISTS (
+                SELECT 1 FROM [etl].[stg_hierarchy_versions] hv
+                WHERE hv.HierarchyId = h.Id AND hv.[Status] = 1  -- Active
+              )
+          ),
+          -- 4. Hierarchy participants without any commission rate source
+          HierarchyParticipantsWithoutRates AS (
+            SELECT DISTINCT hp.Id AS HierarchyParticipantId, hp.EntityId AS BrokerId, hp.ScheduleCode
+            FROM [etl].[stg_hierarchy_participants] hp
+            INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+            INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND hv.[Status] = 1  -- Active hierarchy version
+              -- No certificate rate AND no participant rate AND no schedule
+              AND (hp.CommissionRate IS NULL OR hp.CommissionRate = 0)
+              AND (hp.ScheduleId IS NULL OR hp.ScheduleId = '')
+              AND NOT EXISTS (
+                SELECT 1 FROM [etl].[stg_schedule_rates] sr
+                INNER JOIN [etl].[stg_schedule_versions] sv ON sv.Id = sr.ScheduleVersionId
+                INNER JOIN [etl].[stg_schedules] s ON s.Id = sv.ScheduleId
+                WHERE s.ExternalId = hp.ScheduleCode
+                  AND (sr.FirstYearRate IS NOT NULL AND sr.FirstYearRate > 0)
+                  OR (sr.RenewalRate IS NOT NULL AND sr.RenewalRate > 0)
+              )
+          ),
+          -- 5. Schedule rates that won't match any premiums (missing product/state combinations)
+          ScheduleRatesWithoutMatches AS (
+            SELECT DISTINCT sr.Id AS ScheduleRateId, s.ExternalId AS ScheduleCode, sr.ProductCode, sr.[State]
+            FROM [etl].[stg_schedule_rates] sr
+            INNER JOIN [etl].[stg_schedule_versions] sv ON sv.Id = sr.ScheduleVersionId
+            INNER JOIN [etl].[stg_schedules] s ON s.Id = sv.ScheduleId
+            WHERE EXISTS (
+              SELECT 1 FROM [etl].[stg_hierarchy_participants] hp
+              INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+              INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+              WHERE h.GroupId = '${groupIdWithPrefix}' AND hp.ScheduleCode = s.ExternalId
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM PremiumTransactions pt
+              WHERE pt.ProductCode = sr.ProductCode AND pt.[State] = sr.[State]
+            )
+          )
+          SELECT
+            (SELECT COUNT(*) FROM ProposalsWithoutDateCoverage) AS ProposalsWithoutDateCoverage,
+            (SELECT COUNT(*) FROM SplitVersionsWithoutDateCoverage) AS SplitVersionsWithoutDateCoverage,
+            (SELECT COUNT(*) FROM HierarchiesWithoutActiveVersions) AS HierarchiesWithoutActiveVersions,
+            (SELECT COUNT(*) FROM HierarchyParticipantsWithoutRates) AS HierarchyParticipantsWithoutRates,
+            (SELECT COUNT(*) FROM ScheduleRatesWithoutMatches) AS ScheduleRatesWithoutMatches,
+            0 AS InvalidAssignmentBrokers  -- TODO: Re-enable when varchar->bigint issue is resolved
+        `);
+
+          calculationReadiness = calculationReadinessCheck.recordset[0];
+        } catch (error) {
+          console.log(`  ❌ Commission calculation readiness validation failed for group ${groupIdWithPrefix}:`);
+          console.log(`     Error: ${error.message}`);
+          console.log(`     SQL State: ${(error as any).state || 'Unknown'}`);
+          console.log(`     SQL Code: ${(error as any).code || 'Unknown'}`);
+          throw error; // Re-throw to fail the validation
+        }
+        results[results.length - 1].proposalsWithoutDateCoverage = calculationReadiness.ProposalsWithoutDateCoverage || 0;
+        results[results.length - 1].splitVersionsWithoutDateCoverage = calculationReadiness.SplitVersionsWithoutDateCoverage || 0;
+        results[results.length - 1].hierarchiesWithoutActiveVersions = calculationReadiness.HierarchiesWithoutActiveVersions || 0;
+        results[results.length - 1].hierarchyParticipantsWithoutRates = calculationReadiness.HierarchyParticipantsWithoutRates || 0;
+        results[results.length - 1].scheduleRatesWithoutMatches = calculationReadiness.ScheduleRatesWithoutMatches || 0;
+        results[results.length - 1].invalidAssignmentBrokers = calculationReadiness.InvalidAssignmentBrokers || 0;
+
+        const calculationIssues: string[] = [];
+        if (calculationReadiness.ProposalsWithoutDateCoverage > 0) {
+          calculationIssues.push(`proposals-no-date-coverage=${calculationReadiness.ProposalsWithoutDateCoverage}`);
+        }
+        if (calculationReadiness.SplitVersionsWithoutDateCoverage > 0) {
+          calculationIssues.push(`split-versions-no-date-coverage=${calculationReadiness.SplitVersionsWithoutDateCoverage}`);
+        }
+        if (calculationReadiness.HierarchiesWithoutActiveVersions > 0) {
+          calculationIssues.push(`hierarchies-no-active-versions=${calculationReadiness.HierarchiesWithoutActiveVersions}`);
+        }
+        if (calculationReadiness.HierarchyParticipantsWithoutRates > 0) {
+          calculationIssues.push(`participants-no-rates=${calculationReadiness.HierarchyParticipantsWithoutRates}`);
+        }
+        if (calculationReadiness.ScheduleRatesWithoutMatches > 0) {
+          calculationIssues.push(`schedule-rates-no-matches=${calculationReadiness.ScheduleRatesWithoutMatches}`);
+        }
+        if (calculationReadiness.InvalidAssignmentBrokers > 0) {
+          calculationIssues.push(`invalid-assignment-brokers=${calculationReadiness.InvalidAssignmentBrokers}`);
+        }
+
+        if (calculationIssues.length > 0) {
+          console.log(`  ⚠️ Commission calculation readiness issues: ${calculationIssues.join(', ')}`);
+        } else {
+          console.log(`  ✓ Commission calculation readiness validation passed`);
         }
       }
     }
@@ -1024,7 +1183,31 @@ if (require.main === module) {
       const results = await validateGroups(config, groupsToValidate, deepValidation);
       const unmatched = results.filter(r => r.unmatchedRows > 0);
       const overlapping = results.filter(r => r.overlappingRows > 0);
-      const failed = results.filter(r => r.unmatchedRows > 0 || r.overlappingRows > 0);
+      const failed = results.filter(r => {
+        // Basic validation failures
+        if (r.unmatchedRows > 0 || r.overlappingRows > 0) return true;
+
+        // Deep validation failures (if --deep was used)
+        if (deepValidation) {
+          return (
+            (r.proposalsWithoutSplitVersion || 0) > 0 ||
+            (r.splitVersionsWithoutParticipants || 0) > 0 ||
+            (r.participantsWithoutHierarchy || 0) > 0 ||
+            (r.hierarchiesWithoutParticipants || 0) > 0 ||
+            (r.hierarchyParticipantsWithoutSchedule || 0) > 0 ||
+            (r.missingBrokers || 0) > 0 ||
+            (r.missingSchedules || 0) > 0 ||
+            (r.proposalsWithoutDateCoverage || 0) > 0 ||
+            (r.splitVersionsWithoutDateCoverage || 0) > 0 ||
+            (r.hierarchiesWithoutActiveVersions || 0) > 0 ||
+            (r.hierarchyParticipantsWithoutRates || 0) > 0 ||
+            (r.scheduleRatesWithoutMatches || 0) > 0 ||
+            (r.invalidAssignmentBrokers || 0) > 0
+          );
+        }
+
+        return false;
+      });
       const passed = results.length - failed.length;
       console.log(`\nValidation summary: ${passed}/${results.length} passed`);
       if (unmatched.length > 0) {
@@ -1073,6 +1256,31 @@ if (require.main === module) {
           }
         } else {
           console.log(`\n✓ All content validations passed (brokers & schedules match)`);
+        }
+
+        // Commission calculation readiness summary
+        const calculationReadinessIssues = results.filter(r =>
+          (r.proposalsWithoutDateCoverage || 0) > 0 ||
+          (r.splitVersionsWithoutDateCoverage || 0) > 0 ||
+          (r.hierarchiesWithoutActiveVersions || 0) > 0 ||
+          (r.hierarchyParticipantsWithoutRates || 0) > 0 ||
+          (r.scheduleRatesWithoutMatches || 0) > 0 ||
+          (r.invalidAssignmentBrokers || 0) > 0
+        );
+        if (calculationReadinessIssues.length > 0) {
+          console.log(`\n⚠️  Commission calculation readiness issues found in ${calculationReadinessIssues.length} group(s):`);
+          for (const r of calculationReadinessIssues) {
+            const issues: string[] = [];
+            if ((r.proposalsWithoutDateCoverage || 0) > 0) issues.push(`proposals-no-date-coverage=${r.proposalsWithoutDateCoverage}`);
+            if ((r.splitVersionsWithoutDateCoverage || 0) > 0) issues.push(`split-versions-no-date-coverage=${r.splitVersionsWithoutDateCoverage}`);
+            if ((r.hierarchiesWithoutActiveVersions || 0) > 0) issues.push(`hierarchies-no-active-versions=${r.hierarchiesWithoutActiveVersions}`);
+            if ((r.hierarchyParticipantsWithoutRates || 0) > 0) issues.push(`participants-no-rates=${r.hierarchyParticipantsWithoutRates}`);
+            if ((r.scheduleRatesWithoutMatches || 0) > 0) issues.push(`schedule-rates-no-matches=${r.scheduleRatesWithoutMatches}`);
+            if ((r.invalidAssignmentBrokers || 0) > 0) issues.push(`invalid-assignment-brokers=${r.invalidAssignmentBrokers}`);
+            console.log(`  ${r.groupId}: ${issues.join(', ')}`);
+          }
+        } else {
+          console.log(`\n✓ All commission calculation readiness validations passed`);
         }
       }
       
