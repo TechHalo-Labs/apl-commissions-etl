@@ -48,6 +48,11 @@ interface ValidationResult {
   participantsWithoutHierarchy?: number;
   hierarchiesWithoutParticipants?: number;
   hierarchyParticipantsWithoutSchedule?: number;
+  // Content validation (only populated with --deep flag)
+  missingBrokers?: number;
+  missingSchedules?: number;
+  certsWithMissingBroker?: number;
+  certsWithMissingSchedule?: number;
 }
 
 interface OverlappingCert {
@@ -433,6 +438,115 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
           console.log(`  ⚠️ Chain issues: ${chainIssues.join(', ')}`);
         } else {
           console.log(`  ✓ Chain validation passed`);
+        }
+
+        // Deep content validation: check brokers and schedules match source data
+        const contentCheck = await pool.request().query(`
+          -- Check that source brokers and schedules are present in generated hierarchies
+          WITH SourceData AS (
+            SELECT DISTINCT
+              LTRIM(RTRIM(r.CertificateId)) AS CertificateId,
+              LTRIM(RTRIM(r.SplitBrokerId)) AS SplitBrokerId,
+              LTRIM(RTRIM(r.CommissionsSchedule)) AS ScheduleCode
+            FROM [etl].[raw_certificate_info] r
+            WHERE LTRIM(RTRIM(r.GroupId)) IN ('${groupIdNumeric}', '${groupIdWithPrefix}')
+              AND LTRIM(RTRIM(r.CertStatus)) = 'A'
+              AND LTRIM(RTRIM(r.RecStatus)) = 'A'
+              AND LTRIM(RTRIM(r.SplitBrokerId)) IS NOT NULL
+              AND LTRIM(RTRIM(r.SplitBrokerId)) <> ''
+          ),
+          -- Get PHA certificates (they have different hierarchy structure)
+          PhaCerts AS (
+            SELECT DISTINCT pha.PolicyId AS CertificateId
+            FROM [etl].[stg_policy_hierarchy_assignments] pha
+            INNER JOIN [etl].[stg_hierarchies] h ON h.Id = pha.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+          ),
+          -- Non-PHA source data only
+          NonPhaSource AS (
+            SELECT s.*
+            FROM SourceData s
+            LEFT JOIN PhaCerts p ON p.CertificateId = s.CertificateId
+            WHERE p.CertificateId IS NULL
+          ),
+          -- Get all brokers in hierarchies for this group (via proposals)
+          HierarchyBrokers AS (
+            SELECT DISTINCT hp.EntityId AS BrokerId
+            FROM [etl].[stg_hierarchy_participants] hp
+            INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+            INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+          ),
+          -- Get all schedules in hierarchies for this group
+          HierarchySchedules AS (
+            SELECT DISTINCT hp.ScheduleCode
+            FROM [etl].[stg_hierarchy_participants] hp
+            INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+            INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND hp.ScheduleCode IS NOT NULL AND hp.ScheduleCode <> ''
+          ),
+          -- Source brokers not found in any hierarchy
+          MissingBrokers AS (
+            SELECT DISTINCT nps.SplitBrokerId
+            FROM NonPhaSource nps
+            WHERE nps.SplitBrokerId NOT IN (SELECT BrokerId FROM HierarchyBrokers)
+              AND nps.SplitBrokerId NOT IN (SELECT 'B' + BrokerId FROM HierarchyBrokers)
+              AND 'B' + nps.SplitBrokerId NOT IN (SELECT BrokerId FROM HierarchyBrokers)
+          ),
+          -- Source schedules not found in any hierarchy
+          MissingSchedules AS (
+            SELECT DISTINCT nps.ScheduleCode
+            FROM NonPhaSource nps
+            WHERE nps.ScheduleCode IS NOT NULL AND nps.ScheduleCode <> ''
+              AND nps.ScheduleCode NOT IN (SELECT ScheduleCode FROM HierarchySchedules)
+          ),
+          -- Count certificates with missing brokers
+          CertsWithMissingBroker AS (
+            SELECT DISTINCT nps.CertificateId
+            FROM NonPhaSource nps
+            WHERE nps.SplitBrokerId IN (SELECT SplitBrokerId FROM MissingBrokers)
+          ),
+          -- Count certificates with missing schedules
+          CertsWithMissingSchedule AS (
+            SELECT DISTINCT nps.CertificateId
+            FROM NonPhaSource nps
+            WHERE nps.ScheduleCode IN (SELECT ScheduleCode FROM MissingSchedules)
+          )
+          SELECT
+            (SELECT COUNT(*) FROM NonPhaSource) AS TotalSourceRows,
+            (SELECT COUNT(*) FROM MissingBrokers) AS MissingBrokerCount,
+            (SELECT COUNT(*) FROM MissingSchedules) AS MissingScheduleCount,
+            (SELECT COUNT(*) FROM CertsWithMissingBroker) AS CertsWithMissingBroker,
+            (SELECT COUNT(*) FROM CertsWithMissingSchedule) AS CertsWithMissingSchedule,
+            (SELECT STRING_AGG(SplitBrokerId, ', ') FROM (SELECT TOP 5 SplitBrokerId FROM MissingBrokers) x) AS SampleMissingBrokers,
+            (SELECT STRING_AGG(ScheduleCode, ', ') FROM (SELECT TOP 5 ScheduleCode FROM MissingSchedules) x) AS SampleMissingSchedules
+        `);
+
+        const content = contentCheck.recordset[0];
+        results[results.length - 1].missingBrokers = content.MissingBrokerCount || 0;
+        results[results.length - 1].missingSchedules = content.MissingScheduleCount || 0;
+        results[results.length - 1].certsWithMissingBroker = content.CertsWithMissingBroker || 0;
+        results[results.length - 1].certsWithMissingSchedule = content.CertsWithMissingSchedule || 0;
+
+        const contentIssues: string[] = [];
+        if (content.MissingBrokerCount > 0) {
+          contentIssues.push(`missing-brokers=${content.MissingBrokerCount} (${content.CertsWithMissingBroker} certs)`);
+        }
+        if (content.MissingScheduleCount > 0) {
+          contentIssues.push(`missing-schedules=${content.MissingScheduleCount} (${content.CertsWithMissingSchedule} certs)`);
+        }
+
+        if (contentIssues.length > 0) {
+          console.log(`  ⚠️ Content issues: ${contentIssues.join(', ')}`);
+          if (content.SampleMissingBrokers) {
+            console.log(`    Missing brokers: ${content.SampleMissingBrokers}`);
+          }
+          if (content.SampleMissingSchedules) {
+            console.log(`    Missing schedules: ${content.SampleMissingSchedules}`);
+          }
+        } else {
+          console.log(`  ✓ Content validation passed (brokers & schedules match)`);
         }
       }
     }
@@ -942,6 +1056,23 @@ if (require.main === module) {
           }
         } else {
           console.log(`\n✓ All chain validations passed`);
+        }
+
+        // Content validation summary (brokers and schedules)
+        const contentIssues = results.filter(r => 
+          (r.missingBrokers || 0) > 0 ||
+          (r.missingSchedules || 0) > 0
+        );
+        if (contentIssues.length > 0) {
+          console.log(`\n⚠️  Content validation issues found in ${contentIssues.length} group(s):`);
+          for (const r of contentIssues) {
+            const issues: string[] = [];
+            if ((r.missingBrokers || 0) > 0) issues.push(`missing-brokers=${r.missingBrokers} (${r.certsWithMissingBroker} certs)`);
+            if ((r.missingSchedules || 0) > 0) issues.push(`missing-schedules=${r.missingSchedules} (${r.certsWithMissingSchedule} certs)`);
+            console.log(`  ${r.groupId}: ${issues.join(', ')}`);
+          }
+        } else {
+          console.log(`\n✓ All content validations passed (brokers & schedules match)`);
         }
       }
       
