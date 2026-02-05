@@ -889,19 +889,27 @@ export class ProposalBuilder {
         shannonEntropy
       } = computeMetrics(clusters, totalRecords);
 
+      // Hard rule: Small fragmented groups (< 15 certs with > 2 configs) -> PHA
+      const isSmallFragmented = (totalRecords < 15 && uniqueConfigs > 2);
+      
       const isHighEntropy = (
         simpleEntropy > options.highEntropyUniqueRatio ||
         shannonEntropy > options.highEntropyShannon ||
-        dominantPct < options.dominantCoverageThreshold
+        dominantPct < options.dominantCoverageThreshold ||
+        isSmallFragmented
       );
 
       if (options.logEntropyByGroup || options.verbose) {
-        console.log(`  Entropy ${groupId}: unique=${uniqueConfigs}, total=${totalRecords}, dominant=${dominantRecords}, simple=${simpleEntropy.toFixed(3)}, shannon=${shannonEntropy.toFixed(3)}`);
+        const flag = isSmallFragmented ? ' [SMALL-FRAGMENTED]' : '';
+        console.log(`  Entropy ${groupId}: unique=${uniqueConfigs}, total=${totalRecords}, dominant=${dominantRecords}, simple=${simpleEntropy.toFixed(3)}, shannon=${shannonEntropy.toFixed(3)}${flag}`);
       }
 
       if (isHighEntropy) {
+        const reason = isSmallFragmented 
+          ? 'SmallFragmentedGroup (< 15 certs with > 2 configs)' 
+          : 'BusinessDrivenEntropy';
         for (const criteria of groupCriteria) {
-          addCriteriaToPha(criteria, 'BusinessDrivenEntropy', 2);
+          addCriteriaToPha(criteria, reason, 2);
           routedToPha++;
         }
         continue;
