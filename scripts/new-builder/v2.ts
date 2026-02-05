@@ -191,7 +191,10 @@ function parseConnectionString(connStr: string): DatabaseConfig {
 
 async function loadDistinctGroups(config: DatabaseConfig, options: BuilderOptions): Promise<string[]> {
   const schema = options.schema || 'etl';
-  const pool = await sql.connect(config);
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 300000 // 5 minutes for large table query
+  });
   try {
     // Only load groups that have commission detail records (actual transactions)
     const result = await pool.request().query(`
@@ -736,7 +739,10 @@ async function generateDetailedValidationReport(
     return reports;
   }
 
-  const pool = await sql.connect(config);
+  const pool = await sql.connect({
+    ...config,
+    requestTimeout: 300000 // 5 minutes for detailed report queries
+  });
   
   try {
     for (const result of groupsWithErrors) {
@@ -1217,7 +1223,10 @@ async function processCertificates(
   builder.loadCertificates(certificates);
   builder.extractSelectionCriteria();
 
-  const phaPool = await sql.connect(config);
+  const phaPool = await sql.connect({
+    ...config,
+    requestTimeout: 300000 // 5 minutes for non-conformant case queries
+  });
   try {
     await builder.identifyNonConformantCases(phaPool);
   } finally {
