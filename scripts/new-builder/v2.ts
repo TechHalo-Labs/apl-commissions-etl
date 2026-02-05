@@ -58,8 +58,22 @@ interface ValidationResult {
   splitVersionsWithoutDateCoverage?: number;
   hierarchiesWithoutActiveVersions?: number;
   hierarchyParticipantsWithoutRates?: number;
-  scheduleRatesWithoutMatches?: number;
   invalidAssignmentBrokers?: number;
+}
+
+interface ValidationErrorDetail {
+  errorType: string;
+  description: string;
+  count: number;
+  affectedCerts?: number;
+  diagnosticQuery: string;
+  samples: Array<{ id: string; detail: string }>;
+}
+
+interface GroupValidationReport {
+  groupId: string;
+  groupName: string;
+  errors: ValidationErrorDetail[];
 }
 
 interface OverlappingCert {
@@ -640,30 +654,12 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
                   AND (sr.FirstYearRate IS NOT NULL AND sr.FirstYearRate > 0)
                   OR (sr.RenewalRate IS NOT NULL AND sr.RenewalRate > 0)
               )
-          ),
-          -- 5. Schedule rates that won't match any premiums (missing product/state combinations)
-          ScheduleRatesWithoutMatches AS (
-            SELECT DISTINCT sr.Id AS ScheduleRateId, s.ExternalId AS ScheduleCode, sr.ProductCode, sr.[State]
-            FROM [etl].[stg_schedule_rates] sr
-            INNER JOIN [etl].[stg_schedule_versions] sv ON sv.Id = sr.ScheduleVersionId
-            INNER JOIN [etl].[stg_schedules] s ON s.Id = sv.ScheduleId
-            WHERE EXISTS (
-              SELECT 1 FROM [etl].[stg_hierarchy_participants] hp
-              INNER JOIN [etl].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
-              INNER JOIN [etl].[stg_hierarchies] h ON h.Id = hv.HierarchyId
-              WHERE h.GroupId = '${groupIdWithPrefix}' AND hp.ScheduleCode = s.ExternalId
-            )
-            AND NOT EXISTS (
-              SELECT 1 FROM PremiumTransactions pt
-              WHERE pt.ProductCode = sr.ProductCode AND pt.[State] = sr.[State]
-            )
           )
           SELECT
             (SELECT COUNT(*) FROM ProposalsWithoutDateCoverage) AS ProposalsWithoutDateCoverage,
             (SELECT COUNT(*) FROM SplitVersionsWithoutDateCoverage) AS SplitVersionsWithoutDateCoverage,
             (SELECT COUNT(*) FROM HierarchiesWithoutActiveVersions) AS HierarchiesWithoutActiveVersions,
             (SELECT COUNT(*) FROM HierarchyParticipantsWithoutRates) AS HierarchyParticipantsWithoutRates,
-            (SELECT COUNT(*) FROM ScheduleRatesWithoutMatches) AS ScheduleRatesWithoutMatches,
             0 AS InvalidAssignmentBrokers  -- TODO: Re-enable when varchar->bigint issue is resolved
         `);
 
@@ -679,7 +675,6 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
         results[results.length - 1].splitVersionsWithoutDateCoverage = calculationReadiness.SplitVersionsWithoutDateCoverage || 0;
         results[results.length - 1].hierarchiesWithoutActiveVersions = calculationReadiness.HierarchiesWithoutActiveVersions || 0;
         results[results.length - 1].hierarchyParticipantsWithoutRates = calculationReadiness.HierarchyParticipantsWithoutRates || 0;
-        results[results.length - 1].scheduleRatesWithoutMatches = calculationReadiness.ScheduleRatesWithoutMatches || 0;
         results[results.length - 1].invalidAssignmentBrokers = calculationReadiness.InvalidAssignmentBrokers || 0;
 
         const calculationIssues: string[] = [];
@@ -695,9 +690,6 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
         if (calculationReadiness.HierarchyParticipantsWithoutRates > 0) {
           calculationIssues.push(`participants-no-rates=${calculationReadiness.HierarchyParticipantsWithoutRates}`);
         }
-        if (calculationReadiness.ScheduleRatesWithoutMatches > 0) {
-          calculationIssues.push(`schedule-rates-no-matches=${calculationReadiness.ScheduleRatesWithoutMatches}`);
-        }
         if (calculationReadiness.InvalidAssignmentBrokers > 0) {
           calculationIssues.push(`invalid-assignment-brokers=${calculationReadiness.InvalidAssignmentBrokers}`);
         }
@@ -710,6 +702,320 @@ async function validateGroups(config: DatabaseConfig, groups: string[], deepVali
       }
     }
     return results;
+  } finally {
+    await pool.close();
+  }
+}
+
+async function generateDetailedValidationReport(
+  config: DatabaseConfig,
+  results: ValidationResult[],
+  options: BuilderOptions
+): Promise<GroupValidationReport[]> {
+  const schema = options.schema || 'etl';
+  const reports: GroupValidationReport[] = [];
+  
+  // Filter out groups with no errors
+  const groupsWithErrors = results.filter(r => 
+    (r.unmatchedRows || 0) > 0 ||
+    (r.overlappingRows || 0) > 0 ||
+    (r.missingBrokers || 0) > 0 ||
+    (r.missingSchedules || 0) > 0 ||
+    (r.proposalsWithoutDateCoverage || 0) > 0 ||
+    (r.splitVersionsWithoutDateCoverage || 0) > 0 ||
+    (r.hierarchiesWithoutActiveVersions || 0) > 0 ||
+    (r.hierarchyParticipantsWithoutRates || 0) > 0 ||
+    (r.proposalsWithoutSplitVersion || 0) > 0 ||
+    (r.splitVersionsWithoutParticipants || 0) > 0 ||
+    (r.participantsWithoutHierarchy || 0) > 0 ||
+    (r.hierarchiesWithoutParticipants || 0) > 0 ||
+    (r.hierarchyParticipantsWithoutSchedule || 0) > 0
+  );
+  
+  if (groupsWithErrors.length === 0) {
+    return reports;
+  }
+
+  const pool = await sql.connect(config);
+  
+  try {
+    for (const result of groupsWithErrors) {
+      const groupId = result.groupId;
+      const groupIdNumeric = groupId.replace(/^G/i, '');
+      const groupIdWithPrefix = groupId.startsWith('G') ? groupId : `G${groupId}`;
+      const errors: ValidationErrorDetail[] = [];
+      
+      // Get group name
+      let groupName = '';
+      try {
+        const groupInfo = await pool.request().query(`
+          SELECT GroupName FROM dbo.EmployerGroups WHERE Id = '${groupIdWithPrefix}' OR GroupNumber = '${groupIdNumeric}'
+        `);
+        groupName = groupInfo.recordset[0]?.GroupName || 'Unknown';
+      } catch (e: any) {
+        groupName = 'Unknown';
+      }
+      
+      // 1. Missing Brokers
+      if ((result.missingBrokers || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 SplitBrokerId, COUNT(*) AS CertCount
+            FROM etl.input_certificate_info
+            WHERE GroupId = '${groupIdNumeric}'
+              AND SplitBrokerId NOT IN (SELECT ExternalPartyId FROM dbo.Brokers WHERE IsDeleted = 0)
+              AND LTRIM(RTRIM(SplitBrokerId)) IS NOT NULL
+              AND LTRIM(RTRIM(SplitBrokerId)) <> ''
+            GROUP BY SplitBrokerId
+            ORDER BY COUNT(*) DESC
+          `);
+          
+          errors.push({
+            errorType: 'missing-brokers',
+            description: `${result.missingBrokers} broker IDs not found in Brokers table (${result.certsWithMissingBroker || 0} certificates affected)`,
+            count: result.missingBrokers || 0,
+            affectedCerts: result.certsWithMissingBroker || 0,
+            diagnosticQuery: `SELECT DISTINCT ci.SplitBrokerId, COUNT(*) AS CertCount
+FROM etl.input_certificate_info ci
+WHERE ci.GroupId = '${groupIdNumeric}'
+  AND ci.SplitBrokerId NOT IN (SELECT ExternalPartyId FROM dbo.Brokers WHERE IsDeleted = 0)
+GROUP BY ci.SplitBrokerId
+ORDER BY COUNT(*) DESC`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.SplitBrokerId, 
+              detail: `${s.CertCount} certs` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching missing brokers for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 2. Missing Schedules
+      if ((result.missingSchedules || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 CommissionsSchedule, COUNT(*) AS CertCount
+            FROM etl.input_certificate_info
+            WHERE GroupId = '${groupIdNumeric}'
+              AND CommissionsSchedule NOT IN (SELECT ExternalId FROM dbo.Schedules WHERE IsDeleted = 0)
+              AND LTRIM(RTRIM(CommissionsSchedule)) IS NOT NULL
+              AND LTRIM(RTRIM(CommissionsSchedule)) <> ''
+            GROUP BY CommissionsSchedule
+            ORDER BY COUNT(*) DESC
+          `);
+          
+          errors.push({
+            errorType: 'missing-schedules',
+            description: `${result.missingSchedules} schedule codes not found in Schedules table (${result.certsWithMissingSchedule || 0} certificates affected)`,
+            count: result.missingSchedules || 0,
+            affectedCerts: result.certsWithMissingSchedule || 0,
+            diagnosticQuery: `SELECT DISTINCT ci.CommissionsSchedule, COUNT(*) AS CertCount
+FROM etl.input_certificate_info ci
+WHERE ci.GroupId = '${groupIdNumeric}'
+  AND ci.CommissionsSchedule NOT IN (SELECT ExternalId FROM dbo.Schedules WHERE IsDeleted = 0)
+GROUP BY ci.CommissionsSchedule
+ORDER BY COUNT(*) DESC`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.CommissionsSchedule, 
+              detail: `${s.CertCount} certs` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching missing schedules for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 3. Unmatched Certificates
+      if ((result.unmatchedRows || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 ci.CertificateId, ci.Product, ci.CertEffectiveDate
+            FROM etl.input_certificate_info ci
+            WHERE ci.GroupId = '${groupIdNumeric}'
+              AND NOT EXISTS (
+                SELECT 1 FROM [${schema}].[stg_policies] p 
+                WHERE p.Id = CAST(ci.CertificateId AS NVARCHAR(100))
+              )
+            ORDER BY ci.CertificateId
+          `);
+          
+          errors.push({
+            errorType: 'unmatched-certs',
+            description: `${result.unmatchedRows} certificates not assigned to any proposal`,
+            count: result.unmatchedRows || 0,
+            diagnosticQuery: `SELECT ci.CertificateId, ci.Product, ci.PlanCode, ci.CertEffectiveDate
+FROM etl.input_certificate_info ci
+WHERE ci.GroupId = '${groupIdNumeric}'
+  AND NOT EXISTS (
+    SELECT 1 FROM [${schema}].[stg_policies] p 
+    WHERE p.Id = CAST(ci.CertificateId AS NVARCHAR(100))
+  )
+ORDER BY ci.CertificateId`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.CertificateId, 
+              detail: `${s.Product} on ${new Date(s.CertEffectiveDate).toISOString().split('T')[0]}` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching unmatched certs for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 4. Overlapping Proposals
+      if ((result.overlappingRows || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 p.Id AS CertificateId, 
+                   STRING_AGG(p.ProposalId, ', ') AS ProposalIds,
+                   p.ProductCode, p.EffectiveDate
+            FROM [${schema}].[stg_policies] p
+            WHERE p.GroupId = '${groupIdWithPrefix}'
+            GROUP BY p.Id, p.ProductCode, p.EffectiveDate
+            HAVING COUNT(DISTINCT p.ProposalId) > 1
+            ORDER BY p.Id
+          `);
+          
+          errors.push({
+            errorType: 'overlapping-proposals',
+            description: `${result.overlappingRows} certificates matching multiple proposals`,
+            count: result.overlappingRows || 0,
+            diagnosticQuery: `SELECT p.Id AS CertificateId, 
+       STRING_AGG(p.ProposalId, ', ') AS ProposalIds,
+       p.ProductCode, p.EffectiveDate
+FROM [${schema}].[stg_policies] p
+WHERE p.GroupId = '${groupIdWithPrefix}'
+GROUP BY p.Id, p.ProductCode, p.EffectiveDate
+HAVING COUNT(DISTINCT p.ProposalId) > 1
+ORDER BY p.Id`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.CertificateId, 
+              detail: `proposals: ${s.ProposalIds}` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching overlapping proposals for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 5. Proposals Without Date Coverage
+      if ((result.proposalsWithoutDateCoverage || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 pt.Id AS TransactionId, pt.TransactionDate, pr.Id AS ProposalId,
+                   pr.EffectiveDateFrom, pr.EffectiveDateTo
+            FROM [${schema}].[stg_premium_transactions] pt
+            INNER JOIN [${schema}].[stg_policies] p ON p.Id = CAST(pt.CertificateId AS NVARCHAR(100))
+            INNER JOIN [${schema}].[stg_proposals] pr ON pr.GroupId = p.GroupId
+            WHERE p.GroupId = '${groupIdWithPrefix}'
+              AND (pt.TransactionDate < ISNULL(pr.EffectiveDateFrom, '1900-01-01')
+                   OR (pr.EffectiveDateTo IS NOT NULL AND pt.TransactionDate > pr.EffectiveDateTo))
+            ORDER BY pt.TransactionDate
+          `);
+          
+          errors.push({
+            errorType: 'proposals-no-date-coverage',
+            description: `${result.proposalsWithoutDateCoverage} premium transactions outside proposal date ranges`,
+            count: result.proposalsWithoutDateCoverage || 0,
+            diagnosticQuery: `SELECT pt.Id AS TransactionId, pt.TransactionDate, 
+       pr.Id AS ProposalId, pr.EffectiveDateFrom, pr.EffectiveDateTo
+FROM [${schema}].[stg_premium_transactions] pt
+INNER JOIN [${schema}].[stg_policies] p ON p.Id = CAST(pt.CertificateId AS NVARCHAR(100))
+INNER JOIN [${schema}].[stg_proposals] pr ON pr.GroupId = p.GroupId
+WHERE p.GroupId = '${groupIdWithPrefix}'
+  AND (pt.TransactionDate < ISNULL(pr.EffectiveDateFrom, '1900-01-01')
+       OR (pr.EffectiveDateTo IS NOT NULL AND pt.TransactionDate > pr.EffectiveDateTo))
+ORDER BY pt.TransactionDate`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.TransactionId, 
+              detail: `${new Date(s.TransactionDate).toISOString().split('T')[0]} outside proposal ${s.ProposalId} range` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching date coverage issues for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 6. Hierarchies Without Active Versions
+      if ((result.hierarchiesWithoutActiveVersions || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 h.Id AS HierarchyId, h.Name
+            FROM [${schema}].[stg_hierarchies] h
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND NOT EXISTS (
+                SELECT 1 FROM [${schema}].[stg_hierarchy_versions] hv
+                WHERE hv.HierarchyId = h.Id AND hv.[Status] = 1
+              )
+          `);
+          
+          errors.push({
+            errorType: 'hierarchies-no-active-versions',
+            description: `${result.hierarchiesWithoutActiveVersions} hierarchies without active (Status=1) versions`,
+            count: result.hierarchiesWithoutActiveVersions || 0,
+            diagnosticQuery: `SELECT h.Id AS HierarchyId, h.Name
+FROM [${schema}].[stg_hierarchies] h
+WHERE h.GroupId = '${groupIdWithPrefix}'
+  AND NOT EXISTS (
+    SELECT 1 FROM [${schema}].[stg_hierarchy_versions] hv
+    WHERE hv.HierarchyId = h.Id AND hv.[Status] = 1
+  )`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.HierarchyId, 
+              detail: s.Name || 'No name' 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching hierarchies without active versions for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      // 7. Hierarchy Participants Without Rates
+      if ((result.hierarchyParticipantsWithoutRates || 0) > 0) {
+        try {
+          const samples = await pool.request().query(`
+            SELECT TOP 10 hp.Id, hp.EntityId AS BrokerId, hp.ScheduleCode, hp.[Level]
+            FROM [${schema}].[stg_hierarchy_participants] hp
+            INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+            INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+            WHERE h.GroupId = '${groupIdWithPrefix}'
+              AND hv.[Status] = 1
+              AND (hp.CommissionRate IS NULL OR hp.CommissionRate = 0)
+              AND (hp.ScheduleId IS NULL OR hp.ScheduleId = '')
+          `);
+          
+          errors.push({
+            errorType: 'participants-no-rates',
+            description: `${result.hierarchyParticipantsWithoutRates} hierarchy participants without commission rate source`,
+            count: result.hierarchyParticipantsWithoutRates || 0,
+            diagnosticQuery: `SELECT hp.Id, hp.EntityId AS BrokerId, hp.ScheduleCode, hp.[Level]
+FROM [${schema}].[stg_hierarchy_participants] hp
+INNER JOIN [${schema}].[stg_hierarchy_versions] hv ON hv.Id = hp.HierarchyVersionId
+INNER JOIN [${schema}].[stg_hierarchies] h ON h.Id = hv.HierarchyId
+WHERE h.GroupId = '${groupIdWithPrefix}'
+  AND hv.[Status] = 1
+  AND (hp.CommissionRate IS NULL OR hp.CommissionRate = 0)
+  AND (hp.ScheduleId IS NULL OR hp.ScheduleId = '')`,
+            samples: samples.recordset.map(s => ({ 
+              id: s.Id, 
+              detail: `Broker ${s.BrokerId}, Level ${s.Level}, Schedule: ${s.ScheduleCode || 'NULL'}` 
+            }))
+          });
+        } catch (e: any) {
+          console.error(`Error fetching participants without rates for ${groupId}: ${e.message}`);
+        }
+      }
+      
+      if (errors.length > 0) {
+        reports.push({
+          groupId,
+          groupName,
+          errors
+        });
+      }
+    }
+    
+    return reports;
   } finally {
     await pool.close();
   }
@@ -1201,7 +1507,6 @@ if (require.main === module) {
             (r.splitVersionsWithoutDateCoverage || 0) > 0 ||
             (r.hierarchiesWithoutActiveVersions || 0) > 0 ||
             (r.hierarchyParticipantsWithoutRates || 0) > 0 ||
-            (r.scheduleRatesWithoutMatches || 0) > 0 ||
             (r.invalidAssignmentBrokers || 0) > 0
           );
         }
@@ -1264,7 +1569,6 @@ if (require.main === module) {
           (r.splitVersionsWithoutDateCoverage || 0) > 0 ||
           (r.hierarchiesWithoutActiveVersions || 0) > 0 ||
           (r.hierarchyParticipantsWithoutRates || 0) > 0 ||
-          (r.scheduleRatesWithoutMatches || 0) > 0 ||
           (r.invalidAssignmentBrokers || 0) > 0
         );
         if (calculationReadinessIssues.length > 0) {
@@ -1275,12 +1579,56 @@ if (require.main === module) {
             if ((r.splitVersionsWithoutDateCoverage || 0) > 0) issues.push(`split-versions-no-date-coverage=${r.splitVersionsWithoutDateCoverage}`);
             if ((r.hierarchiesWithoutActiveVersions || 0) > 0) issues.push(`hierarchies-no-active-versions=${r.hierarchiesWithoutActiveVersions}`);
             if ((r.hierarchyParticipantsWithoutRates || 0) > 0) issues.push(`participants-no-rates=${r.hierarchyParticipantsWithoutRates}`);
-            if ((r.scheduleRatesWithoutMatches || 0) > 0) issues.push(`schedule-rates-no-matches=${r.scheduleRatesWithoutMatches}`);
             if ((r.invalidAssignmentBrokers || 0) > 0) issues.push(`invalid-assignment-brokers=${r.invalidAssignmentBrokers}`);
             console.log(`  ${r.groupId}: ${issues.join(', ')}`);
           }
         } else {
           console.log(`\n✓ All commission calculation readiness validations passed`);
+        }
+        
+        // Generate detailed validation report
+        if (failed.length > 0) {
+          console.log('\n' + '='.repeat(80));
+          console.log(' '.repeat(20) + 'VALIDATION ERROR REPORT');
+          console.log('='.repeat(80));
+          console.log('');
+          console.log(`Groups with errors: ${failed.length} of ${results.length} validated`);
+          console.log('');
+          
+          const detailedReports = await generateDetailedValidationReport(config, results, options);
+          
+          for (const report of detailedReports) {
+            console.log('-'.repeat(80));
+            console.log(`GROUP: ${report.groupId} - ${report.groupName}`);
+            console.log('-'.repeat(80));
+            console.log('');
+            
+            for (const error of report.errors) {
+              console.log(`  [ERROR] ${error.errorType}`);
+              console.log(`  Description: ${error.description}`);
+              console.log('');
+              console.log('  Diagnostic Query:');
+              // Indent each line of the query
+              const queryLines = error.diagnosticQuery.split('\n');
+              for (const line of queryLines) {
+                console.log(`    ${line}`);
+              }
+              console.log('');
+              
+              if (error.samples.length > 0) {
+                console.log('  Sample Records:');
+                error.samples.forEach((sample, idx) => {
+                  console.log(`    ${idx + 1}. ${sample.id} (${sample.detail})`);
+                });
+                console.log('');
+              }
+            }
+          }
+          
+          console.log('='.repeat(80));
+          console.log(' '.repeat(15) + 'END OF VALIDATION ERROR REPORT');
+          console.log('='.repeat(80));
+          console.log('');
         }
       }
       
