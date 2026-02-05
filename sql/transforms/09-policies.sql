@@ -117,106 +117,57 @@ DECLARE @policy_count INT = @@ROWCOUNT;
 PRINT 'Policies created: ' + CAST(@policy_count AS VARCHAR);
 
 -- =============================================================================
--- Step 4: Link Policies to Proposals using Proposal Key Mapping Table
--- Deterministic lookup: F(Group, Year, Product, Plan) -> ProposalId
+-- Step 4: Link Policies to Proposals using Certificate Mapping File
+-- Direct lookup: CertificateId -> ProposalId (from proposal builder output)
 -- =============================================================================
 PRINT '';
-PRINT 'Step 4: Linking policies to proposals (using key mapping)...';
+PRINT 'Step 4: Linking policies to proposals (using certificate mapping file)...';
 
--- Primary match: Use the proposal key mapping table for deterministic lookup
--- This matches based on (GroupId, EffectiveYear, ProductCode, PlanCode)
-UPDATE pol
-SET pol.ProposalId = m.ProposalId,
-    pol.ProposalAssignedAt = GETUTCDATE(),
-    pol.ProposalAssignmentSource = 'ETL-KeyMapping'
-FROM [$(ETL_SCHEMA)].[stg_policies] pol
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposal_key_mapping] m
-    ON m.GroupId = pol.GroupId
-    AND m.EffectiveYear = YEAR(pol.EffectiveDate)
-    AND m.ProductCode = pol.ProductCode
-    AND (m.PlanCode = COALESCE(pol.PlanCode, '') OR m.PlanCode = '*');
-
-DECLARE @key_matched INT = @@ROWCOUNT;
-PRINT 'Policies linked by key mapping (exact): ' + CAST(@key_matched AS VARCHAR);
-
--- Secondary match: Try with wildcard product for remaining unmatched
-UPDATE pol
-SET pol.ProposalId = m.ProposalId,
-    pol.ProposalAssignedAt = GETUTCDATE(),
-    pol.ProposalAssignmentSource = 'ETL-KeyMapping-ProductWildcard'
-FROM [$(ETL_SCHEMA)].[stg_policies] pol
-INNER JOIN [$(ETL_SCHEMA)].[stg_proposal_key_mapping] m
-    ON m.GroupId = pol.GroupId
-    AND m.EffectiveYear = YEAR(pol.EffectiveDate)
-    AND m.ProductCode = '*'
-    AND m.PlanCode = '*'
-WHERE pol.ProposalId IS NULL;
-
-DECLARE @product_wildcard_matched INT = @@ROWCOUNT;
-PRINT 'Policies linked by product wildcard: ' + CAST(@product_wildcard_matched AS VARCHAR);
-
--- Fallback: For remaining unmatched policies, try year-adjacent match
--- Find the closest year in the mapping for the same Group+Product+Plan
-UPDATE pol
-SET pol.ProposalId = adj.ProposalId,
-    pol.ProposalAssignedAt = GETUTCDATE(),
-    pol.ProposalAssignmentSource = 'ETL-KeyMapping-YearAdjacent'
-FROM [$(ETL_SCHEMA)].[stg_policies] pol
-INNER JOIN (
-    SELECT 
-        pol.Id AS PolicyId,
-        m.ProposalId,
-        ROW_NUMBER() OVER (
-            PARTITION BY pol.Id 
-            ORDER BY ABS(m.EffectiveYear - YEAR(pol.EffectiveDate))
-        ) AS rn
+-- Check if stg_policy_proposal_mappings table exists (must be loaded from CSV)
+IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'stg_policy_proposal_mappings' AND schema_id = SCHEMA_ID('$(ETL_SCHEMA)'))
+BEGIN
+    PRINT '  ⚠️ Warning: stg_policy_proposal_mappings table not found';
+    PRINT '  ⚠️ Falling back to key-based mapping (less accurate)';
+    PRINT '';
+    
+    -- FALLBACK: Use the proposal key mapping table for deterministic lookup
+    -- This matches based on (GroupId, EffectiveYear, ProductCode, PlanCode)
+    UPDATE pol
+    SET pol.ProposalId = m.ProposalId,
+        pol.ProposalAssignedAt = GETUTCDATE(),
+        pol.ProposalAssignmentSource = 'ETL-KeyMapping-Fallback'
     FROM [$(ETL_SCHEMA)].[stg_policies] pol
     INNER JOIN [$(ETL_SCHEMA)].[stg_proposal_key_mapping] m
         ON m.GroupId = pol.GroupId
+        AND m.EffectiveYear = YEAR(pol.EffectiveDate)
         AND m.ProductCode = pol.ProductCode
-        AND (m.PlanCode = COALESCE(pol.PlanCode, '') OR m.PlanCode = '*')
-    WHERE pol.ProposalId IS NULL
-) adj ON adj.PolicyId = pol.Id AND adj.rn = 1
-WHERE pol.ProposalId IS NULL;
-
-DECLARE @year_adjacent_matched INT = @@ROWCOUNT;
-PRINT 'Policies linked by year-adjacent: ' + CAST(@year_adjacent_matched AS VARCHAR);
-
--- Final fallback: Use the most recent/active proposal for the group (legacy behavior)
-DROP TABLE IF EXISTS #tmp_best_proposal;
-
-;WITH ranked_proposals AS (
-    SELECT 
-        GroupId,
-        Id AS ProposalId,
-        EffectiveDateFrom,
-        EffectiveDateTo,
-        ROW_NUMBER() OVER (
-            PARTITION BY GroupId 
-            ORDER BY 
-                CASE WHEN EffectiveDateTo IS NULL THEN 0 ELSE 1 END,  -- Active first
-                EffectiveDateFrom DESC  -- Most recent
-        ) AS rn
-    FROM [$(ETL_SCHEMA)].[stg_proposals]
-)
-SELECT GroupId, ProposalId
-INTO #tmp_best_proposal
-FROM ranked_proposals
-WHERE rn = 1;
-
-UPDATE pol
-SET pol.ProposalId = bp.ProposalId,
-    pol.ProposalAssignedAt = GETUTCDATE(),
-    pol.ProposalAssignmentSource = 'ETL-GroupFallback'
-FROM [$(ETL_SCHEMA)].[stg_policies] pol
-INNER JOIN #tmp_best_proposal bp ON bp.GroupId = pol.GroupId
-WHERE pol.ProposalId IS NULL;
-
-DECLARE @group_fallback INT = @@ROWCOUNT;
-PRINT 'Policies linked by group fallback: ' + CAST(@group_fallback AS VARCHAR);
-
-DECLARE @total_linked INT = @key_matched + @product_wildcard_matched + @year_adjacent_matched + @group_fallback;
-PRINT 'Total policies linked to proposals: ' + CAST(@total_linked AS VARCHAR);
+        AND (m.PlanCode = COALESCE(pol.PlanCode, '') OR m.PlanCode = '*');
+    
+    DECLARE @fallback_matched INT = @@ROWCOUNT;
+    PRINT 'Policies linked by fallback key mapping: ' + CAST(@fallback_matched AS VARCHAR);
+END
+ELSE
+BEGIN
+    -- PRIMARY: Use exact certificate-to-proposal mapping from proposal builder
+    UPDATE pol
+    SET pol.ProposalId = m.ProposalId,
+        pol.ProposalAssignedAt = GETUTCDATE(),
+        pol.ProposalAssignmentSource = 'ETL-CertificateMapping'
+    FROM [$(ETL_SCHEMA)].[stg_policies] pol
+    INNER JOIN [$(ETL_SCHEMA)].[stg_policy_proposal_mappings] m
+        ON m.CertificateId = CAST(pol.Id AS NVARCHAR(50));
+    
+    DECLARE @cert_matched INT = @@ROWCOUNT;
+    PRINT 'Policies linked by certificate mapping: ' + CAST(@cert_matched AS VARCHAR);
+    
+    -- Report unmatched policies (these went to PHA)
+    DECLARE @unmatched INT = (
+        SELECT COUNT(*) 
+        FROM [$(ETL_SCHEMA)].[stg_policies] 
+        WHERE ProposalId IS NULL
+    );
+    PRINT 'Policies not linked (PHA cases): ' + CAST(@unmatched AS VARCHAR);
+END
 
 -- =============================================================================
 -- Step 5: Populate PaidThroughDate from commission details

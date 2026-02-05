@@ -23,7 +23,8 @@
     "test:consolidation": "npx tsx scripts/transforms/__tests__/consolidate-proposals.test.ts",
     "verify:consolidation": "npx tsx scripts/verify-consolidation.ts",
     "sync-brokers": "npx tsx scripts/sync-broker-data.ts",
-    "sync-brokers:apply": "npx tsx scripts/sync-broker-data.ts --apply"
+    "sync-brokers:apply": "npx tsx scripts/sync-broker-data.ts --apply",
+    "load-cert-mappings": "npx tsx scripts/load-certificate-mappings.ts"
   },
   "dependencies": {
     "@azure/storage-blob": "^12.30.0",

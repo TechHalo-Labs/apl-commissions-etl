@@ -420,6 +420,7 @@ export interface BuilderOptions {
     container?: string;
     token?: string;
   };
+  certificateMappingFile?: string; // Optional: Path to write certificate-to-proposal mappings (CSV)
 }
 
 export interface EntropyOptions {
@@ -455,6 +456,10 @@ export class ProposalBuilder {
   private selectionCriteria: SelectionCriteria[] = [];
   private proposals: Proposal[] = [];
   private phaRecords: PolicyHierarchyAssignment[] = [];
+  
+  // Certificate-to-proposal mapping file (CSV output)
+  private certificateMappingStream: fs.WriteStream | null = null;
+  private certificateMappingPath: string | null = null;
   
   // Hash collision detection
   private hashCollisions = new Map<string, string>();
@@ -584,6 +589,48 @@ export class ProposalBuilder {
     }
     
     console.log(`  ✓ Loaded ${this.scheduleIdByExternalId.size} schedule mappings`);
+  }
+
+  // ==========================================================================
+  // Certificate Mapping File Management
+  // ==========================================================================
+
+  /**
+   * Open a CSV file stream for writing certificate-to-proposal mappings
+   * Format: ProposalId,CertificateId (no header)
+   */
+  openCertificateMappingFile(filePath: string): void {
+    if (this.certificateMappingStream) {
+      console.log('  ⚠️ Certificate mapping file already open, closing previous stream');
+      this.closeCertificateMappingFile();
+    }
+    
+    this.certificateMappingPath = filePath;
+    this.certificateMappingStream = fs.createWriteStream(filePath, { encoding: 'utf8' });
+    console.log(`  ✓ Opened certificate mapping file: ${filePath}`);
+  }
+
+  /**
+   * Close the certificate mapping file stream
+   */
+  closeCertificateMappingFile(): void {
+    if (this.certificateMappingStream) {
+      this.certificateMappingStream.end();
+      this.certificateMappingStream = null;
+      if (this.certificateMappingPath) {
+        console.log(`  ✓ Closed certificate mapping file: ${this.certificateMappingPath}`);
+        this.certificateMappingPath = null;
+      }
+    }
+  }
+
+  /**
+   * Write a certificate-to-proposal mapping (if file stream is open)
+   */
+  private writeCertificateMapping(proposalId: string, certificateId: string): void {
+    if (this.certificateMappingStream) {
+      this.certificateMappingStream.write(`${proposalId},${certificateId}\n`);
+    }
   }
 
   // ==========================================================================
@@ -1103,6 +1150,11 @@ export class ProposalBuilder {
           certificateIds: [...criteria.certificateIds]
         };
         proposalMap.set(key, proposal);
+        
+        // Write certificate mappings to file (if stream is open)
+        for (const certId of criteria.certificateIds) {
+          this.writeCertificateMapping(proposalId, certId);
+        }
       } else {
         const proposal = proposalMap.get(key)!;
         
@@ -1127,10 +1179,12 @@ export class ProposalBuilder {
           proposal.effectiveDateTo = criteria.effectiveDate;
         }
         
-        // Add certificate IDs
+        // Add certificate IDs and write mappings
         for (const certId of criteria.certificateIds) {
           if (!proposal.certificateIds.includes(certId)) {
             proposal.certificateIds.push(certId);
+            // Write certificate mapping to file (if stream is open)
+            this.writeCertificateMapping(proposal.id, certId);
           }
         }
       }
@@ -3737,10 +3791,20 @@ export async function runProposalBuilder(
       await phaPool.close();
     }
 
-    builder.buildProposals();
-    
-    // Route small outlier proposals to PHA (< 5% of total certificates)
-    builder.routeOutliersToPA(5);
+    // Open certificate mapping file (if specified)
+    if (options.certificateMappingFile) {
+      builder.openCertificateMappingFile(options.certificateMappingFile);
+    }
+
+    try {
+      builder.buildProposals();
+      
+      // Route small outlier proposals to PHA (< 5% of total certificates)
+      builder.routeOutliersToPA(5);
+    } finally {
+      // Close certificate mapping file
+      builder.closeCertificateMappingFile();
+    }
 
     // Generate staging output
     const output = builder.generateStagingOutput();
@@ -3839,8 +3903,20 @@ export async function runProposalBuilderBatched(
   const builder = new ProposalBuilder();
   builder.loadCertificates(firstBatch);
   builder.extractSelectionCriteria();
-  builder.buildProposals();
-  builder.routeOutliersToPA(5);  // Route small outliers to PHA
+  
+  // Open certificate mapping file (if specified)
+  if (options.certificateMappingFile) {
+    builder.openCertificateMappingFile(options.certificateMappingFile);
+  }
+  
+  try {
+    builder.buildProposals();
+    builder.routeOutliersToPA(5);  // Route small outliers to PHA
+  } finally {
+    // Close certificate mapping file
+    builder.closeCertificateMappingFile();
+  }
+  
   const output = builder.generateStagingOutput();
   
   await writeStagingOutput(config, output, options);
@@ -4394,7 +4470,10 @@ if (require.main === module) {
     productionSchema: args.includes('--production-schema')
       ? args[args.indexOf('--production-schema') + 1]
       : 'dbo',
-    groups: groups
+    groups: groups,
+    certificateMappingFile: args.includes('--cert-mapping-file')
+      ? args[args.indexOf('--cert-mapping-file') + 1]
+      : 'certificate-proposal-mappings.csv'  // Default file name
   };
   
   // Get connection string from environment
