@@ -26,6 +26,8 @@ interface AppSettings {
     highEntropyShannon?: number;
     dominantCoverageThreshold?: number;
     phaClusterSizeThreshold?: number;
+    smallFragmentedCertThreshold?: number;
+    smallFragmentedConfigThreshold?: number;
     logEntropyByGroup?: boolean;
   };
   BlobBulk?: {
@@ -126,7 +128,9 @@ function loadEntropyOptions(configPath?: string): EntropyOptions {
     'highEntropyUniqueRatio',
     'highEntropyShannon',
     'dominantCoverageThreshold',
-    'phaClusterSizeThreshold'
+    'phaClusterSizeThreshold',
+    'smallFragmentedCertThreshold',
+    'smallFragmentedConfigThreshold'
   ] as const;
 
   for (const key of required) {
@@ -140,6 +144,8 @@ function loadEntropyOptions(configPath?: string): EntropyOptions {
     highEntropyShannon: cfg.highEntropyShannon!,
     dominantCoverageThreshold: cfg.dominantCoverageThreshold!,
     phaClusterSizeThreshold: cfg.phaClusterSizeThreshold!,
+    smallFragmentedCertThreshold: cfg.smallFragmentedCertThreshold!,
+    smallFragmentedConfigThreshold: cfg.smallFragmentedConfigThreshold!,
     logEntropyByGroup: cfg.logEntropyByGroup ?? false
   };
 }

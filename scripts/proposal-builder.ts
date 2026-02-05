@@ -428,6 +428,8 @@ export interface EntropyOptions {
   highEntropyShannon: number;
   dominantCoverageThreshold: number;
   phaClusterSizeThreshold: number;
+  smallFragmentedCertThreshold: number;  // Max certs for "small" group
+  smallFragmentedConfigThreshold: number; // Min configs for "fragmented"
   logEntropyByGroup?: boolean;
   verbose?: boolean;
 }
@@ -889,8 +891,11 @@ export class ProposalBuilder {
         shannonEntropy
       } = computeMetrics(clusters, totalRecords);
 
-      // Hard rule: Small fragmented groups (< 15 certs with > 2 configs) -> PHA
-      const isSmallFragmented = (totalRecords < 15 && uniqueConfigs > 2);
+      // Hard rule: Small fragmented groups -> PHA
+      const isSmallFragmented = (
+        totalRecords < options.smallFragmentedCertThreshold && 
+        uniqueConfigs > options.smallFragmentedConfigThreshold
+      );
       
       const isHighEntropy = (
         simpleEntropy > options.highEntropyUniqueRatio ||
@@ -906,7 +911,7 @@ export class ProposalBuilder {
 
       if (isHighEntropy) {
         const reason = isSmallFragmented 
-          ? 'SmallFragmentedGroup (< 15 certs with > 2 configs)' 
+          ? `SmallFragmentedGroup (< ${options.smallFragmentedCertThreshold} certs with > ${options.smallFragmentedConfigThreshold} configs)` 
           : 'BusinessDrivenEntropy';
         for (const criteria of groupCriteria) {
           addCriteriaToPha(criteria, reason, 2);
